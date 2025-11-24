@@ -15,4 +15,10 @@ def generate_launch_description():
             name='bench_tracker',
             output='screen',
         ),
+         Node(
+            package='joy',
+            executable='joy_node',
+            name='joy',
+            output='screen',
+        ),
     ])

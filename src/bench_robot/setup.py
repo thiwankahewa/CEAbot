@@ -29,6 +29,7 @@ setup(
         'console_scripts': [
             'arduino_bridge_node = bench_robot.arduino_bridge_node:main',
             'bench_tracker_node  = bench_robot.bench_tracker_node:main',
+            'joystick_teleop_node = bench_robot.joystick_teleop_node:main',
         ],
     },
 )
