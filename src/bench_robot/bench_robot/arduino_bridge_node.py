@@ -10,14 +10,14 @@ class ArduinoBridge(Node):
     def __init__(self):
         super().__init__('arduino_bridge')
 
-        self.declare_parameter('port', '/dev/ttyACM0')
+        self.declare_parameter('port', '/dev/arduino')
         self.declare_parameter('baud', 115200)
 
         port = self.get_parameter('port').value
         baud = self.get_parameter('baud').value
 
         try:
-            #self.ser = serial.Serial(port, baud, timeout=0.05)
+            self.ser = serial.Serial(port, baud, timeout=0.05)
             self.get_logger().info(f"Opened serial {port} @ {baud}")
         except Exception as e:
             self.get_logger().error(f"Failed to open serial port {port}: {e}")
@@ -41,24 +41,11 @@ class ArduinoBridge(Node):
                 # Example: VL53,v1,4,mm1,mm2,mm3,mm4
                 if line.startswith('VL53'):
                     parts = line.split(',')
-                    if len(parts) < 3:
-                        return  
-
-                    pkt_type = parts[0]
-                    count_str = parts[1]
-
-                    try:
-                        count = int(count_str)
-                    except ValueError:
-                        return
-
-                    if len(parts) < 2 + count:
-                        return  # not enough values
 
                     vals = []
-                    for i in range(count):
+                    for i in parts[1:5]:
                         try:
-                            vals.append(int(parts[2 + i]))
+                            vals.append(int(i))
                         except ValueError:
                             vals.append(-1)
 
