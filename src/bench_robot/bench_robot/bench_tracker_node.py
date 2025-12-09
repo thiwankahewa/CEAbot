@@ -17,23 +17,16 @@ class BenchTracker(Node):
         )
         self.cmd_pub = self.create_publisher(Twist, '/cmd_vel', 10)
         self.last = None
-        
-        self.timer = self.create_timer(0.05, self.control_loop)
 
     def dist_cb(self, msg):
 
         self.last = msg.data  # [fl, fr, rl, rr]
+        self._logger.info(f"Received distances: {self.last}")
 
-
-    def control_loop(self):
-        
-        if self.last is None or len(self.last) < 4:
-            self.get_logger().warning("Received invalid /bench_robot/tof_raw message")
-            return
         fl, fr, rl, rr = self.last
 
-        left_avg  = (fl + rl) / 2.0
-        right_avg = (fr + rr) / 2.0
+        left_avg  = (rl + rl) / 2.0
+        right_avg = (fr + fl) / 2.0
 
         error = (right_avg - left_avg)
 

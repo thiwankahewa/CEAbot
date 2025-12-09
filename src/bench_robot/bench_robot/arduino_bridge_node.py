@@ -44,10 +44,7 @@ class ArduinoBridge(Node):
 
                     vals = []
                     for i in parts[1:5]:
-                        try:
-                            vals.append(int(i))
-                        except ValueError:
-                            vals.append(-1)
+                        vals.append(int(i))
 
                     msg = Int16MultiArray()
                     msg.data = vals
