@@ -25,18 +25,22 @@ class BenchTracker(Node):
 
         fl, fr, rl, rr = self.last
 
-        left_avg  = (rl + rl) / 2.0
-        right_avg = (fr + fl) / 2.0
+        left_avg  = (fl + rl) / 2.0
+        right_avg = (fr + rr) / 2.0
+        offset_err = right_avg - left_avg  # Lateral offset
 
-        error = (right_avg - left_avg)
+        left_delta  = fl - rl
+        right_delta = fr - rr
+        yaw_err = (left_delta - right_delta) / 2.0   # yaw error
 
-        Kp = 0.0005  # tune: depends on ADC scale
+        Kp_offset = 0.0005   
+        Kp_yaw    = 0.0005   
         twist = Twist()
         twist.linear.x = 0.2
-        twist.angular.z = -Kp * error
+        twist.angular.z = -(Kp_offset * offset_err + Kp_yaw * yaw_err)
         self.cmd_pub.publish(twist)
 
-        self.get_logger().info(f"err={error:.1f} w={twist.angular.z:.3f}")
+        self.get_logger().info(f"off_err={offset_err:.1f} yaw_err={yaw_err:.1f} w={twist.angular.z:.4f}")
 
 def main(args=None):
     rclpy.init()

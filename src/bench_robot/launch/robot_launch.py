@@ -19,6 +19,11 @@ def generate_launch_description():
             package='joy',
             executable='joy_node',
             name='joy',
-            output='screen',
         ),
+        Node(
+            package='rosbridge_server',
+            executable='rosbridge_websocket',
+            name='rosbridge_websocket',
+
+        )
     ])
