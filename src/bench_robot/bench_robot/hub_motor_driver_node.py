@@ -1,60 +1,103 @@
-# bench_robot/motor_driver_node.py
+#!/usr/bin/env python3
+import time
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import Twist
 from pymodbus.client import ModbusSerialClient
+from std_msgs.msg import Int16MultiArray
+
+
+def to_u16_signed(val: int) -> int:
+    return val & 0xFFFF
+
 
 class MotorDriverNode(Node):
     def __init__(self):
         super().__init__('motor_driver_node')
 
-        # RS485 client (adjust device, baudrate, etc.)
-        self.client = ModbusSerialClient(
-            method='rtu',
-            port='/dev/ttyUSB0',
-            baudrate=115200,
-            parity='N',
-            stopbits=1,
-            bytesize=8,
-            timeout=0.05
-        )
-        ok = self.client.connect()
-        if not ok:
-            self.get_logger().error("Could not connect to ZLAC8015D over RS485")
+        self.port = '/dev/ttyUSB0'
+        self.device_id = 1
+
+        self.client = ModbusSerialClient(port=self.port,baudrate=115200,)
+
+        if self.client.connect():
+            self.get_logger().info("Connected to ZLAC8015D")
+            self.client.write_register(0x200D, 0x0003, device_id=1)  # velocity mode
+            time.sleep(0.05)
+            self.client.write_register(0x200E, 0x0008, device_id=1)  # enable
+        else:
+            self.get_logger().error("ZLAC8015D connection failed")
+
+        self.cmd_timeout_s = 0.5     # watchdog timeout
+        self.last_cmd_time = None
 
         self.sub = self.create_subscription(
-            Twist,
-            '/cmd_vel',
-            self.cmd_vel_callback,
+            Int16MultiArray,
+            '/wheel_rpm_cmd',
+            self.rpm_cb,
             10
         )
 
-    def cmd_vel_callback(self, msg: Twist):
-        # msg.linear.x -> forward/back speed
-        # msg.angular.z -> rotate
-        # Here convert to left/right wheel speed, then write to driver registers
-        wheel_base = 0.6  # m, set yours
-        v = msg.linear.x
-        w = msg.angular.z
+        self.timer = self.create_timer(0.1, self.watchdog_tick)  # 10 Hz watchdo
 
-        left = v - (w * wheel_base / 2.0)
-        right = v + (w * wheel_base / 2.0)
+    # ---------------- Modbus helpers ----------------
+    def _write_single(self, addr: int, value: int):
+        res = self.client.write_register(addr, value, device_id=self.device_id)  # FC 0x06
+        if res.isError():
+            self.get_logger().error(f"write_register failed @0x{addr:04X}: {res}")
 
-        # convert m/s to driver’s unit (e.g., rpm)
-        left_cmd = int(left * 1000)
-        right_cmd = int(right * 1000)
+    def _write_rpms(self, left_rpm: int, right_rpm: int):
+        vals = [to_u16_signed(left_rpm), to_u16_signed(right_rpm)]
+        res = self.client.write_registers(0x2088, vals, device_id=self.device_id)  # FC 0x10
+        if res.isError():
+            self.get_logger().error(f"write_registers failed @0x2088: {res}")
 
-        # WRITE to driver holding registers
-        # NOTE: you must check your ZLAC8015D modbus map!
-        # For example:
-        # self.client.write_register(0x2000, left_cmd, unit=1)
-        # self.client.write_register(0x2001, right_cmd, unit=1)
+    def stop(self):
+        self._write_rpms(0, 0)
 
-        self.get_logger().info(f"cmd_vel -> L:{left_cmd} R:{right_cmd}")
+    # ---------------- Callbacks ----------------
+    def rpm_cb(self, msg: Int16MultiArray):
+        if msg.data is None or len(msg.data) < 2:
+            self.get_logger().warning("Invalid /wheel_rpm_cmd (need [left_rpm, right_rpm])")
+            return
+
+        left_rpm = int(msg.data[0])
+        right_rpm = int(msg.data[1])
+
+        self._write_rpms(left_rpm, -right_rpm)
+
+        # update watchdog time
+        self.last_cmd_time = self.get_clock().now()
+
+        self.get_logger().info(f"wheel_rpm_cmd -> L={left_rpm:+d} rpm R={right_rpm:+d} rpm")
+
+    def watchdog_tick(self):
+        if self.last_cmd_time is None:
+            return
+
+        now = self.get_clock().now()
+        dt = (now - self.last_cmd_time).nanoseconds * 1e-9
+
+        if dt > self.cmd_timeout_s:
+            self.get_logger().warning("RPM command timeout -> STOP")
+            self.stop()
+            self.last_cmd_time = None 
+
+
 
 def main(args=None):
     rclpy.init(args=args)
     node = MotorDriverNode()
-    rclpy.spin(node)
-    node.destroy_node()
-    rclpy.shutdown()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        node.get_logger().warning("Ctrl+C received -> STOP motors")
+    finally:
+        node.stop()
+        time.sleep(0.05) 
+        node.client.close()
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
