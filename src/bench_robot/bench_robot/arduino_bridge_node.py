@@ -2,8 +2,9 @@
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Int16MultiArray
+from std_msgs.msg import Int16MultiArray, Float32
 import serial
+import time
 
 
 class ArduinoBridge(Node):
@@ -23,14 +24,20 @@ class ArduinoBridge(Node):
             self.get_logger().error(f"Failed to open serial port {port}: {e}")
             raise
 
-        self.pub_tof = self.create_publisher(
-            Int16MultiArray,
-            '/bench_robot/tof_raw',
-            10
-        )
-
         self.timer = self.create_timer(0.01, self.read_serial)
 
+        self.pub_tof = self.create_publisher(Int16MultiArray,'/bench_robot/tof_raw',10)
+
+        self.sub_steer = self.create_subscription( Float32,'/steer_angle_deg',self.steer_cb,10)
+        self.center = 0.0
+        self.min_deg = -25.0
+        self.max_deg = 25.0
+        self.send_period = 20.0
+        self.send_delta = 0.1
+        self.last_send_time = 0.0
+        self.last_sent_angle = None
+
+        
     def read_serial(self):
         try:
             if self.ser.in_waiting:
@@ -53,6 +60,34 @@ class ArduinoBridge(Node):
         except Exception as e:
             self.get_logger().warn(f"Serial read error: {e}")
 
+    def steer_cb(self, msg: Float32):
+        angle = float(msg.data)
+        
+
+        # rate limit
+        now = time.time()
+        if (now - self.last_send_time) < self.send_period:
+            return
+        print(f"Steer angle cmd: {angle}")
+        
+        # only send on change
+        if self.last_sent_angle is not None and abs(angle - self.last_sent_angle) < self.send_delta:
+            return
+
+        cmd = f"CMD,A={angle},{angle}"
+        self.send_line(cmd)
+
+        self.last_send_time = now
+        self.last_sent_angle = angle
+
+        self.get_logger().info(f"Sent -> {cmd}")
+        
+
+    def send_line(self, line: str):
+        try:
+            self.ser.write((line + "\n").encode('utf-8'))
+        except Exception as e:
+            self.get_logger().warning(f"Serial write error: {e}")
 
 def main(args=None):
     rclpy.init(args=args)
