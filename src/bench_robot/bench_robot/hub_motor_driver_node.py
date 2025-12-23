@@ -12,7 +12,7 @@ def to_u16_signed(val: int) -> int:
 
 class MotorDriverNode(Node):
     def __init__(self):
-        super().__init__('motor_driver_node')
+        super().__init__('motor_driver')
 
         self.port = '/dev/ttyUSB0'
         self.device_id = 1
@@ -27,7 +27,7 @@ class MotorDriverNode(Node):
         else:
             self.get_logger().error("ZLAC8015D connection failed")
 
-        self.cmd_timeout_s = 0.5     # watchdog timeout
+        self.cmd_timeout_s = 0.1     # watchdog timeout
         self.last_cmd_time = None
 
         self.sub = self.create_subscription(

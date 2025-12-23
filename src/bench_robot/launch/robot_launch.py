@@ -23,11 +23,6 @@ def generate_launch_description():
                 ),
             ],
         ),
-         Node(
-            package='joy',
-            executable='joy_node',
-            name='joy',
-        ),
         Node(
             package='rosbridge_server',
             executable='rosbridge_websocket',

@@ -11,7 +11,7 @@ class ArduinoBridge(Node):
     def __init__(self):
         super().__init__('arduino_bridge')
 
-        self.declare_parameter('port', '/dev/arduino')
+        self.declare_parameter('port', '/dev/controllino')
         self.declare_parameter('baud', 115200)
 
         port = self.get_parameter('port').value
@@ -32,18 +32,25 @@ class ArduinoBridge(Node):
         self.center = 0.0
         self.min_deg = -25.0
         self.max_deg = 25.0
-        self.send_period = 20.0
+        self.send_period = 20.0  # Hz
         self.send_delta = 0.1
         self.last_send_time = 0.0
         self.last_sent_angle = None
 
-        
+    def send_line(self, line: str):
+        try:
+            self.ser.write((line + "\n").encode('utf-8'))
+        except Exception as e:
+            self.get_logger().warning(f"Serial write error: {e}")
+
     def read_serial(self):
         try:
             if self.ser.in_waiting:
-                line = self.ser.readline().decode('utf-8', errors='ignore').strip()
-                if not line:
+                raw = self.ser.readline()
+                if not raw:
                     return
+                line = raw.decode('utf-8', errors='replace').strip()
+                self.get_logger().info(f"[RAW SERIAL] '{line}'")
 
                 # Example: VL53,v1,4,mm1,mm2,mm3,mm4
                 if line.startswith('VL53'):
@@ -56,25 +63,22 @@ class ArduinoBridge(Node):
                     msg = Int16MultiArray()
                     msg.data = vals
                     self.pub_tof.publish(msg)
-                    self.get_logger().info(f"VL53 distances (mm): {vals}")
+                    #self.get_logger().info(f"VL53 distances (mm): {vals}")
         except Exception as e:
             self.get_logger().warn(f"Serial read error: {e}")
 
     def steer_cb(self, msg: Float32):
         angle = float(msg.data)
-        
-
         # rate limit
         now = time.time()
-        if (now - self.last_send_time) < self.send_period:
+        if (now - self.last_send_time) < (1/self.send_period):
             return
-        print(f"Steer angle cmd: {angle}")
         
         # only send on change
         if self.last_sent_angle is not None and abs(angle - self.last_sent_angle) < self.send_delta:
             return
 
-        cmd = f"CMD,A={angle},{angle}"
+        cmd = f"CMD A={angle},{angle}"
         self.send_line(cmd)
 
         self.last_send_time = now
@@ -83,11 +87,7 @@ class ArduinoBridge(Node):
         self.get_logger().info(f"Sent -> {cmd}")
         
 
-    def send_line(self, line: str):
-        try:
-            self.ser.write((line + "\n").encode('utf-8'))
-        except Exception as e:
-            self.get_logger().warning(f"Serial write error: {e}")
+    
 
 def main(args=None):
     rclpy.init(args=args)
