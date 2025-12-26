@@ -8,8 +8,7 @@ def generate_launch_description():
     return LaunchDescription([
         Node(
             package='bench_robot',
-            executable='arduino_bridge_node',
-            name='arduino_bridge',
+            executable='arduino_bridge',
             output='screen',
         ),
         TimerAction(
@@ -17,8 +16,7 @@ def generate_launch_description():
             actions=[
                 Node(
                     package='bench_robot',
-                    executable='bench_tracker_node',
-                    name='bench_tracker',
+                    executable='bench_tracker',
                     output='screen',
                 ),
             ],
@@ -26,6 +24,5 @@ def generate_launch_description():
         Node(
             package='rosbridge_server',
             executable='rosbridge_websocket',
-            name='rosbridge_websocket',
         )
     ])

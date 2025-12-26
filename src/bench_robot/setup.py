@@ -27,9 +27,13 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'arduino_bridge_node = bench_robot.arduino_bridge_node:main',
-            'bench_tracker_node  = bench_robot.bench_tracker_node:main',
-            'joystick_teleop_node = bench_robot.joystick_teleop_node:main',
+            'arduino_bridge = bench_robot.arduino_bridge:main',
+            'bench_tracker  = bench_robot.bench_tracker:main',
+            'joystick_teleop = bench_robot.joystick_teleop:main',
+            'motor_controller = bench_robot.motor_controller:main',
+            'settings_saver = bench_robot.settings_saver:main',
+            'hub_motor_driver = bench_robot.hub_motor_driver:main',
+            'motor_control_mux = bench_robot.motor_control_mux:main',
         ],
     },
 )

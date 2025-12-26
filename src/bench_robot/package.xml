@@ -11,10 +11,13 @@
   <depend>std_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>sensor_msgs</depend>
+  <depend>rcl_interfaces</depend>
 
   <exec_depend>serial</exec_depend>
   <exec_depend>ros2launch</exec_depend>
   <exec_depend>math</exec_depend>
+  <exec_depend>time</exec_depend>
+  <exec_depend>pymodbus</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

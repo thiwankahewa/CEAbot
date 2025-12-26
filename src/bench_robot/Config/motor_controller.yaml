@@ -1,0 +1,11 @@
+/motor_controller:
+  ros__parameters:
+    drive:
+      mode: auto
+    limits:
+      max_rpm: 19
+    pid:
+      kd: 0.0
+      ki: 0.0
+      kp: 6.5
+    use_sim_time: false
