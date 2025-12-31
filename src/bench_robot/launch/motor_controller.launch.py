@@ -14,4 +14,8 @@ def generate_launch_description():
             executable="settings_saver",
             output="screen",
         ),
+        Node(
+            package="rosbridge_server",
+            executable="rosbridge_websocket",
+        ),
     ])

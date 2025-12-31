@@ -7,6 +7,7 @@ from std_srvs.srv import Trigger
 OUTPUT_DIR = "/home/thwia/CEArobot/src/bench_robot/Config"
 TARGET_NODES = [
     "/motor_controller",
+    "/bench_tracker",
 ]
 
 class SettingsSaver(Node):
@@ -29,6 +30,7 @@ class SettingsSaver(Node):
             return response
 
         response.success = True
+        self.get_logger().info("All settings saved successfully.")
         return response
 
 def main():

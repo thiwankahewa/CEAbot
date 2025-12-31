@@ -11,11 +11,8 @@ class ArduinoBridge(Node):
     def __init__(self):
         super().__init__('arduino_bridge')
 
-        self.declare_parameter('port', '/dev/controllino')
-        self.declare_parameter('baud', 115200)
-
-        port = self.get_parameter('port').value
-        baud = self.get_parameter('baud').value
+        port = '/dev/controllino'
+        baud = 115200
 
         try:
             self.ser = serial.Serial(port, baud, timeout=0.05)
@@ -29,9 +26,6 @@ class ArduinoBridge(Node):
         self.pub_tof = self.create_publisher(Int16MultiArray,'/bench_robot/tof_raw',10)
 
         self.sub_steer = self.create_subscription( Float32,'/steer_angle_deg',self.steer_cb,10)
-        self.center = 0.0
-        self.min_deg = -25.0
-        self.max_deg = 25.0
         self.send_period = 20.0  # Hz
         self.send_delta = 0.1
         self.last_send_time = 0.0

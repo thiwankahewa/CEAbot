@@ -11,18 +11,28 @@ def generate_launch_description():
             executable='arduino_bridge',
             output='screen',
         ),
-        TimerAction(
-            period=0.1,
-            actions=[
-                Node(
-                    package='bench_robot',
-                    executable='bench_tracker',
-                    output='screen',
-                ),
-            ],
+        Node(
+            package='bench_robot',
+            executable='bench_tracker',
+            output='screen',
+        ),
+         Node(
+            package='bench_robot',
+            executable='motor_control_mux',
+            output='screen',
+        ),
+         Node(
+            package='bench_robot',
+            executable='hub_motor_driver',
+            output='screen',
         ),
         Node(
             package='rosbridge_server',
             executable='rosbridge_websocket',
-        )
+        ),
+        Node(
+            package="bench_robot",
+            executable="settings_saver",
+            output="screen",
+        ),
     ])

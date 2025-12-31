@@ -12,7 +12,7 @@ def to_u16_signed(val: int) -> int:
 
 class MotorDriverNode(Node):
     def __init__(self):
-        super().__init__('motor_driver')
+        super().__init__('hub_motor_driver')
 
         self.port = '/dev/ttyUSB0'
         self.device_id = 1
