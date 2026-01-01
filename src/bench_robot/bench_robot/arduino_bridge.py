@@ -49,7 +49,6 @@ class ArduinoBridge(Node):
                 # Example: VL53,v1,4,mm1,mm2,mm3,mm4
                 if line.startswith('VL53'):
                     parts = line.split(',')
-
                     vals = []
                     for i in parts[1:5]:
                         vals.append(int(i))
@@ -57,13 +56,13 @@ class ArduinoBridge(Node):
                     msg = Int16MultiArray()
                     msg.data = vals
                     self.pub_tof.publish(msg)
-                    #self.get_logger().info(f"VL53 distances (mm): {vals}")
+
         except Exception as e:
             self.get_logger().warn(f"Serial read error: {e}")
 
     def steer_cb(self, msg: Float32):
         angle = float(msg.data)
-        # rate limit
+
         now = time.time()
         if (now - self.last_send_time) < (1/self.send_period):
             return

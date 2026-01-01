@@ -66,9 +66,6 @@ class MotorControlMux(Node):
     
     def cb_mode(self, msg: String):
         m = (msg.data or "").strip().lower()
-        if m not in ("auto", "manual"):
-            self.get_logger().warning(f"Invalid /mode '{msg.data}'. Use 'auto' or 'manual'.")
-            return
         if m != self.mode:
             self.mode = m
             self.get_logger().info(f"Mode set to: {self.mode}")

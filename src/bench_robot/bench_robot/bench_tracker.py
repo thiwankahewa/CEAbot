@@ -2,7 +2,7 @@
 import math
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Int16MultiArray, Float32
+from std_msgs.msg import Int16MultiArray, Float32, String
 from rcl_interfaces.msg import SetParametersResult
 
 class BenchTracker(Node):
@@ -20,6 +20,11 @@ class BenchTracker(Node):
         self.declare_parameter('Kp_yaw', 0.005)
         self.Kp_offset = self.get_parameter('Kp_offset').value
         self.Kp_yaw = self.get_parameter('Kp_yaw').value
+
+        self.sub_mode = self.create_subscription(
+            String, '/mode', self.cb_mode, 10
+        )
+        self.mode = "manual" 
 
         self.rpm_pub = self.create_publisher(Int16MultiArray, '/wheel_rpm_auto', 10)
         self.steer_pub = self.create_publisher(Float32, '/steer_auto', 10)
@@ -45,24 +50,29 @@ class BenchTracker(Node):
         for p in params:
             if p.name == 'Kp_offset':
                 self.Kp_offset = p.value
-                self.get_logger().info(f"[LIVE] Kp_offset={self.Kp_offset}")
+                self.get_logger().info(f"[Settings] Kp_offset={self.Kp_offset}")
             elif p.name == 'Kp_yaw':
                 self.Kp_yaw = p.value
-                self.get_logger().info(f"[LIVE] Kp_yaw={self.Kp_yaw}")
+                self.get_logger().info(f"[Settings] Kp_yaw={self.Kp_yaw}")
             elif p.name == 'base_rpm':
                 self.base_rpm = p.value
-                self.get_logger().info(f"[LIVE] base_rpm={self.base_rpm}")
+                self.get_logger().info(f"[Settings] base_rpm={self.base_rpm}")
             elif p.name == 'max_rpm':
                 self.max_rpm = p.value
-                self.get_logger().info(f"[LIVE] max_rpm={self.max_rpm}")
+                self.get_logger().info(f"[Settings] max_rpm={self.max_rpm}")
             elif p.name == 'k_steer':
                 self.k_steer = p.value
-                self.get_logger().info(f"[LIVE] k_steer={self.k_steer}")
+                self.get_logger().info(f"[Settings] k_steer={self.k_steer}")
             elif p.name == 'max_steer_deg':
                 self.max_steer_deg = p.value
-                self.get_logger().info(f"[LIVE] max_steer_deg={self.max_steer_deg}")
+                self.get_logger().info(f"[Settings] max_steer_deg={self.max_steer_deg}")
         return SetParametersResult(successful=True)
-
+    
+    def cb_mode(self, msg: String):
+        m = (msg.data or "").strip().lower()
+        if m != self.mode:
+            self.mode = m
+            
     # ---------- Helpers ----------
     @property
     def wheel_circumference(self) -> float:
@@ -118,10 +128,12 @@ class BenchTracker(Node):
         self.publish_rpm(left_rpm, right_rpm)
         self.steer_pub.publish(Float32(data=float(steer_deg)))
 
-        self.get_logger().info(
-            f"[{mode}] off={offset_err:.1f} yaw={yaw_err:.1f} w={w:.4f} | "
-            f"rpm L={left_rpm:+d} R={right_rpm:+d} | steer={steer_deg:+.1f}°"
-        )
+        if self.mode == "auto":
+            self.get_logger().info(
+                f"Distances (mm): FL={fl} FR={fr} RL={rl} RR={rr}"
+                f"[{mode}] off={offset_err:.1f} yaw={yaw_err:.1f} w={w:.4f} | "
+                f"rpm L={left_rpm:+d} R={right_rpm:+d} | steer={steer_deg:+.1f}°"
+            )
 
 def main(args=None):
     rclpy.init()

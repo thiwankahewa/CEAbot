@@ -14,7 +14,6 @@ class SettingsSaver(Node):
     def __init__(self):
         super().__init__("settings_saver")
         self.srv = self.create_service(Trigger, "/settings/save_all", self.on_save)
-        self.get_logger().info("Ready: /settings/save_all (Trigger)")
 
     def on_save(self, request, response):
         failed = []

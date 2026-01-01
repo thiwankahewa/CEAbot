@@ -1,9 +1,9 @@
 /bench_tracker:
   ros__parameters:
-    Kp_offset: 0.003
-    Kp_yaw: 0.009
-    base_rpm: 13
-    k_steer: 56.0
-    max_rpm: 21
-    max_steer_deg: 40.0
+    Kp_offset: 0.005
+    Kp_yaw: 0.005
+    base_rpm: 12
+    k_steer: 100.0
+    max_rpm: 22
+    max_steer_deg: 25.0
     use_sim_time: false
