@@ -8,13 +8,6 @@ def generate_launch_description():
             executable='rosbridge_websocket',
         ),
         Node(
-            package="bench_robot",
-            executable="rosout_streamer",
-            output="screen",
-            respawn=True,
-            respawn_delay=2.0,
-        ),
-        Node(
             package='bench_robot',
             executable='arduino_bridge',
             output='screen',

@@ -34,7 +34,6 @@ setup(
             'settings_saver = bench_robot.settings_saver:main',
             'hub_motor_driver = bench_robot.hub_motor_driver:main',
             'motor_control_mux = bench_robot.motor_control_mux:main',
-            'rosout_streamer = bench_robot.rosout_streamer:main',
         ],
     },
 )
