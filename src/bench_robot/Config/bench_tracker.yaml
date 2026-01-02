@@ -4,6 +4,6 @@
     Kp_yaw: 0.005
     base_rpm: 12
     k_steer: 100.0
-    max_rpm: 22
+    max_rpm: 25
     max_steer_deg: 25.0
     use_sim_time: false

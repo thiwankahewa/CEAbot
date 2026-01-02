@@ -4,10 +4,10 @@ import rclpy
 from rclpy.node import Node
 from std_srvs.srv import Trigger
 
-OUTPUT_DIR = "/home/thwia/CEArobot/src/bench_robot/Config"
+OUTPUT_DIR = "/home/thiwa/CEAbot/src/bench_robot/Config"
 TARGET_NODES = [
-    "/motor_controller",
     "/bench_tracker",
+    "/motor_control_mux",
 ]
 
 class SettingsSaver(Node):

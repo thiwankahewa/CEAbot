@@ -10,11 +10,13 @@ def generate_launch_description():
         Node(
             package='bench_robot',
             executable='arduino_bridge',
+            parameters=["/home/thwia/CEArobot/src/bench_robot/Config/motor_controller.yaml"],
             output='screen',
         ),
         Node(
             package='bench_robot',
             executable='motor_control_mux',
+            parameters=["/home/thwia/CEArobot/src/bench_robot/Config/motor_control_mux.yaml"],
             output='screen',
         ),
         Node(

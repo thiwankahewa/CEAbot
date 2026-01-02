@@ -2,6 +2,7 @@
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Int16MultiArray, String, Float32, Bool
+from rcl_interfaces.msg import SetParametersResult
 
 
 class MotorControlMux(Node):
@@ -16,7 +17,7 @@ class MotorControlMux(Node):
             Int16MultiArray, '/wheel_rpm_auto', self.cb_auto_RPM, 10
         )
         self.sub_man_rpm = self.create_subscription(
-            Int16MultiArray, '/wheel_rpm_manual', self.cb_manual_RPM, 10
+            String, '/wheel_rpm_manual', self.cb_manual_RPM, 10
         )
         self.sub_auto_steer = self.create_subscription(
             Float32, '/steer_auto', self.cb_auto_steer, 10
@@ -40,8 +41,16 @@ class MotorControlMux(Node):
         self.last_auto_RPM_time = None
         self.auto_timeout_s = 0.30
 
-        self.last_manual_RPM = Int16MultiArray()
-        self.last_manual_RPM.data = [0, 0]
+        self.declare_parameter('manual_rpm', 10)
+        self.MANUAL_RPM = self.get_parameter('manual_rpm').value 
+        self._rebuild_cmd_map()
+        self.cmd_to_rpm = {
+            "forward":  ( self.MANUAL_RPM,  self.MANUAL_RPM),
+            "backward": (-self.MANUAL_RPM, -self.MANUAL_RPM),
+            "left":     (-self.MANUAL_RPM,  self.MANUAL_RPM),
+            "right":    ( self.MANUAL_RPM, -self.MANUAL_RPM),
+            "stop":     (0, 0),
+        }
 
         self.last_auto_steer = Float32()
         self.last_auto_steer.data = 0.0
@@ -50,6 +59,26 @@ class MotorControlMux(Node):
         self.last_manual_steer.data = 0.0
         
         self.timer = self.create_timer(0.05, self.tick)  # 20 Hz output
+
+        self.add_on_set_parameters_callback(self.on_params)
+
+    def _rebuild_cmd_map(self):
+        r = int(self.MANUAL_RPM)
+        self.cmd_to_rpm = {
+            "forward":  ( r,  r),
+            "backward": (-r, -r),
+            "left":     (-r,  r),
+            "right":    ( r, -r),
+            "stop":     (0, 0),
+        }
+
+    def on_params(self, params):
+        for p in params:
+            if p.name == 'manual_rpm':
+                self.MANUAL_RPM = p.value
+                self._rebuild_cmd_map()
+                self.get_logger().info(f"[Settings] manual_rpm={self.MANUAL_RPM}")
+        return SetParametersResult(successful=True)
 
     
     @staticmethod
@@ -82,13 +111,19 @@ class MotorControlMux(Node):
         self.last_auto_RPM = msg
         self.last_auto_RPM_time = self.get_clock().now()
 
-    def cb_manual_RPM(self, msg: Int16MultiArray):
-        if msg.data is None or len(msg.data) < 2:
-            self.get_logger().warning("Invalid /wheel_rpm_manual (need [L,R])")
+    def cb_manual_RPM(self, msg: String):
+        if not msg.data :
+            self.get_logger().warning("Empty /wheel_rpm_manual command")
             return
-        self.last_manual_RPM = msg
-        if self.mode == "manual" and not self._is_zero(msg):
-            self.pub_RPM.publish(msg)
+        cmd = msg.data.strip().lower()
+        if self.mode != "manual":
+            return
+        rpm_l, rpm_r = self.cmd_to_rpm[cmd]
+
+        rpm_msg = Int16MultiArray()
+        rpm_msg.data = [rpm_l, rpm_r]
+
+        self.pub_RPM.publish(rpm_msg)
 
     def cb_auto_steer(self, msg: Float32):
         if msg.data is None :
