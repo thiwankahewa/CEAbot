@@ -47,8 +47,8 @@ class MotorControlMux(Node):
         self.cmd_to_rpm = {
             "forward":  ( self.MANUAL_RPM,  self.MANUAL_RPM),
             "backward": (-self.MANUAL_RPM, -self.MANUAL_RPM),
-            "left":     (-self.MANUAL_RPM,  self.MANUAL_RPM),
-            "right":    ( self.MANUAL_RPM, -self.MANUAL_RPM),
+            "left":     (self.MANUAL_RPM,  -self.MANUAL_RPM),
+            "right":    ( -self.MANUAL_RPM, self.MANUAL_RPM),
             "stop":     (0, 0),
         }
 
@@ -67,8 +67,8 @@ class MotorControlMux(Node):
         self.cmd_to_rpm = {
             "forward":  ( r,  r),
             "backward": (-r, -r),
-            "left":     (-r,  r),
-            "right":    ( r, -r),
+            "left":     (r,  -r),
+            "right":    ( -r, r),
             "stop":     (0, 0),
         }
 

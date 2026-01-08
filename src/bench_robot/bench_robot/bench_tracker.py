@@ -36,8 +36,8 @@ class BenchTracker(Node):
         self.track_width_m = 1.37       
         self.wheel_diameter_m = 0.2032  
 
-        # steering assist thresholds
-        self.w_small = 0.05            #below -> diff only, steer=0
+        self.declare_parameter('w_small',0.01)
+        self.w_small = self.get_parameter('w_small').value
         self.declare_parameter('k_steer', 100.0)
         self.k_steer = self.get_parameter('k_steer').value
         self.declare_parameter('max_steer_deg', 25.0)
@@ -63,6 +63,9 @@ class BenchTracker(Node):
             elif p.name == 'k_steer':
                 self.k_steer = p.value
                 self.get_logger().info(f"[Settings] k_steer={self.k_steer}")
+            elif p.name == 'w_small':
+                self.w_small = p.value
+                self.get_logger().info(f"[Settings] w_small={self.w_small}")
             elif p.name == 'max_steer_deg':
                 self.max_steer_deg = p.value
                 self.get_logger().info(f"[Settings] max_steer_deg={self.max_steer_deg}")
