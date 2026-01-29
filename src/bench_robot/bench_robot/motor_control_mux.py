@@ -45,8 +45,8 @@ class MotorControlMux(Node):
         self.MANUAL_RPM = self.get_parameter('manual_rpm').value 
         self._rebuild_cmd_map()
         self.cmd_to_rpm = {
-            "forward":  ( self.MANUAL_RPM,  self.MANUAL_RPM),
-            "backward": (-self.MANUAL_RPM, -self.MANUAL_RPM),
+            "forward":  ( -self.MANUAL_RPM,  -self.MANUAL_RPM),
+            "backward": (self.MANUAL_RPM, self.MANUAL_RPM),
             "left":     (self.MANUAL_RPM,  -self.MANUAL_RPM),
             "right":    ( -self.MANUAL_RPM, self.MANUAL_RPM),
             "stop":     (0, 0),
@@ -65,8 +65,8 @@ class MotorControlMux(Node):
     def _rebuild_cmd_map(self):
         r = int(self.MANUAL_RPM)
         self.cmd_to_rpm = {
-            "forward":  ( r,  r),
-            "backward": (-r, -r),
+            "forward":  ( -r,  -r),
+            "backward": (r, r),
             "left":     (r,  -r),
             "right":    ( -r, r),
             "stop":     (0, 0),

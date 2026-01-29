@@ -3,7 +3,9 @@
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Int16MultiArray, Float32
+from std_srvs.srv import Trigger
 import serial
+from serial.serialutil import SerialException
 import time
 
 
@@ -11,15 +13,13 @@ class ArduinoBridge(Node):
     def __init__(self):
         super().__init__('arduino_bridge')
 
-        port = '/dev/controllino'
-        baud = 115200
+        self.port = '/dev/controllino'
+        self.baud = 115200
+        self.ser = None
+        self.connected = False
 
-        try:
-            self.ser = serial.Serial(port, baud, timeout=0.05)
-            self.get_logger().info(f"Opened serial {port} @ {baud}")
-        except Exception as e:
-            self.get_logger().error(f"Failed to open serial port {port}: {e}")
-            raise
+        self.srv_tof_restart = self.create_service(Trigger, "/arduino_bridge/tof_restart", self.on_tof_restart)
+        self.srv_arduino_reconnect = self.create_service(Trigger, "/arduino_bridge/arduino_reconnect", self.on_arduino_reconnect)
 
         self.timer = self.create_timer(0.01, self.read_serial)
 
@@ -31,13 +31,19 @@ class ArduinoBridge(Node):
         self.last_send_time = 0.0
         self.last_sent_angle = None
 
+        self.open_serial(initial=True)
+
     def send_line(self, line: str):
+        if not self.connected or self.ser is None:
+            return
         try:
             self.ser.write((line + "\n").encode('utf-8'))
         except Exception as e:
             self.get_logger().warning(f"Serial write error: {e}")
 
     def read_serial(self):
+        if not self.connected or self.ser is None:
+            return
         try:
             if self.ser.in_waiting:
                 raw = self.ser.readline()
@@ -71,16 +77,57 @@ class ArduinoBridge(Node):
         if self.last_sent_angle is not None and abs(angle - self.last_sent_angle) < self.send_delta:
             return
 
-        cmd = f"CMD A={angle},{angle}"
+        cmd = f"CMD A={angle - 7},{angle - 13}"
         self.send_line(cmd)
 
         self.last_send_time = now
         self.last_sent_angle = angle
 
         self.get_logger().info(f"Sent -> {cmd}")
-        
 
+    def on_tof_restart(self, request, response):
+        if not self.ensure_connected():
+            response.success = False
+            response.message = "Arduino not connected."
+            return response
+        
+        ok = self.send_line("TOF_RESET")
+        response.success = bool(ok)
+        response.message = "ToF restart command sent." if ok else "Failed to send TOF_RESET."
+        return response
     
+    def on_arduino_reconnect(self, request, response):
+        try:
+            if self.ser:
+                self.ser.close()
+        except Exception:
+            pass
+        self.ser = None
+        self.connected = False
+
+        ok = self.open_serial(initial=False)
+        response.success = bool(ok)
+        response.message = "Arduino reconnected." if ok else f"Reconnect failed on {self.port}"
+        return response
+    
+    def open_serial(self, initial=False) -> bool:
+        try:
+            self.ser = serial.Serial(self.port, self.baud, timeout=0.05)
+            self.connected = True
+            self.get_logger().info(f"Opened serial {self.port} @ {self.baud}")
+            return True
+        except Exception as e:
+            self.ser = None
+            self.connected = False
+            if initial:
+                self.get_logger().warn(f"Arduino not connected ({self.port}): {e} (node will stay alive)")
+            return False
+
+    def ensure_connected(self) -> bool:
+        if self.connected and self.ser and self.ser.is_open:
+            return True
+        return self.open_serial(initial=False)
+            
 
 def main(args=None):
     rclpy.init(args=args)
