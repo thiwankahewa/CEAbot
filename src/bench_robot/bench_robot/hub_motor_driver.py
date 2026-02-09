@@ -3,7 +3,7 @@ import time
 import rclpy
 from rclpy.node import Node
 from pymodbus.client import ModbusSerialClient
-from std_msgs.msg import Int16MultiArray
+from std_msgs.msg import Int16MultiArray, Float32MultiArray
 from std_srvs.srv import Trigger
 
 
@@ -24,18 +24,34 @@ class MotorDriverNode(Node):
         self.client = ModbusSerialClient(port=self.port,baudrate=115200,)
         self.try_connect(init=True)
 
-        self.sub = self.create_subscription(
-            Int16MultiArray,
-            '/wheel_rpm_cmd',
-            self.rpm_cb,
-            10
-        )
+        self.pub_motor_power = self.create_publisher(Float32MultiArray, "/motor_power", 10)
 
-        self.timer = self.create_timer(0.1, self.watchdog_tick)  # 10 Hz watchdo
+        self.sub = self.create_subscription(Int16MultiArray,'/wheel_rpm_cmd',self.rpm_cb,10)
+
+        self.timer = self.create_timer(0.1, self.watchdog_tick)  # 10 Hz watchdog
+        self.power_timer = self.create_timer(1.0, self.publish_motor_power_tick)
 
         self.srv_hub_servo_restart = self.create_service(Trigger, "/arduino_bridge/hub_servo_reconnect", self.on_hub_servo_reconnect)
 
+
     # ---------------- Modbus helpers ----------------
+    def _read_i16(self, addr: int) -> int:
+        """
+        Read one holding register as signed int16.
+        NOTE: If you get nonsense values, try addr-1 (Modbus offset quirk).
+        """
+        rr = self.client.read_holding_registers(address=addr, count=1, slave=self.device_id)
+        if rr is None or rr.isError():
+            raise RuntimeError(f"Modbus read failed at 0x{addr:04X}")
+        v = rr.registers[0] & 0xFFFF
+        return v - 0x10000 if v & 0x8000 else v
+
+    def _read_u16(self, addr: int) -> int:
+        rr = self.client.read_holding_registers(address=addr, count=1, slave=self.device_id)
+        if rr is None or rr.isError():
+            raise RuntimeError(f"Modbus read failed at 0x{addr:04X}")
+        return rr.registers[0] & 0xFFFF
+    
     def _write_single(self, addr: int, value: int):
         res = self.client.write_register(addr, value, device_id=self.device_id)  # FC 0x06
         if res.isError():
@@ -83,6 +99,29 @@ class MotorDriverNode(Node):
             self.stop()
             self.last_cmd_time = None 
 
+    def publish_motor_power_tick(self):
+        if not self.connected:
+            self.try_connect(init=False)
+            return
+        try:
+            v_raw  = self._read_u16(0x20A1)  #bus voltage (0.01 V)
+            il_raw = self._read_i16(0x20AD)  #left current (0.1 A, signed)
+            ir_raw = self._read_i16(0x20AE)  #right current (0.1 A, signed)
+
+            voltage_v = v_raw * 0.01
+            i_left_a  = il_raw * 0.1
+            i_right_a = ir_raw * 0.1
+
+            current_total_a = abs(i_left_a) + abs(i_right_a)
+            power_w = voltage_v * current_total_a
+
+            msg = Float32MultiArray()
+            msg.data = [float(power_w), float(current_total_a), float(voltage_v)]
+            self.pub_motor_power.publish(msg)
+
+        except Exception as e:
+            self.get_logger().warn(f"/motor_power read/publish failed: {e}")
+            
     def try_connect(self, init=False) -> bool:
         try:
             if self.client.connect():
