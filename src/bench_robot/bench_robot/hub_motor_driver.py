@@ -29,7 +29,7 @@ class MotorDriverNode(Node):
         self.sub = self.create_subscription(Int16MultiArray,'/wheel_rpm_cmd',self.rpm_cb,10)
 
         self.timer = self.create_timer(0.1, self.watchdog_tick)  # 10 Hz watchdog
-        self.power_timer = self.create_timer(1.0, self.publish_motor_power_tick)
+        self.power_timer = self.create_timer(0.1, self.publish_motor_power_tick)
 
         self.srv_hub_servo_restart = self.create_service(Trigger, "/arduino_bridge/hub_servo_reconnect", self.on_hub_servo_reconnect)
 
@@ -40,14 +40,14 @@ class MotorDriverNode(Node):
         Read one holding register as signed int16.
         NOTE: If you get nonsense values, try addr-1 (Modbus offset quirk).
         """
-        rr = self.client.read_holding_registers(address=addr, count=1, slave=self.device_id)
+        rr = self.client.read_holding_registers(address=addr, count=1, device_id=self.device_id)
         if rr is None or rr.isError():
             raise RuntimeError(f"Modbus read failed at 0x{addr:04X}")
         v = rr.registers[0] & 0xFFFF
         return v - 0x10000 if v & 0x8000 else v
 
     def _read_u16(self, addr: int) -> int:
-        rr = self.client.read_holding_registers(address=addr, count=1, slave=self.device_id)
+        rr = self.client.read_holding_registers(address=addr, count=1, device_id=self.device_id)
         if rr is None or rr.isError():
             raise RuntimeError(f"Modbus read failed at 0x{addr:04X}")
         return rr.registers[0] & 0xFFFF
@@ -85,7 +85,7 @@ class MotorDriverNode(Node):
         # update watchdog time
         self.last_cmd_time = self.get_clock().now()
 
-        self.get_logger().info(f"wheel_rpm_cmd -> L={left_rpm:+d} rpm R={right_rpm:+d} rpm")
+        #self.get_logger().info(f"wheel_rpm_cmd -> L={left_rpm:+d} rpm R={right_rpm:+d} rpm")
 
     def watchdog_tick(self):
         if self.last_cmd_time is None:
@@ -95,7 +95,7 @@ class MotorDriverNode(Node):
         dt = (now - self.last_cmd_time).nanoseconds * 1e-9
 
         if dt > self.cmd_timeout_s:
-            self.get_logger().warning("RPM command timeout -> STOP")
+            #self.get_logger().warning("RPM command timeout -> STOP")
             self.stop()
             self.last_cmd_time = None 
 
@@ -118,6 +118,8 @@ class MotorDriverNode(Node):
             msg = Float32MultiArray()
             msg.data = [float(power_w), float(current_total_a), float(voltage_v)]
             self.pub_motor_power.publish(msg)
+            self.get_logger().info(f"Motor Power: {power_w:.2f} W, Current: {current_total_a:.2f} A, Voltage: {voltage_v:.2f} V")
+
 
         except Exception as e:
             self.get_logger().warn(f"/motor_power read/publish failed: {e}")
