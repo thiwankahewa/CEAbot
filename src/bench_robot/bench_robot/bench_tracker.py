@@ -8,24 +8,20 @@ from rcl_interfaces.msg import SetParametersResult
 class BenchTracker(Node):
     def __init__(self):
         super().__init__('bench_tracker')
-        
-        self.sub = self.create_subscription(
-            Int16MultiArray,
-            '/bench_robot/tof_raw',
-            self.dist_cb,
-            10
-        )
+
+        # Subscribes
+        self.sub = self.create_subscription(Int16MultiArray,'/bench_robot/tof_raw',self.dist_cb,10)
         self.last = None
+        self.invalid_data_warned = False
         self.declare_parameter('Kp_offset', 0.005)
         self.declare_parameter('Kp_yaw', 0.005)
         self.Kp_offset = self.get_parameter('Kp_offset').value
         self.Kp_yaw = self.get_parameter('Kp_yaw').value
 
-        self.sub_mode = self.create_subscription(
-            String, '/mode', self.cb_mode, 10
-        )
+        self.sub_mode = self.create_subscription(String, '/mode', self.cb_mode, 10)
         self.mode = "manual" 
 
+        # Publishes
         self.rpm_pub = self.create_publisher(Int16MultiArray, '/wheel_rpm_auto', 10)
         self.steer_pub = self.create_publisher(Float32, '/steer_auto', 10)
 
@@ -71,10 +67,7 @@ class BenchTracker(Node):
                 self.get_logger().info(f"[Settings] max_steer_deg={self.max_steer_deg}")
         return SetParametersResult(successful=True)
     
-    def cb_mode(self, msg: String):
-        m = (msg.data or "").strip().lower()
-        if m != self.mode:
-            self.mode = m
+    
             
     # ---------- Helpers ----------
     @property
@@ -92,51 +85,58 @@ class BenchTracker(Node):
         msg.data = [int(left_rpm), int(right_rpm)]
         self.rpm_pub.publish(msg)
 
+    # --------- Main functions ----------
     def dist_cb(self, msg):
-
         self.last = msg.data  # [fl, fr, rl, rr]
         if self.last is None or len(self.last) < 4:
-            self.get_logger().warning("Received invalid /bench_robot/tof_raw message")
+            if not self.invalid_data_warned:
+                self.get_logger().warning("Received invalid /bench_robot/tof_raw message")
+                self.invalid_data_warned = True
             return
-
-        fr, rr, fl, rl = self.last
-
-        #self._logger.info(f"Distances (mm): FL={fl} FR={fr} RL={rl} RR={rr}")
-
-        left_avg  = (fl + rl) / 2.0
-        right_avg = (fr + rr) / 2.0
-        offset_err = right_avg - left_avg  # Lateral offset
-
-        left_delta  = fl - rl
-        right_delta = fr - rr
-        yaw_err = (left_delta - right_delta) / 2.0   # yaw error
-        w = -(self.Kp_offset * offset_err + self.Kp_yaw * yaw_err)
-
-        base_v_mps = (self.base_rpm * self.wheel_circumference) / 60.0
-        v_left  = base_v_mps - (w * self.track_width_m / 2.0)
-        v_right = base_v_mps + (w * self.track_width_m / 2.0)
-
-        left_rpm  = int(self.clamp(int(round(self.mps_to_rpm(v_left))), -self.max_rpm, self.max_rpm))
-        right_rpm = int(self.clamp(int(round(self.mps_to_rpm(v_right))), -self.max_rpm, self.max_rpm))
-
-        # --- Steering assist (only for non-small errors) ---
-        steer_deg = 0.0
-        mode = "DIFF_ONLY"
-        if abs(w) >= self.w_small:
-            mode = "DIFF+STEER"
-            steer_deg = self.k_steer * w
-            steer_deg = self.clamp(steer_deg, -self.max_steer_deg, self.max_steer_deg)
-
-        # publish outputs
-        self.publish_rpm(left_rpm, right_rpm)
-        self.steer_pub.publish(Float32(data=float(steer_deg)))
-
+        
         if self.mode == "auto":
+            self.invalid_data_warned = False
+            fr, rr, fl, rl = self.last
+
+            left_avg  = (fl + rl) / 2.0
+            right_avg = (fr + rr) / 2.0
+            offset_err = right_avg - left_avg  # Lateral offset
+
+            left_delta  = fl - rl
+            right_delta = fr - rr
+            yaw_err = (left_delta - right_delta) / 2.0   # yaw error
+            w = -(self.Kp_offset * offset_err + self.Kp_yaw * yaw_err)
+
+            base_v_mps = (self.base_rpm * self.wheel_circumference) / 60.0
+            v_left  = base_v_mps - (w * self.track_width_m / 2.0)
+            v_right = base_v_mps + (w * self.track_width_m / 2.0)
+
+            left_rpm  = int(self.clamp(int(round(self.mps_to_rpm(v_left))), -self.max_rpm, self.max_rpm))
+            right_rpm = int(self.clamp(int(round(self.mps_to_rpm(v_right))), -self.max_rpm, self.max_rpm))
+
+            # --- Steering assist (only for non-small errors) ---
+            steer_deg = 0.0
+            mode = "DIFF_ONLY"
+            if abs(w) >= self.w_small:
+                mode = "DIFF+STEER"
+                steer_deg = self.k_steer * w
+                steer_deg = self.clamp(steer_deg, -self.max_steer_deg, self.max_steer_deg)
+
+            self.publish_rpm(left_rpm, right_rpm)
+            self.steer_pub.publish(Float32(data=float(steer_deg)))
+
+            
             self.get_logger().info(
                 f"Distances (mm): FL={fl} FR={fr} RL={rl} RR={rr}"
                 f"[{mode}] off={offset_err:.1f} yaw={yaw_err:.1f} w={w:.4f} | "
                 f"rpm L={left_rpm:+d} R={right_rpm:+d} | steer={steer_deg:+.1f}°"
             )
+
+    def cb_mode(self, msg: String):
+        m = (msg.data or "").strip().lower()
+        if m != self.mode:
+            self.mode = m
+            self.get_logger().info(f"Mode changed to: {self.mode}")
 
 def main(args=None):
     rclpy.init()

@@ -8,11 +8,14 @@ OUTPUT_DIR = "/home/thiwa/CEAbot/src/bench_robot/config"
 TARGET_NODES = [
     "/bench_tracker",
     "/motor_control_mux",
+    "/hub_motor_driver",
 ]
 
 class SettingsSaver(Node):
     def __init__(self):
         super().__init__("settings_saver")
+
+        # Service
         self.srv = self.create_service(Trigger, "/settings/save_all", self.on_save)
 
     def on_save(self, request, response):

@@ -25,15 +25,15 @@ class ArduinoBridge(Node):
         # Timer to read serial data
         self.timer = self.create_timer(0.01, self.read_serial)
 
-        # Publishers
-        self.pub_tof = self.create_publisher(Int16MultiArray,'/bench_robot/tof_raw',10)
-
         # Subscribers
         self.sub_steer = self.create_subscription( Float32,'/steer_angle_deg',self.steer_cb,10)
         self.send_period = 100.0  # Hz
         self.send_delta = 1
         self.last_send_time = 0.0
         self.last_sent_angle = None
+
+        # Publishers
+        self.pub_tof = self.create_publisher(Int16MultiArray,'/bench_robot/tof_raw',10)
 
         self.open_serial(initial=True)
 
