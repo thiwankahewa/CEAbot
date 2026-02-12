@@ -7,4 +7,4 @@
     max_rpm: 25
     max_steer_deg: 25.0
     use_sim_time: false
-    w_small: 0.3
+    w_small: 0.01

@@ -22,9 +22,12 @@ class MotorDriverNode(Node):
         self.cmd_timeout_s = 0.1     # watchdog timeout
         self.last_cmd_time = None
 
+        self.parked = False
         self.client = ModbusSerialClient(port=self.port,baudrate=115200,)
         self.declare_parameter('decel_ms', 500)
-        decel_ms = self.get_parameter('decel_ms').value
+        self.decel_ms = self.get_parameter('decel_ms').value
+        self.declare_parameter('acel_ms', 500)
+        self.acel_ms = self.get_parameter('acel_ms').value
         self.try_connect(init=True)
 
         # Service
@@ -46,7 +49,14 @@ class MotorDriverNode(Node):
         for p in params:
             if p.name == 'decel_ms':
                 self.decel_ms = p.value
+                self.client.write_register(0x2082, int(self.decel_ms), device_id=self.device_id)  
+                self.client.write_register(0x2083, int(self.decel_ms), device_id=self.device_id)
                 self.get_logger().info(f"[Settings] decel_ms={self.decel_ms}")
+            elif p.name == 'acel_ms':
+                self.acel_ms = p.value
+                self.client.write_register(0x2084, int(self.acel_ms), device_id=self.device_id)
+                self.client.write_register(0x2085, int(self.acel_ms), device_id=self.device_id)
+                self.get_logger().info(f"[Settings] acel_ms={self.acel_ms}")
         return SetParametersResult(successful=True)
 
 
@@ -84,6 +94,22 @@ class MotorDriverNode(Node):
 
     def stop(self):
         self._write_rpms(0, 0)
+        if not self.parked:
+            self.set_parking(True)
+
+    def set_parking(self, enable: bool):
+        if not self.ensure_connected():
+            return
+        val = 1 if enable else 0
+        try:
+            self._write_single(0x200C, val)
+            self.parked = enable
+        except Exception as e:
+            self.get_logger().warning(f"Failed to set parking={enable}: {e}")
+
+    def maybe_unpark_for_motion(self, left_rpm: int, right_rpm: int):
+        if self.parked and (left_rpm != 0 or right_rpm != 0):
+            self.set_parking(False)
 
     # ---------------- Callbacks ----------------
     def rpm_cb(self, msg: Int16MultiArray):
@@ -96,6 +122,7 @@ class MotorDriverNode(Node):
 
         left_rpm = int(msg.data[0])
         right_rpm = int(msg.data[1])
+        self.maybe_unpark_for_motion(left_rpm, right_rpm)
         self._write_rpms(left_rpm, -right_rpm)
         self.last_cmd_time = self.get_clock().now()
 
@@ -144,8 +171,13 @@ class MotorDriverNode(Node):
                 self.client.write_register(0x200D, 0x0003, device_id=self.device_id)  # velocity mode
                 time.sleep(0.05)
                 self.client.write_register(0x200E, 0x0008, device_id=self.device_id)  # enable
-                self.client.write_register(0x2082, int(self.decel_ms), unit=self.device_id)  
-                self.client.write_register(0x2083, int(self.decel_ms), unit=self.device_id)
+                time.sleep(0.05)
+                self.client.write_register(0x2082, int(self.decel_ms), device_id=self.device_id)  
+                self.client.write_register(0x2083, int(self.decel_ms), device_id=self.device_id)
+                self.client.write_register(0x2080, int(self.acel_ms), device_id=self.device_id)
+                self.client.write_register(0x2081, int(self.acel_ms), device_id=self.device_id)
+                self._write_single(0x200C, 0)
+                self.parked = False
                 return True
             else:
                 self.connected = False
