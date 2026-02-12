@@ -5,6 +5,7 @@ from rclpy.node import Node
 from pymodbus.client import ModbusSerialClient
 from std_msgs.msg import Int16MultiArray, Float32MultiArray
 from std_srvs.srv import Trigger
+from rcl_interfaces.msg import SetParametersResult
 
 
 def to_u16_signed(val: int) -> int:
@@ -22,24 +23,40 @@ class MotorDriverNode(Node):
         self.last_cmd_time = None
 
         self.client = ModbusSerialClient(port=self.port,baudrate=115200,)
+        self.declare_parameter('decel_ms', 500)
+        decel_ms = self.get_parameter('decel_ms').value
         self.try_connect(init=True)
 
-        self.pub_motor_power = self.create_publisher(Float32MultiArray, "/motor_power", 10)
+        # Service
+        self.srv_hub_servo_restart = self.create_service(Trigger, "/arduino_bridge/hub_servo_reconnect", self.on_hub_servo_reconnect)
 
+        # Timers
+        self.timer = self.create_timer(0.1, self.watchdog_tick)  
+        self.power_timer = self.create_timer(1, self.publish_motor_power_tick)
+
+        # Subscribers
         self.sub = self.create_subscription(Int16MultiArray,'/wheel_rpm_cmd',self.rpm_cb,10)
 
-        self.timer = self.create_timer(0.1, self.watchdog_tick)  # 10 Hz watchdog
-        self.power_timer = self.create_timer(0.1, self.publish_motor_power_tick)
+        # Publishers
+        self.pub_motor_power = self.create_publisher(Float32MultiArray, "/motor_power", 10)
 
-        self.srv_hub_servo_restart = self.create_service(Trigger, "/arduino_bridge/hub_servo_reconnect", self.on_hub_servo_reconnect)
+        self.add_on_set_parameters_callback(self.on_params)
+
+    def on_params(self, params):
+        for p in params:
+            if p.name == 'decel_ms':
+                self.decel_ms = p.value
+                self.get_logger().info(f"[Settings] decel_ms={self.decel_ms}")
+        return SetParametersResult(successful=True)
 
 
     # ---------------- Modbus helpers ----------------
+    def ensure_connected(self) -> bool:
+        if self.connected:
+            return True
+        return self.try_connect(init=False)
+    
     def _read_i16(self, addr: int) -> int:
-        """
-        Read one holding register as signed int16.
-        NOTE: If you get nonsense values, try addr-1 (Modbus offset quirk).
-        """
         rr = self.client.read_holding_registers(address=addr, count=1, device_id=self.device_id)
         if rr is None or rr.isError():
             raise RuntimeError(f"Modbus read failed at 0x{addr:04X}")
@@ -79,13 +96,8 @@ class MotorDriverNode(Node):
 
         left_rpm = int(msg.data[0])
         right_rpm = int(msg.data[1])
-
         self._write_rpms(left_rpm, -right_rpm)
-
-        # update watchdog time
         self.last_cmd_time = self.get_clock().now()
-
-        #self.get_logger().info(f"wheel_rpm_cmd -> L={left_rpm:+d} rpm R={right_rpm:+d} rpm")
 
     def watchdog_tick(self):
         if self.last_cmd_time is None:
@@ -95,7 +107,6 @@ class MotorDriverNode(Node):
         dt = (now - self.last_cmd_time).nanoseconds * 1e-9
 
         if dt > self.cmd_timeout_s:
-            #self.get_logger().warning("RPM command timeout -> STOP")
             self.stop()
             self.last_cmd_time = None 
 
@@ -114,12 +125,9 @@ class MotorDriverNode(Node):
 
             current_total_a = abs(i_left_a) + abs(i_right_a)
             power_w = voltage_v * current_total_a
-
             msg = Float32MultiArray()
             msg.data = [float(power_w), float(current_total_a), float(voltage_v)]
             self.pub_motor_power.publish(msg)
-            self.get_logger().info(f"Motor Power: {power_w:.2f} W, Current: {current_total_a:.2f} A, Voltage: {voltage_v:.2f} V")
-
 
         except Exception as e:
             self.get_logger().warn(f"/motor_power read/publish failed: {e}")
@@ -133,10 +141,11 @@ class MotorDriverNode(Node):
                 else:
                     self.get_logger().info("Reconnected to ZLAC8015D")
 
-                # init registers
                 self.client.write_register(0x200D, 0x0003, device_id=self.device_id)  # velocity mode
                 time.sleep(0.05)
                 self.client.write_register(0x200E, 0x0008, device_id=self.device_id)  # enable
+                self.client.write_register(0x2082, int(self.decel_ms), unit=self.device_id)  
+                self.client.write_register(0x2083, int(self.decel_ms), unit=self.device_id)
                 return True
             else:
                 self.connected = False
@@ -147,12 +156,7 @@ class MotorDriverNode(Node):
             self.get_logger().error(f"ZLAC8015D connect exception: {e} (node will stay alive)")
             return False
         
-    def ensure_connected(self) -> bool:
-        if self.connected:
-            return True
-        return self.try_connect(init=False)
-
-
+    
     def on_hub_servo_reconnect(self, request, response):
         try:
             self.get_logger().info("Reconnecting hub servo driver...")
@@ -175,7 +179,6 @@ class MotorDriverNode(Node):
                 raise RuntimeError("Failed to reconnect to ZLAC8015D")
 
             self.last_cmd_time = None
-            self.get_logger().info("Hub servo driver reconnect complete")
             response.success = True
             response.message = "Hub servo driver reconnected."
         except Exception as e:
