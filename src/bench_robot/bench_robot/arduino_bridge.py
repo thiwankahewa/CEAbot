@@ -69,6 +69,7 @@ class ArduinoBridge(Node):
         try:
             if self.ser.in_waiting:
                 raw = self.ser.readline()
+                self.get_logger().debug(f"Serial read: {raw}")
                 if not raw:
                     return
                 line = raw.decode('utf-8', errors='replace').strip()
@@ -96,7 +97,7 @@ class ArduinoBridge(Node):
         if self.last_sent_angle is not None and abs(angle - self.last_sent_angle) < self.send_delta:        # only send on change
             return
 
-        cmd = f"CMD A={angle - 7},{angle - 13}"
+        cmd = f"CMD A={angle - 15},{angle - 18}"   #right, left steer values 
         self.send_line(cmd)
         self.last_send_time = now
         self.last_sent_angle = angle

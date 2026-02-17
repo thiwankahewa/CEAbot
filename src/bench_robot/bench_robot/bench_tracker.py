@@ -15,11 +15,16 @@ class BenchTracker(Node):
         self.invalid_data_warned = False
         self.declare_parameter('Kp_offset', 0.005)
         self.declare_parameter('Kp_yaw', 0.005)
+        self.declare_parameter('Kp_error', 0.01)
         self.Kp_offset = self.get_parameter('Kp_offset').value
         self.Kp_yaw = self.get_parameter('Kp_yaw').value
+        self.Kp_error = self.get_parameter('Kp_error').value
+
 
         self.sub_mode = self.create_subscription(String, '/mode', self.cb_mode, 10)
         self.mode = "manual" 
+        self.sub_auto_mode = self.create_subscription(String, '/auto_mode', self.cb_auto_mode, 10)
+        self.auto_mode = "mode1"
 
         # Publishes
         self.rpm_pub = self.create_publisher(Int16MultiArray, '/wheel_rpm_auto', 10)
@@ -29,7 +34,7 @@ class BenchTracker(Node):
         self.declare_parameter('max_rpm', 25)
         self.base_rpm = self.get_parameter('base_rpm').value
         self.max_rpm = self.get_parameter('max_rpm').value
-        self.track_width_m = 1.37       
+        self.track_width_m = 1.515    
         self.wheel_diameter_m = 0.2032  
 
         self.declare_parameter('w_small',0.01)
@@ -50,6 +55,9 @@ class BenchTracker(Node):
             elif p.name == 'Kp_yaw':
                 self.Kp_yaw = p.value
                 self.get_logger().info(f"[Settings] Kp_yaw={self.Kp_yaw}")
+            elif p.name == 'Kp_error':
+                self.Kp_error = p.value
+                self.get_logger().info(f"[Settings] Kp_error={self.Kp_error}")
             elif p.name == 'base_rpm':
                 self.base_rpm = p.value
                 self.get_logger().info(f"[Settings] base_rpm={self.base_rpm}")
@@ -95,21 +103,56 @@ class BenchTracker(Node):
             return
         
         if self.mode == "auto":
+
+            GOOD_MIN = 120
+            GOOD_MAX = 160
+            CENTER_TOL_M = 0.02
+            STOP_THRESHOLD = 25.0
+
             self.invalid_data_warned = False
-            fr, rr, fl, rl = self.last
+            rl , fl, rr , fr = self.last
+
+            def valid(d_mm: float) -> bool:
+                return (d_mm is not None) and (STOP_THRESHOLD <= d_mm <= 2000)
+            
+            if not all(valid(x) for x in (fl, fr, rl, rr)):
+                if not self.invalid_data_warned:
+                    self.get_logger().warn(f"Invalid ToF data: FL={fl} FR={fr} RL={rl} RR={rr} -> holding/stop")
+                    self.invalid_data_warned = True
+                # safest: stop; or hold last cmd
+                self.publish_rpm(0, 0)
+                return
+            else:
+                self.invalid_data_warned = False
+
+            
 
             left_avg  = (fl + rl) / 2.0
             right_avg = (fr + rr) / 2.0
-            offset_err = right_avg - left_avg  # Lateral offset
+            offset_err = (right_avg - left_avg) / 1000.0  # Lateral offset
 
-            left_delta  = fl - rl
-            right_delta = fr - rr
-            yaw_err = (left_delta - right_delta) / 2.0   # yaw error
-            w = -(self.Kp_offset * offset_err + self.Kp_yaw * yaw_err)
+            L_m = 0.53
+            yaw_err_rad = (((fr - rr) - (fl - rl)) / 1000.0) / L_m   # yaw error
 
-            base_v_mps = (self.base_rpm * self.wheel_circumference) / 60.0
-            v_left  = base_v_mps - (w * self.track_width_m / 2.0)
-            v_right = base_v_mps + (w * self.track_width_m / 2.0)
+            direction = 1
+            if self.auto_mode == "mode2":
+                direction = -1
+                yaw_err_rad = -yaw_err_rad
+
+            in_good_band = all(GOOD_MIN <= x <= GOOD_MAX for x in (fl, fr, rl, rr))
+            #near_center  = abs(offset_err) <= CENTER_TOL_M
+            #use_yaw = in_good_band and near_center
+
+            if in_good_band:
+                yaw_err_rad = 0
+
+            #w = -(self.Kp_offset * offset_err + self.Kp_yaw * yaw_err_rad )
+            w = -(self.Kp_offset * offset_err  ) * direction
+
+            
+            base_v_mps = direction *((self.base_rpm * self.wheel_circumference) / 60.0)
+            v_left  = base_v_mps + w * (self.track_width_m / 2.0) 
+            v_right = base_v_mps - w * (self.track_width_m / 2.0)
 
             left_rpm  = int(self.clamp(int(round(self.mps_to_rpm(v_left))), -self.max_rpm, self.max_rpm))
             right_rpm = int(self.clamp(int(round(self.mps_to_rpm(v_right))), -self.max_rpm, self.max_rpm))
@@ -117,26 +160,36 @@ class BenchTracker(Node):
             # --- Steering assist (only for non-small errors) ---
             steer_deg = 0.0
             mode = "DIFF_ONLY"
-            if abs(w) >= self.w_small:
+            '''if abs(w) >= self.w_small:
                 mode = "DIFF+STEER"
                 steer_deg = self.k_steer * w
-                steer_deg = self.clamp(steer_deg, -self.max_steer_deg, self.max_steer_deg)
+                steer_deg = self.clamp(steer_deg, -self.max_steer_deg, self.max_steer_deg)'''
 
-            self.publish_rpm(left_rpm, right_rpm)
+            self.publish_rpm( right_rpm,left_rpm)
             self.steer_pub.publish(Float32(data=float(steer_deg)))
 
             
             self.get_logger().info(
-                f"Distances (mm): FL={fl} FR={fr} RL={rl} RR={rr}"
-                f"[{mode}] off={offset_err:.1f} yaw={yaw_err:.1f} w={w:.4f} | "
-                f"rpm L={left_rpm:+d} R={right_rpm:+d} | steer={steer_deg:+.1f}°"
+                f"Dist: FL={fl} FR={fr} RL={rl} RR={rr} "
+                f"off={offset_err:.4f} yaw={yaw_err_rad:.4f} w={w:.4f} | "
+                f"L={left_rpm:+d} R={right_rpm:+d} | "
+                
             )
+
 
     def cb_mode(self, msg: String):
         m = (msg.data or "").strip().lower()
         if m != self.mode:
             self.mode = m
             self.get_logger().info(f"Mode changed to: {self.mode}")
+
+    def cb_auto_mode(self, msg: String):
+        m = (msg.data or "").strip().lower()
+        if not m:
+            return
+        if m != self.auto_mode:
+            self.auto_mode = m
+            self.get_logger().info(f"Auto mode changed to: {self.auto_mode}")
 
 def main(args=None):
     rclpy.init()

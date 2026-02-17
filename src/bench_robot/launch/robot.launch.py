@@ -10,6 +10,7 @@ def generate_launch_description():
     motor_params = os.path.join(pkg_share,'config','motor_controller.yaml')
     motor_mux_params = os.path.join(pkg_share,'config','motor_control_mux.yaml')
     hub_motor_driver_params = os.path.join(pkg_share,'config','hub_motor_driver.yaml')
+    bench_tracker_params = os.path.join(pkg_share,'config','bench_tracker.yaml')
 
 
     return LaunchDescription([
@@ -38,6 +39,7 @@ def generate_launch_description():
         Node(
             package='bench_robot',
             executable='bench_tracker',
+            parameters=[bench_tracker_params],
             output='screen',
         ),
         Node(
