@@ -2,14 +2,26 @@
 import math
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Int16MultiArray, Float32, String
+from std_msgs.msg import Int16MultiArray, Float32, String, Bool
 from rcl_interfaces.msg import SetParametersResult
+
+GOOD_MIN = 80
+GOOD_MAX = 200
+STOP_THRESHOLD = 25
+YAW_THRESHOLD = 100
+SENSOR_DISTANCE_M = 0.53
+WHEEL_DIAMETER_M = 0.2032
 
 class BenchTracker(Node):
     def __init__(self):
-        super().__init__('bench_tracker')
+        super().__init__('bench_tracker_v2')
+
+        self.auto_state = None
+        self.yaw_correction_trigered = False
 
         # Subscribes
+        self.sub_auto_state = self.create_subscription(String, "/auto_state", self.cb_auto_state, 10)
+
         self.sub = self.create_subscription(Int16MultiArray,'/bench_robot/tof_raw',self.dist_cb,10)
         self.last = None
         self.invalid_data_warned = False
@@ -20,19 +32,22 @@ class BenchTracker(Node):
 
         self.sub_mode = self.create_subscription(String, '/mode', self.cb_mode, 10)
         self.mode = "manual" 
-        self.sub_auto_mode = self.create_subscription(String, '/auto_mode', self.cb_auto_mode, 10)
-        self.auto_mode = "mode1"
+
+        self.sub_auto_state = self.create_subscription(String, '/auto_state', self.cb_auto_state, 10)
+
+        self.sub_correction_done = self.create_subscription(Bool, '/yaw_correction_done', self.cb_correction_done, 10)
 
         # Publishes
-        self.rpm_pub = self.create_publisher(Int16MultiArray, '/wheel_rpm_auto', 10)
-        self.steer_pub = self.create_publisher(Float32, '/steer_auto', 10)
+        self.pub_auto_state = self.create_publisher(String, "/auto_state_cmd", 10)
+        self.pub_rpm = self.create_publisher(Int16MultiArray, '/wheel_rpm_auto', 10)
+        self.pub_abs_pos = self.create_publisher(Int16MultiArray, '/wheel_abs_pos', 10)
+        #self.steer_pub = self.create_publisher(Float32, '/steer_auto', 10)
 
         self.declare_parameter('base_rpm', 12)
         self.declare_parameter('max_rpm', 25)
         self.base_rpm = self.get_parameter('base_rpm').value
         self.max_rpm = self.get_parameter('max_rpm').value
         self.track_width_m = 1.515    
-        self.wheel_diameter_m = 0.2032  
 
         self.declare_parameter('w_small',0.01)
         self.w_small = self.get_parameter('w_small').value
@@ -74,7 +89,7 @@ class BenchTracker(Node):
     # ---------- Helpers ----------
     @property
     def wheel_circumference(self) -> float:
-        return math.pi * self.wheel_diameter_m
+        return math.pi * WHEEL_DIAMETER_M
     
     def mps_to_rpm(self, v_mps: float) -> float:
         return (60.0 * v_mps) / self.wheel_circumference
@@ -85,9 +100,20 @@ class BenchTracker(Node):
     def publish_rpm(self, left_rpm: int, right_rpm: int):
         msg = Int16MultiArray()
         msg.data = [int(left_rpm), int(right_rpm)]
-        self.rpm_pub.publish(msg)
+        self.pub_rpm.publish(msg)
+
+    def publish_abs_pos(self, left_abs_pos: int, right_abs_pos: int):
+        msg = Int16MultiArray()
+        msg.data = [int(left_abs_pos), int(right_abs_pos)]
+        self.pub_abs_pos.publish(msg)
 
     # --------- Main functions ----------
+    def cb_auto_state(self, msg: String):
+        new_state = (msg.data or "").strip().lower()
+        if new_state == self.auto_state:
+            return
+        self.auto_state = new_state
+        
     def dist_cb(self, msg):
         self.last = msg.data  # [fl, fr, rl, rr]
         if self.last is None or len(self.last) < 4:
@@ -97,12 +123,6 @@ class BenchTracker(Node):
             return
         
         if self.mode == "auto":
-
-            GOOD_MIN = 120
-            GOOD_MAX = 160
-            CENTER_TOL_M = 0.02
-            STOP_THRESHOLD = 25.0
-
             self.invalid_data_warned = False
             rl , fl, rr , fr = self.last
 
@@ -110,78 +130,71 @@ class BenchTracker(Node):
                 return (d_mm is not None) and (STOP_THRESHOLD <= d_mm <= 2000)
             
             if not all(valid(x) for x in (fl, fr, rl, rr)):
-                if not self.invalid_data_warned:
-                    self.get_logger().warn(f"Invalid ToF data: FL={fl} FR={fr} RL={rl} RR={rr} -> holding/stop")
-                    self.invalid_data_warned = True
-                # safest: stop; or hold last cmd
+                self.invalid_data_warned = True
+                self.get_logger().warn(f"Invalid ToF data: FL={fl} FR={fr} RL={rl} RR={rr} -> holding/stop")
                 self.publish_rpm(0, 0)
                 return
             else:
                 self.invalid_data_warned = False
 
-            
-
             left_avg  = (fl + rl) / 2.0
             right_avg = (fr + rr) / 2.0
             offset_err = (right_avg - left_avg) / 1000.0  # Lateral offset
 
-            L_m = 0.53
-            yaw_err_rad = (((fr - rr) - (fl - rl)) / 1000.0) / L_m   # yaw error
+            yaw_left  = fl - rl
+            yaw_right = rr - fr
+            yaw_ave = ((yaw_left + yaw_right) / 2.0) / 1000
+            yaw_distance = int(yaw_ave / self.wheel_circumference * 1024)
 
-            direction = 1
-            if self.auto_mode == "mode2":
-                direction = -1
-                yaw_err_rad = -yaw_err_rad
-
-            in_good_band = all(GOOD_MIN <= x <= GOOD_MAX for x in (fl, fr, rl, rr))
-            #near_center  = abs(offset_err) <= CENTER_TOL_M
-            #use_yaw = in_good_band and near_center
-
-            if in_good_band:
-                yaw_err_rad = 0
-
-            #w = -(self.Kp_offset * offset_err + self.Kp_yaw * yaw_err_rad )
-            w = -(self.Kp_offset * offset_err  ) * direction
-
+            if ((abs(yaw_left) > YAW_THRESHOLD) or (abs(yaw_right) > YAW_THRESHOLD)) and not self.yaw_correction_trigered:
+                self.pub_auto_state.publish(String(data="yaw_correction"))
+                self.yaw_correction_trigered = True
+                if abs(yaw_ave) > 0.3:
+                    self.get_logger().info(f"Large yaw detected (ave={yaw_ave:.4f} m)")
+                    return
+                
+                self.get_logger().info(f"Aligning... Yaw left={yaw_left} right={yaw_right} ave={yaw_ave:.4f} m -> move {yaw_distance} ticks")
+                self.publish_abs_pos(-yaw_distance, yaw_distance)
+                return
             
-            base_v_mps = direction *((self.base_rpm * self.wheel_circumference) / 60.0)
-            v_left  = base_v_mps + w * (self.track_width_m / 2.0) 
-            v_right = base_v_mps - w * (self.track_width_m / 2.0)
-
-            left_rpm  = int(self.clamp(int(round(self.mps_to_rpm(v_left))), -self.max_rpm, self.max_rpm))
-            right_rpm = int(self.clamp(int(round(self.mps_to_rpm(v_right))), -self.max_rpm, self.max_rpm))
-
-            # --- Steering assist (only for non-small errors) ---
-            steer_deg = 0.0
-            mode = "DIFF_ONLY"
-            '''if abs(w) >= self.w_small:
-                mode = "DIFF+STEER"
-                steer_deg = self.k_steer * w
-                steer_deg = self.clamp(steer_deg, -self.max_steer_deg, self.max_steer_deg)'''
-
-            self.publish_rpm( right_rpm,left_rpm)
-            #self.steer_pub.publish(Float32(data=float(steer_deg)))
-
+            if self.auto_state == "align_center":
+                align_distance = int((offset_err/2) / self.wheel_circumference * 1024)
+                self.get_logger().info(f"Aligning... align_distance={align_distance:.4f} m")
+                self.publish_abs_pos(align_distance, align_distance)
+                return
             
-            self.get_logger().info(
-                f"Dist: FL={fl} FR={fr} RL={rl} RR={rr} "
-                f"off={offset_err:.4f} yaw={yaw_err_rad:.4f} w={w:.4f} | "
-                f"L={left_rpm:+d} R={right_rpm:+d} | "
-            )
+            if (self.auto_state == "bench_tracking_f") or (self.auto_state == "bench_tracking_b"):
+                direction = 1
+                if self.auto_state == "bench_tracking_b":
+                    direction = -1
+
+                w = -(self.Kp_offset * offset_err  ) * direction
+
+                base_v_mps = direction *((self.base_rpm * self.wheel_circumference) / 60.0)
+                v_left  = base_v_mps + w * (self.track_width_m / 2.0) 
+                v_right = base_v_mps - w * (self.track_width_m / 2.0)
+
+                left_rpm  = int(self.clamp(int(round(self.mps_to_rpm(v_left))), -self.max_rpm, self.max_rpm))
+                right_rpm = int(self.clamp(int(round(self.mps_to_rpm(v_right))), -self.max_rpm, self.max_rpm))
+
+                self.get_logger().info(
+                    f"Dist: FL={fl} FR={fr} RL={rl} RR={rr} "
+                    f"off={w:.4f} yaw={w:.4f} | "
+                    f"L={left_rpm:+d} R={right_rpm:+d} | "
+                )
+
+                
+                self.publish_rpm(right_rpm, left_rpm)
 
     def cb_mode(self, msg: String):
         m = (msg.data or "").strip().lower()
         if m != self.mode:
             self.mode = m
-            self.get_logger().info(f"Mode changed to: {self.mode}")
 
-    def cb_auto_mode(self, msg: String):
-        m = (msg.data or "").strip().lower()
-        if not m:
-            return
-        if m != self.auto_mode:
-            self.auto_mode = m
-            self.get_logger().info(f"Auto mode changed to: {self.auto_mode}")
+    def cb_correction_done(self, msg: Bool):
+        if msg.data:
+            self.yaw_correction_trigered = False
+            self.get_logger().info("Yaw correction completed, resuming normal tracking.")
 
 def main(args=None):
     rclpy.init()

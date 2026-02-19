@@ -69,7 +69,6 @@ class ArduinoBridge(Node):
         try:
             if self.ser.in_waiting:
                 raw = self.ser.readline()
-                self.get_logger().debug(f"Serial read: {raw}")
                 if not raw:
                     return
                 line = raw.decode('utf-8', errors='replace').strip()
@@ -85,7 +84,8 @@ class ArduinoBridge(Node):
                     self.pub_tof.publish(msg)
 
         except Exception as e:
-            self.get_logger().warn(f"Serial read error: {e}")
+            return
+            #self.get_logger().warn(f"Serial read error: {e}")
 
     def steer_cb(self, msg: Float32):
         angle = float(msg.data)

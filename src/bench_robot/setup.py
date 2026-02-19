@@ -29,7 +29,7 @@ setup(
     entry_points={
         'console_scripts': [
             'arduino_bridge = bench_robot.arduino_bridge:main',
-            'bench_tracker  = bench_robot.bench_tracker:main',
+            'bench_tracker_v2 = bench_robot.bench_tracker_v2:main',
             'joystick_teleop = bench_robot.joystick_teleop:main',
             'motor_controller = bench_robot.motor_controller:main',
             'settings_saver = bench_robot.settings_saver:main',

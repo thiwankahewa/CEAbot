@@ -38,7 +38,7 @@ def generate_launch_description():
         ),
         Node(
             package='bench_robot',
-            executable='bench_tracker',
+            executable='bench_tracker_v2',
             parameters=[bench_tracker_params],
             output='screen',
         ),
