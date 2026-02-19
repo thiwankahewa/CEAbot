@@ -2,7 +2,7 @@
 import math
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Int16MultiArray, Float32, String, Bool
+from std_msgs.msg import Int16MultiArray, Float32MultiArray, String, Bool
 from rcl_interfaces.msg import SetParametersResult
 
 GOOD_MIN = 80
@@ -98,8 +98,8 @@ class BenchTracker(Node):
         return max(lo, min(hi, x))
     
     def publish_rpm(self, left_rpm: int, right_rpm: int):
-        msg = Int16MultiArray()
-        msg.data = [int(left_rpm), int(right_rpm)]
+        msg = Float32MultiArray()
+        msg.data = [float(left_rpm), float(right_rpm)]
         self.pub_rpm.publish(msg)
 
     def publish_abs_pos(self, left_abs_pos: int, right_abs_pos: int):
@@ -174,13 +174,13 @@ class BenchTracker(Node):
                 v_left  = base_v_mps + w * (self.track_width_m / 2.0) 
                 v_right = base_v_mps - w * (self.track_width_m / 2.0)
 
-                left_rpm  = int(self.clamp(int(round(self.mps_to_rpm(v_left))), -self.max_rpm, self.max_rpm))
-                right_rpm = int(self.clamp(int(round(self.mps_to_rpm(v_right))), -self.max_rpm, self.max_rpm))
+                left_rpm  = self.clamp(self.mps_to_rpm(v_left), -self.max_rpm, self.max_rpm)
+                right_rpm = self.clamp(self.mps_to_rpm(v_right), -self.max_rpm, self.max_rpm)
 
                 self.get_logger().info(
                     f"Dist: FL={fl} FR={fr} RL={rl} RR={rr} "
                     f"off={w:.4f} yaw={w:.4f} | "
-                    f"L={left_rpm:+d} R={right_rpm:+d} | "
+                    f"L={left_rpm:.1f} R={right_rpm:+.1f} | "
                 )
 
                 

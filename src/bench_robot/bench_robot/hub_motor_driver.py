@@ -91,6 +91,7 @@ class MotorDriverNode(Node):
     def set_velocity_mode(self):
         self.client.write_register(0x200D, 0x0003, device_id=self.device_id)  # velocity
         time.sleep(0.02)
+        self._write_single(0x2022, 10) # 0.1 RPM resolution
         self.client.write_register(0x200E, 0x0008, device_id=self.device_id)  # enable
         self.driver_mode = "vel"
         self.get_logger().info("Switched to VELOCITY mode")
@@ -125,8 +126,10 @@ class MotorDriverNode(Node):
             self.get_logger().error(f"write_register failed @0x{addr:04X}: {res}")
             self.connected = False
 
-    def _write_rpms(self, left_rpm: int, right_rpm: int):
-        vals = [to_u16_signed(left_rpm), to_u16_signed(right_rpm)]
+    def _write_rpms(self, left_rpm: float, right_rpm: float):
+        l_cmd = int(round(left_rpm * 10.0))
+        r_cmd = int(round(right_rpm * 10.0))
+        vals = [to_u16_signed(l_cmd), to_u16_signed(r_cmd)]
         res = self.client.write_registers(0x2088, vals, device_id=self.device_id)  # FC 0x10
         if res.isError():
             self.get_logger().error(f"write_registers failed @0x2088: {res}")
@@ -145,14 +148,11 @@ class MotorDriverNode(Node):
         self.client.write_register(0x200E, 0x0010, device_id=self.device_id)
 
     def read_running_flags(self):
-        """
-        0x20A2 = left status word, 0x20A3 = right status word
-        bit0 = running (1 running, 0 stopped)
-        """
-        left_sw  = self._read_u16(0x20A2)
-        right_sw = self._read_u16(0x20A3)
-        left_running  = (left_sw & 0x0001) != 0
-        right_running = (right_sw & 0x0001) != 0
+        sw = self._read_u16(0x20A2)
+
+        right_running = (sw & 0x0001) != 0      # bit0
+        left_running  = (sw & 0x0100) != 0      # bit8
+
         return left_running, right_running
     
     def is_motion_done(self):
@@ -186,7 +186,7 @@ class MotorDriverNode(Node):
             return
         self.auto_state = new_state
 
-    def cb_rpm(self, msg: Int16MultiArray):
+    def cb_rpm(self, msg: Float32MultiArray):
         if not self.ensure_connected():
             self.get_logger().warning("Motor driver not connected -> ignoring rpm command")
             return
@@ -194,8 +194,8 @@ class MotorDriverNode(Node):
             self.get_logger().warning("Invalid /wheel_rpm_cmd (need [left_rpm, right_rpm])")
             return
 
-        left_rpm = int(msg.data[0])
-        right_rpm = int(msg.data[1])
+        left_rpm = msg.data[0]
+        right_rpm = msg.data[1]
 
         if self.driver_mode != "vel":
             ok = self.set_velocity_mode()
