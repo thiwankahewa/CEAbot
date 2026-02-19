@@ -3,7 +3,7 @@ import time
 import rclpy
 from rclpy.node import Node
 from pymodbus.client import ModbusSerialClient
-from std_msgs.msg import Int16MultiArray, Float32MultiArray
+from std_msgs.msg import Int16MultiArray, Float32MultiArray, Bool, Float32, String
 from std_srvs.srv import Trigger
 from rcl_interfaces.msg import SetParametersResult
 
@@ -16,11 +16,18 @@ class MotorDriverNode(Node):
     def __init__(self):
         super().__init__('hub_motor_driver')
 
+        self.auto_state = None
+
         self.connected = False
         self.port = '/dev/ttyUSB0'
         self.device_id = 1
+        self.driver_mode = "vel"  # "vel" or "pos_abs"
+        self.motion_active = False
+        self.steer_90_triggered = False
+        self.steer_0_triggered = False
         self.cmd_timeout_s = 0.1     # watchdog timeout
         self.last_cmd_time = None
+        
 
         self.parked = False
         self.client = ModbusSerialClient(port=self.port,baudrate=115200,)
@@ -35,13 +42,19 @@ class MotorDriverNode(Node):
 
         # Timers
         self.timer = self.create_timer(0.1, self.watchdog_tick)  
+        self.pos_read_timer = self.create_timer(0.05, self.pos_read_tick)  # 20 Hz
         self.power_timer = self.create_timer(1, self.publish_motor_power_tick)
 
         # Subscribers
-        self.sub = self.create_subscription(Int16MultiArray,'/wheel_rpm_cmd',self.rpm_cb,10)
+        self.sub_auto_state = self.create_subscription(String, "/auto_state", self.cb_auto_state, 10)
+        self.sub_rpm = self.create_subscription(Int16MultiArray,'/wheel_rpm_cmd',self.cb_rpm,10)
+        self.sub_abs_pos = self.create_subscription(Int16MultiArray,'/wheel_abs_pos',self.cb_abs_pos,10)
 
         # Publishers
+        self.pub_auto_state = self.create_publisher(String, "/auto_state_cmd", 10)
         self.pub_motor_power = self.create_publisher(Float32MultiArray, "/motor_power", 10)
+        self.pub_correction_done = self.create_publisher(Bool, '/yaw_correction_done', 10)
+        self.pub_steer = self.create_publisher(Float32, '/steer_angle_deg', 10)
 
         self.add_on_set_parameters_callback(self.on_params)
 
@@ -65,6 +78,33 @@ class MotorDriverNode(Node):
         if self.connected:
             return True
         return self.try_connect(init=False)
+    
+    def to_u32(self, val: int) -> int:
+        return val & 0xFFFFFFFF
+    
+    def split_i32_to_u16s(self, val: int):
+        u = self.to_u32(val)
+        hi = (u >> 16) & 0xFFFF
+        lo = u & 0xFFFF
+        return hi, lo
+    
+    def set_velocity_mode(self):
+        self.client.write_register(0x200D, 0x0003, device_id=self.device_id)  # velocity
+        time.sleep(0.02)
+        self.client.write_register(0x200E, 0x0008, device_id=self.device_id)  # enable
+        self.driver_mode = "vel"
+        self.get_logger().info("Switched to VELOCITY mode")
+        return True
+    
+    def set_abs_position_mode(self, max_rpm: int = 7):
+        self.client.write_register(0x200D, 0x0002, device_id=self.device_id)  # absolute position
+        time.sleep(0.02)
+        self.client.write_register(0x208E, int(max_rpm), device_id=self.device_id)  # left max speed
+        self.client.write_register(0x208F, int(max_rpm), device_id=self.device_id)  # right max speed
+        self.client.write_register(0x200E, 0x0008, device_id=self.device_id)  # enable
+        self.driver_mode = "pos_abs"
+        self.get_logger().info("Switched to ABS POSITION mode")
+        return True
     
     def _read_i16(self, addr: int) -> int:
         rr = self.client.read_holding_registers(address=addr, count=1, device_id=self.device_id)
@@ -92,6 +132,33 @@ class MotorDriverNode(Node):
             self.get_logger().error(f"write_registers failed @0x2088: {res}")
             self.connected = False
 
+    def _write_abs_pos(self, left_move: int, right_move: int):
+        l_hi, l_lo = self.split_i32_to_u16s(left_move)
+        r_hi, r_lo = self.split_i32_to_u16s(right_move)
+        vals = [l_hi, l_lo, r_hi, r_lo]
+        res = self.client.write_registers(0x208A, vals, device_id=self.device_id)
+        if res.isError():
+            self.connected = False
+            raise RuntimeError(f"write_registers(0x208A) failed: {res}")
+        
+    def start_position_motion(self):
+        self.client.write_register(0x200E, 0x0010, device_id=self.device_id)
+
+    def read_running_flags(self):
+        """
+        0x20A2 = left status word, 0x20A3 = right status word
+        bit0 = running (1 running, 0 stopped)
+        """
+        left_sw  = self._read_u16(0x20A2)
+        right_sw = self._read_u16(0x20A3)
+        left_running  = (left_sw & 0x0001) != 0
+        right_running = (right_sw & 0x0001) != 0
+        return left_running, right_running
+    
+    def is_motion_done(self):
+        lrun, rrun = self.read_running_flags()
+        return (not lrun) and (not rrun)
+    
     def stop(self):
         self._write_rpms(0, 0)
         if not self.parked:
@@ -112,7 +179,14 @@ class MotorDriverNode(Node):
             self.set_parking(False)
 
     # ---------------- Callbacks ----------------
-    def rpm_cb(self, msg: Int16MultiArray):
+    
+    def cb_auto_state(self, msg: String):
+        new_state = (msg.data or "").strip().lower()
+        if new_state == self.auto_state:
+            return
+        self.auto_state = new_state
+
+    def cb_rpm(self, msg: Int16MultiArray):
         if not self.ensure_connected():
             self.get_logger().warning("Motor driver not connected -> ignoring rpm command")
             return
@@ -122,6 +196,12 @@ class MotorDriverNode(Node):
 
         left_rpm = int(msg.data[0])
         right_rpm = int(msg.data[1])
+
+        if self.driver_mode != "vel":
+            ok = self.set_velocity_mode()
+            if not ok:
+                return
+            
         self.maybe_unpark_for_motion(left_rpm, right_rpm)
         self._write_rpms(left_rpm, -right_rpm)
         self.last_cmd_time = self.get_clock().now()
@@ -136,6 +216,50 @@ class MotorDriverNode(Node):
         if dt > self.cmd_timeout_s:
             self.stop()
             self.last_cmd_time = None 
+
+    def cb_abs_pos(self, msg: Int16MultiArray):
+        if not self.ensure_connected():
+            self.get_logger().warning("Motor driver not connected -> ignoring move command")
+            return
+        if msg.data is None or len(msg.data) < 2:
+            self.get_logger().warning("Invalid /wheel_abs_pos (need [left_abs_pos, right_abs_pos])")
+            return
+
+        left_abs_pos = int(msg.data[0])
+        right_abs_pos = int(msg.data[1])
+
+        if self.driver_mode != "pos_abs":
+            ok = self.set_abs_position_mode(max_rpm=7)
+            if not ok:
+                return
+            
+        try:
+            self._write_abs_pos(left_abs_pos, right_abs_pos)
+            self.start_position_motion()
+            self.motion_active = True
+            self.get_logger().info(f"ABS move started: L={left_abs_pos} pulses, R={right_abs_pos} pulses")
+        except Exception as e:
+            self.get_logger().error(f"ABS move failed: {e}")
+            self.motion_active = False
+
+    def pos_read_tick(self):
+        if not self.motion_active:
+            return
+        try:
+            if self.is_motion_done():
+                self.motion_active = False
+                if self.auto_state == "yaw_correction":
+                    self.pub_steer.publish(Float32(data=90.0)) 
+                    time.sleep(2)
+                    self.pub_auto_state.publish(String(data="align_center"))
+                elif self.auto_state == "align_center":
+                    self.pub_steer.publish(Float32(data=0.0)) 
+                    time.sleep(2)
+                    self.pub_correction_done.publish(Bool(data=True))
+                    self.pub_auto_state.publish(String(data="idle"))
+
+        except Exception as e:
+            self.get_logger().warning(f"pos_read_tick status read failed: {e}")
 
     def publish_motor_power_tick(self):
         if not self.connected:
@@ -168,10 +292,7 @@ class MotorDriverNode(Node):
                 else:
                     self.get_logger().info("Reconnected to ZLAC8015D")
 
-                self.client.write_register(0x200D, 0x0003, device_id=self.device_id)  # velocity mode
-                time.sleep(0.05)
-                self.client.write_register(0x200E, 0x0008, device_id=self.device_id)  # enable
-                time.sleep(0.05)
+                self.set_velocity_mode()
                 self.client.write_register(0x2082, int(self.decel_ms), device_id=self.device_id)  
                 self.client.write_register(0x2083, int(self.decel_ms), device_id=self.device_id)
                 self.client.write_register(0x2080, int(self.acel_ms), device_id=self.device_id)
