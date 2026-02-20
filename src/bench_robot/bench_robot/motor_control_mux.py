@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Int16MultiArray, String, Float32, Bool
+from std_msgs.msg import Int16MultiArray, String, Float32, Bool, Float32MultiArray
 from rcl_interfaces.msg import SetParametersResult
 
 
@@ -9,15 +9,17 @@ class MotorControlMux(Node):
     def __init__(self):
         super().__init__('motor_control_mux')
 
+        self.auto_state = "idle"
+
         self.mode = "manual" 
         self.eStop = False
 
-        self.last_auto_RPM = Int16MultiArray()
-        self.last_auto_RPM.data = [0, 0]
+        self.last_auto_RPM = Float32MultiArray()
+        self.last_auto_RPM.data = [0.0, 0.0]
         self.last_auto_RPM_time = None
         self.auto_timeout_s = 0.30
 
-        self.declare_parameter('manual_rpm', 10)
+        self.declare_parameter('manual_rpm', 10.0)
         self.MANUAL_RPM = self.get_parameter('manual_rpm').value 
         self._rebuild_cmd_map()
         self.cmd_to_rpm = {
@@ -35,7 +37,8 @@ class MotorControlMux(Node):
         self.timer = self.create_timer(0.05, self.tick)  # 20 Hz output
 
         # Subscribers
-        self.sub_auto_rpm = self.create_subscription(Int16MultiArray, '/wheel_rpm_auto', self.cb_auto_RPM, 10)
+        self.sub_auto_state = self.create_subscription(String, '/auto_state', self.cb_auto_state, 10)
+        self.sub_auto_rpm = self.create_subscription(Float32MultiArray, '/wheel_rpm_auto', self.cb_auto_RPM, 10)
         self.sub_man_rpm = self.create_subscription(String, '/wheel_rpm_manual', self.cb_manual_RPM, 10)
         self.sub_auto_steer = self.create_subscription(Float32, '/steer_auto', self.cb_auto_steer, 10)
         self.sub_man_steer = self.create_subscription(Float32, '/steer_manual', self.cb_manual_steer, 10)
@@ -43,7 +46,7 @@ class MotorControlMux(Node):
         self.sub_estop = self.create_subscription(Bool, '/e_stop', self.cb_estop, 10)
 
         # Publishers
-        self.pub_RPM = self.create_publisher(Int16MultiArray, '/wheel_rpm_cmd', 10)
+        self.pub_RPM = self.create_publisher(Float32MultiArray, '/wheel_rpm_cmd', 10)
         self.pub_steer = self.create_publisher(Float32, '/steer_angle_deg', 10)
 
         self.add_on_set_parameters_callback(self.on_params)
@@ -59,7 +62,7 @@ class MotorControlMux(Node):
     #--- Helpers ---
 
     def _rebuild_cmd_map(self):
-        r = int(self.MANUAL_RPM)
+        r = float(self.MANUAL_RPM)
         self.cmd_to_rpm = {
             "forward":  ( -r,  -r),
             "backward": (r, r),
@@ -69,8 +72,8 @@ class MotorControlMux(Node):
         }
 
     @staticmethod
-    def _is_zero(msg: Int16MultiArray) -> bool:
-        return (int(msg.data[0]) == 0) and (int(msg.data[1]) == 0)
+    def _is_zero(msg: Float32MultiArray) -> bool:
+        return (msg.data[0] == 0.0) and (msg.data[1] == 0.0)
     
     def _auto_is_fresh(self, now) -> bool:
         if self.auto_timeout_s is None:
@@ -81,6 +84,11 @@ class MotorControlMux(Node):
         return dt < self.auto_timeout_s
      
     #---Main functions---
+    def cb_auto_state(self, msg: String):
+        new_state = (msg.data or "").strip().lower()
+        if new_state == self.auto_state:
+            return
+        self.auto_state = new_state
 
     def cb_estop(self, msg: Bool):
         self.eStop = msg.data
@@ -90,9 +98,8 @@ class MotorControlMux(Node):
         m = (msg.data or "").strip().lower()
         if m != self.mode:
             self.mode = m
-            self.get_logger().info(f"Mode set to: {self.mode}")
             
-    def cb_auto_RPM(self, msg: Int16MultiArray):
+    def cb_auto_RPM(self, msg: Float32MultiArray):
         if self.eStop:
             return
         if msg.data is None or len(msg.data) < 2:
@@ -104,8 +111,8 @@ class MotorControlMux(Node):
     def cb_manual_RPM(self, msg: String):
         cmd = msg.data.strip().lower()
         rpm_l, rpm_r = self.cmd_to_rpm[cmd]
-        rpm_msg = Int16MultiArray()
-        rpm_msg.data = [rpm_l, rpm_r]
+        rpm_msg = Float32MultiArray()
+        rpm_msg.data = [float(rpm_l), float(rpm_r)]
         self.pub_RPM.publish(rpm_msg)
 
     def cb_auto_steer(self, msg: Float32):
@@ -118,6 +125,8 @@ class MotorControlMux(Node):
         if self.eStop:
             return
         if self.mode != "auto" :
+            return
+        if self.auto_state in ("yaw_correction", "align_center"):
             return
         now = self.get_clock().now()
 

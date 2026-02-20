@@ -1,0 +1,11 @@
+/bench_tracker_v2:
+  ros__parameters:
+    Kp_error: 0.01
+    Kp_offset: 0.5
+    Kp_yaw: 0.005
+    base_rpm: 12
+    k_steer: 100.0
+    max_rpm: 25
+    max_steer_deg: 25.0
+    use_sim_time: false
+    w_small: 0.01

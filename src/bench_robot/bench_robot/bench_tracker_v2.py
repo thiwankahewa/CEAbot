@@ -8,7 +8,7 @@ from rcl_interfaces.msg import SetParametersResult
 GOOD_MIN = 80
 GOOD_MAX = 200
 STOP_THRESHOLD = 25
-YAW_THRESHOLD = 100
+YAW_THRESHOLD = 50
 SENSOR_DISTANCE_M = 0.53
 WHEEL_DIAMETER_M = 0.2032
 
@@ -18,6 +18,7 @@ class BenchTracker(Node):
 
         self.auto_state = None
         self.yaw_correction_trigered = False
+        self.align_center_triggered = False
 
         # Subscribes
         self.sub_auto_state = self.create_subscription(String, "/auto_state", self.cb_auto_state, 10)
@@ -39,7 +40,7 @@ class BenchTracker(Node):
 
         # Publishes
         self.pub_auto_state = self.create_publisher(String, "/auto_state_cmd", 10)
-        self.pub_rpm = self.create_publisher(Int16MultiArray, '/wheel_rpm_auto', 10)
+        self.pub_rpm = self.create_publisher(Float32MultiArray, '/wheel_rpm_auto', 10)
         self.pub_abs_pos = self.create_publisher(Int16MultiArray, '/wheel_abs_pos', 10)
         #self.steer_pub = self.create_publisher(Float32, '/steer_auto', 10)
 
@@ -97,7 +98,7 @@ class BenchTracker(Node):
     def clamp(self, x, lo, hi):
         return max(lo, min(hi, x))
     
-    def publish_rpm(self, left_rpm: int, right_rpm: int):
+    def publish_rpm(self, left_rpm: float, right_rpm: float):
         msg = Float32MultiArray()
         msg.data = [float(left_rpm), float(right_rpm)]
         self.pub_rpm.publish(msg)
@@ -144,9 +145,11 @@ class BenchTracker(Node):
             yaw_left  = fl - rl
             yaw_right = rr - fr
             yaw_ave = ((yaw_left + yaw_right) / 2.0) / 1000
-            yaw_distance = int(yaw_ave / self.wheel_circumference * 1024)
+            yaw_distance = int(yaw_ave / self.wheel_circumference * 1024) * 8
 
             if ((abs(yaw_left) > YAW_THRESHOLD) or (abs(yaw_right) > YAW_THRESHOLD)) and not self.yaw_correction_trigered:
+                self.publish_rpm(0.0, 0.0)
+                self.get_logger().info(  f"Dist: FL={fl} FR={fr} RL={rl} RR={rr} ")
                 self.pub_auto_state.publish(String(data="yaw_correction"))
                 self.yaw_correction_trigered = True
                 if abs(yaw_ave) > 0.3:
@@ -154,16 +157,21 @@ class BenchTracker(Node):
                     return
                 
                 self.get_logger().info(f"Aligning... Yaw left={yaw_left} right={yaw_right} ave={yaw_ave:.4f} m -> move {yaw_distance} ticks")
-                self.publish_abs_pos(-yaw_distance, yaw_distance)
+                self.publish_abs_pos(-yaw_distance, -yaw_distance)
                 return
             
-            if self.auto_state == "align_center":
-                align_distance = int((offset_err/2) / self.wheel_circumference * 1024)
+            if self.auto_state == "align_center" :
+                if self.align_center_triggered:
+                    return
+                self.align_center_triggered = True
+                align_distance = int((offset_err/2) / self.wheel_circumference * 1024) * 20
                 self.get_logger().info(f"Aligning... align_distance={align_distance:.4f} m")
-                self.publish_abs_pos(align_distance, align_distance)
+                self.publish_abs_pos(-align_distance, -align_distance)
+                
                 return
             
-            if (self.auto_state == "bench_tracking_f") or (self.auto_state == "bench_tracking_b"):
+            
+            if ((self.auto_state == "bench_tracking_f") or (self.auto_state == "bench_tracking_b")):
                 direction = 1
                 if self.auto_state == "bench_tracking_b":
                     direction = -1
@@ -179,7 +187,7 @@ class BenchTracker(Node):
 
                 self.get_logger().info(
                     f"Dist: FL={fl} FR={fr} RL={rl} RR={rr} "
-                    f"off={w:.4f} yaw={w:.4f} | "
+                    f"off={w:.4f} yaw={yaw_ave:.4f} | "
                     f"L={left_rpm:.1f} R={right_rpm:+.1f} | "
                 )
 
@@ -194,6 +202,7 @@ class BenchTracker(Node):
     def cb_correction_done(self, msg: Bool):
         if msg.data:
             self.yaw_correction_trigered = False
+            self.align_center_triggered = False
             self.get_logger().info("Yaw correction completed, resuming normal tracking.")
 
 def main(args=None):

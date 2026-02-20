@@ -1,4 +1,4 @@
 /motor_control_mux:
   ros__parameters:
-    manual_rpm: 14
+    manual_rpm: 14.0
     use_sim_time: false
