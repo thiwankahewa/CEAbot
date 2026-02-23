@@ -86,8 +86,6 @@ class MotorControlMux(Node):
     #---Main functions---
     def cb_auto_state(self, msg: String):
         new_state = (msg.data or "").strip().lower()
-        if new_state == self.auto_state:
-            return
         self.auto_state = new_state
 
     def cb_estop(self, msg: Bool):

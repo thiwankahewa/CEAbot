@@ -17,6 +17,7 @@ class MotorDriverNode(Node):
     def __init__(self):
         super().__init__('hub_motor_driver')
 
+        self.eStop = False
         self.auto_state = None
 
         self.connected = False
@@ -24,8 +25,6 @@ class MotorDriverNode(Node):
         self.device_id = 1
         self.driver_mode = "vel"  # "vel" or "pos_abs"
         self.motion_active = False
-        self.steer_90_triggered = False
-        self.steer_0_triggered = False
         self.cmd_timeout_s = 0.1     # watchdog timeout
         self.last_cmd_time = None
 
@@ -53,6 +52,7 @@ class MotorDriverNode(Node):
         self.sub_auto_state = self.create_subscription(String, "/auto_state", self.cb_auto_state, 10)
         self.sub_rpm = self.create_subscription(Float32MultiArray,'/wheel_rpm_cmd',self.cb_rpm,10)
         self.sub_abs_pos = self.create_subscription(Int16MultiArray,'/wheel_abs_pos',self.cb_abs_pos,10)
+        self.sub_estop = self.create_subscription(Bool, '/e_stop', self.cb_estop, 10)
 
         # Publishers
         self.pub_auto_state = self.create_publisher(String, "/auto_state_cmd", 10)
@@ -71,13 +71,14 @@ class MotorDriverNode(Node):
                 self.get_logger().info(f"[Settings] decel_ms={self.decel_ms}")
             elif p.name == 'acel_ms':
                 self.acel_ms = p.value
-                self.client.write_register(0x2084, int(self.acel_ms), device_id=self.device_id)
-                self.client.write_register(0x2085, int(self.acel_ms), device_id=self.device_id)
+                self.client.write_register(0x2080, int(self.acel_ms), device_id=self.device_id)
+                self.client.write_register(0x2081, int(self.acel_ms), device_id=self.device_id)
                 self.get_logger().info(f"[Settings] acel_ms={self.acel_ms}")
         return SetParametersResult(successful=True)
 
 
     # ---------------- Modbus helpers ----------------
+
     def ensure_connected(self) -> bool:
         if self.connected:
             return True
@@ -91,30 +92,6 @@ class MotorDriverNode(Node):
         hi = (u >> 16) & 0xFFFF
         lo = u & 0xFFFF
         return hi, lo
-    
-    def set_velocity_mode(self):
-        self.client.write_register(0x200D, 0x0003, device_id=self.device_id)  # velocity
-        time.sleep(0.02)
-        
-        time.sleep(0.02)
-        self.client.write_register(0x200E, 0x0008, device_id=self.device_id)  # enable
-        self.driver_mode = "vel"
-        self.get_logger().info("Switched to VELOCITY mode")
-        return True
-    
-    def set_abs_position_mode(self, max_rpm: int = 1):
-        self.client.write_register(0x200D, 0x0002, device_id=self.device_id)  # absolute position
-        time.sleep(0.02)
-        self.client.write_register(0x2082, 1500, device_id=self.device_id)  
-        self.client.write_register(0x2083, 1500, device_id=self.device_id)
-        self.client.write_register(0x2080, 1500, device_id=self.device_id)
-        self.client.write_register(0x2081, 1500, device_id=self.device_id)
-        self.client.write_register(0x208E, int(max_rpm), device_id=self.device_id)  # left max speed
-        self.client.write_register(0x208F, int(max_rpm), device_id=self.device_id)  # right max speed
-        self.client.write_register(0x200E, 0x0008, device_id=self.device_id)  # enable
-        self.driver_mode = "pos_abs"
-        self.get_logger().info("Switched to ABS POSITION mode")
-        return True
     
     def _read_i16(self, addr: int) -> int:
         rr = self.client.read_holding_registers(address=addr, count=1, device_id=self.device_id)
@@ -134,9 +111,29 @@ class MotorDriverNode(Node):
         lo = self._read_u16(addr_lo)
         u32 = (hi << 16) | lo
         return u32 - 0x100000000 if (u32 & 0x80000000) else u32
-
- 
     
+    def set_velocity_mode(self):
+        self.client.write_register(0x200D, 0x0003, device_id=self.device_id)  # velocity
+        time.sleep(0.02)
+        self.client.write_register(0x200E, 0x0008, device_id=self.device_id)  # enable
+        self.driver_mode = "vel"
+        self.get_logger().info("Switched to VELOCITY mode")
+        return True
+    
+    def set_abs_position_mode(self):
+        self.client.write_register(0x200D, 0x0002, device_id=self.device_id)  # absolute position
+        time.sleep(0.02)
+        self.client.write_register(0x2082, 2000, device_id=self.device_id)  
+        self.client.write_register(0x2083, 2000, device_id=self.device_id)
+        self.client.write_register(0x2080, 2000, device_id=self.device_id)
+        self.client.write_register(0x2081, 2000, device_id=self.device_id)
+        self.client.write_register(0x208E, 1, device_id=self.device_id)  # left max speed
+        self.client.write_register(0x208F, 1, device_id=self.device_id)  # right max speed
+        self.client.write_register(0x200E, 0x0008, device_id=self.device_id)  # enable
+        self.driver_mode = "pos_abs"
+        self.get_logger().info("Switched to ABS POSITION mode")
+        return True
+
     def _write_single(self, addr: int, value: int):
         res = self.client.write_register(addr, value, device_id=self.device_id)  # FC 0x06
         if res.isError():
@@ -161,27 +158,19 @@ class MotorDriverNode(Node):
             self.connected = False
             raise RuntimeError(f"write_registers(0x208A) failed: {res}")
         
-    def start_position_motion(self):
-        self.client.write_register(0x200E, 0x0010, device_id=self.device_id)
-
-    def read_running_flags(self):
-        sw = self._read_u16(0x20A2)
-
-        right_running = (sw & 0x0001) != 0      # bit0
-        left_running  = (sw & 0x0100) != 0      # bit8
-
-        return left_running, right_running
-    
     def read_actual_pos(self):
         l = self._read_i32(0x20A7, 0x20A8)
         r = self._read_i32(0x20A9, 0x20AA)
         return l, r
     
     def is_abs_move_done(self, target_l: int, target_r: int, tol: int = 50) -> bool:
-        
         lpos, rpos = self.read_actual_pos()
         self.get_logger().info(f"Checking move done: target=({target_l}, {target_r}), actual=({lpos}, {rpos})")
-        return (abs(lpos - target_l) <= tol) and (abs(rpos - target_r) <= tol)
+        if target_l >= 0:left_done = (lpos >= target_l - tol)
+        else:left_done = (lpos <= target_l + tol)
+        if target_r >= 0:right_done = (rpos >= target_r - tol)
+        else:right_done = (rpos <= target_r + tol)
+        return left_done and right_done
     
     def stop(self):
         self._write_rpms(0, 0)
@@ -203,19 +192,16 @@ class MotorDriverNode(Node):
             self.set_parking(False)
 
     # ---------------- Callbacks ----------------
+    def cb_estop(self, msg: Bool):
+        self.eStop = msg.data
     
     def cb_auto_state(self, msg: String):
         new_state = (msg.data or "").strip().lower()
-        if new_state == self.auto_state:
-            return
         self.auto_state = new_state
 
     def cb_rpm(self, msg: Float32MultiArray):
         if not self.ensure_connected():
             self.get_logger().warning("Motor driver not connected -> ignoring rpm command")
-            return
-        if msg.data is None or len(msg.data) < 2:
-            self.get_logger().warning("Invalid /wheel_rpm_cmd (need [left_rpm, right_rpm])")
             return
 
         left_rpm = msg.data[0]
@@ -245,25 +231,22 @@ class MotorDriverNode(Node):
         if not self.ensure_connected():
             self.get_logger().warning("Motor driver not connected -> ignoring move command")
             return
-        if msg.data is None or len(msg.data) < 2:
-            self.get_logger().warning("Invalid /wheel_abs_pos (need [left_abs_pos, right_abs_pos])")
-            return
 
         self.left_abs_pos = int(msg.data[0])
         self.right_abs_pos = int(msg.data[1])
 
         if self.driver_mode != "pos_abs":
-            ok = self.set_abs_position_mode(max_rpm=1)
+            ok = self.set_abs_position_mode()
             if not ok:
                 return
             
         try:
-            self._write_single(0x2006, 3)
-            self._write_single(0x2005, 3)
+            self._write_single(0x2006, 3)    #reset current absolute position
+            self._write_single(0x2005, 3)    #reset feedback position
             time.sleep(0.02)
             self._write_abs_pos(self.left_abs_pos, self.right_abs_pos)
             time.sleep(1)
-            self.start_position_motion()
+            self._write_single(0x200E, 0x0010)
             self.motion_active = True
             self.get_logger().info(f"ABS move started: L={self.left_abs_pos} pulses, R={self.right_abs_pos} pulses")
         except Exception as e:
@@ -274,7 +257,7 @@ class MotorDriverNode(Node):
         if not self.motion_active:
             return
         try:
-            if self.is_abs_move_done(self.left_abs_pos, self.right_abs_pos, tol=100):
+            if self.is_abs_move_done(self.left_abs_pos, self.right_abs_pos, tol=50):
                 self.motion_active = False
                 if self.auto_state == "yaw_correction":
                     self.pub_steer.publish(Float32(data=90.0)) 
@@ -287,8 +270,6 @@ class MotorDriverNode(Node):
                     self.get_logger().info("steer 0 triggered -> waiting for 4s")
                     time.sleep(4)
                     self.pub_correction_done.publish(Bool(data=True))
-                    
-
         except Exception as e:
             self.get_logger().warning(f"pos_read_tick status read failed: {e}")
 
@@ -322,13 +303,13 @@ class MotorDriverNode(Node):
                     self.get_logger().info("Connected to ZLAC8015D")
                 else:
                     self.get_logger().info("Reconnected to ZLAC8015D")
-                self._write_single(0x2022, 10)
+                self._write_single(0x2022, 10)    #RPM resolution 10
                 time.sleep(0.02)
                 self.set_velocity_mode()
-                self.client.write_register(0x2082, int(self.decel_ms), device_id=self.device_id)  
-                self.client.write_register(0x2083, int(self.decel_ms), device_id=self.device_id)
-                self.client.write_register(0x2080, int(self.acel_ms), device_id=self.device_id)
-                self.client.write_register(0x2081, int(self.acel_ms), device_id=self.device_id)
+                self._write_single(0x2082, int(self.decel_ms))  
+                self._write_single(0x2083, int(self.decel_ms))
+                self._write_single(0x2080, int(self.acel_ms))
+                self._write_single(0x2081, int(self.acel_ms))
                 self._write_single(0x200C, 0)
                 self.parked = False
                 return True
@@ -348,7 +329,7 @@ class MotorDriverNode(Node):
 
             try:
                 self.stop()
-                self.client.write_register(0x200E, 0x0000, device_id=self.device_id)
+                self._write_single(0x200E, 0)
                 time.sleep(0.05)
                 self.client.close()
                 time.sleep(0.2)

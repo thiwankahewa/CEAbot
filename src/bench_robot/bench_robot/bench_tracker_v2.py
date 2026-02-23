@@ -1,21 +1,24 @@
 #!/usr/bin/env python3
 import math
+
+from time import sleep
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Int16MultiArray, Float32MultiArray, String, Bool
 from rcl_interfaces.msg import SetParametersResult
 
-GOOD_MIN = 80
-GOOD_MAX = 200
-STOP_THRESHOLD = 25
-YAW_THRESHOLD = 50
-SENSOR_DISTANCE_M = 0.53
+STOP_THRESHOLD = 25      #if any sensor reads below this,  stop immediately
+YAW_THRESHOLD = 0.05       #if the difference between front and rear on either side exceeds this, trigger yaw correction
+YAW_CORRECTION_FACTOR = 8
+CENTER_CORRECTION_FACTOR = 20
 WHEEL_DIAMETER_M = 0.2032
 
 class BenchTracker(Node):
     def __init__(self):
         super().__init__('bench_tracker_v2')
 
+        self.eStop = False
+        self.mode = "manual" 
         self.auto_state = None
         self.yaw_correction_trigered = False
         self.align_center_triggered = False
@@ -32,11 +35,12 @@ class BenchTracker(Node):
         self.Kp_yaw = self.get_parameter('Kp_yaw').value
 
         self.sub_mode = self.create_subscription(String, '/mode', self.cb_mode, 10)
-        self.mode = "manual" 
 
         self.sub_auto_state = self.create_subscription(String, '/auto_state', self.cb_auto_state, 10)
 
         self.sub_correction_done = self.create_subscription(Bool, '/yaw_correction_done', self.cb_correction_done, 10)
+
+        self.sub_estop = self.create_subscription(Bool, '/e_stop', self.cb_estop, 10)
 
         # Publishes
         self.pub_auto_state = self.create_publisher(String, "/auto_state_cmd", 10)
@@ -109,14 +113,23 @@ class BenchTracker(Node):
         self.pub_abs_pos.publish(msg)
 
     # --------- Main functions ----------
+    def cb_estop(self, msg: Bool):
+        self.eStop = msg.data
+
+    def cb_mode(self, msg: String):
+        m = (msg.data or "").strip().lower()
+        if m != self.mode:
+            self.mode = m
+            if self.mode != "auto":
+                self.yaw_correction_trigered = False
+                self.align_center_triggered = False
+
     def cb_auto_state(self, msg: String):
         new_state = (msg.data or "").strip().lower()
-        if new_state == self.auto_state:
-            return
         self.auto_state = new_state
         
     def dist_cb(self, msg):
-        self.last = msg.data  # [fl, fr, rl, rr]
+        self.last = msg.data  
         if self.last is None or len(self.last) < 4:
             if not self.invalid_data_warned:
                 self.get_logger().warning("Received invalid /bench_robot/tof_raw message")
@@ -124,11 +137,10 @@ class BenchTracker(Node):
             return
         
         if self.mode == "auto":
-            self.invalid_data_warned = False
             rl , fl, rr , fr = self.last
 
             def valid(d_mm: float) -> bool:
-                return (d_mm is not None) and (STOP_THRESHOLD <= d_mm <= 2000)
+                return (d_mm is not None) and (STOP_THRESHOLD <= d_mm <= 500)
             
             if not all(valid(x) for x in (fl, fr, rl, rr)):
                 self.invalid_data_warned = True
@@ -145,18 +157,21 @@ class BenchTracker(Node):
             yaw_left  = fl - rl
             yaw_right = rr - fr
             yaw_ave = ((yaw_left + yaw_right) / 2.0) / 1000
-            yaw_distance = int(yaw_ave / self.wheel_circumference * 1024) * 8
+            yaw_distance = int(yaw_ave / self.wheel_circumference * 1024) * YAW_CORRECTION_FACTOR
 
-            if ((abs(yaw_left) > YAW_THRESHOLD) or (abs(yaw_right) > YAW_THRESHOLD)) and not self.yaw_correction_trigered:
-                self.publish_rpm(0.0, 0.0)
-                self.get_logger().info(  f"Dist: FL={fl} FR={fr} RL={rl} RR={rr} ")
-                self.pub_auto_state.publish(String(data="yaw_correction"))
+            if (abs(yaw_ave) > YAW_THRESHOLD):
+                if self.yaw_correction_trigered:
+                    return
                 self.yaw_correction_trigered = True
+                self.publish_rpm(0.0, 0.0)
+                sleep(1)
+                self.pub_auto_state.publish(String(data="yaw_correction"))
+                
                 if abs(yaw_ave) > 0.3:
                     self.get_logger().info(f"Large yaw detected (ave={yaw_ave:.4f} m)")
                     return
                 
-                self.get_logger().info(f"Aligning... Yaw left={yaw_left} right={yaw_right} ave={yaw_ave:.4f} m -> move {yaw_distance} ticks")
+                self.get_logger().info(f"Aligning... yaw_ave={yaw_ave:.4f} m -> move {yaw_distance} ticks")
                 self.publish_abs_pos(-yaw_distance, -yaw_distance)
                 return
             
@@ -164,12 +179,10 @@ class BenchTracker(Node):
                 if self.align_center_triggered:
                     return
                 self.align_center_triggered = True
-                align_distance = int((offset_err/2) / self.wheel_circumference * 1024) * 20
+                align_distance = int((offset_err/2) / self.wheel_circumference * 1024) * CENTER_CORRECTION_FACTOR
                 self.get_logger().info(f"Aligning... align_distance={align_distance:.4f} m")
                 self.publish_abs_pos(-align_distance, -align_distance)
-                
                 return
-            
             
             if ((self.auto_state == "bench_tracking_f") or (self.auto_state == "bench_tracking_b")):
                 direction = 1
@@ -191,13 +204,7 @@ class BenchTracker(Node):
                     f"L={left_rpm:.1f} R={right_rpm:+.1f} | "
                 )
 
-                
                 self.publish_rpm(right_rpm, left_rpm)
-
-    def cb_mode(self, msg: String):
-        m = (msg.data or "").strip().lower()
-        if m != self.mode:
-            self.mode = m
 
     def cb_correction_done(self, msg: Bool):
         if msg.data:
