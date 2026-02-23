@@ -2,9 +2,9 @@
   ros__parameters:
     Kp_offset: 0.2
     Kp_yaw: 0.005
-    base_rpm: 12
+    base_rpm: 12.0
     k_steer: 100.0
-    max_rpm: 25
+    max_rpm: 25.0
     max_steer_deg: 25.0
     use_sim_time: false
     w_small: 0.01

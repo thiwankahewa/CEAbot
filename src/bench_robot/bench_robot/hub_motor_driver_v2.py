@@ -36,8 +36,8 @@ class MotorDriverNode(Node):
         self.declare_parameter('write_rate_hz', 20.0)
 
         # normal profile
-        self.declare_parameter('acel_ms', 500)
-        self.declare_parameter('decel_ms', 500)
+        self.declare_parameter('acel_ms', 1200)
+        self.declare_parameter('decel_ms', 1200)
         self.declare_parameter('max_rpm', 25.0)
 
         # correction profile
@@ -184,7 +184,7 @@ class MotorDriverNode(Node):
             self.last_cmd_time = None
 
     def write_tick(self):
-        if self.eStop or self.mode != "auto":
+        if self.eStop:
             self.stop()
             return
         if not self.ensure_connected():
