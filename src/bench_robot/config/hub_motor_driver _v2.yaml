@@ -1,0 +1,5 @@
+/hub_motor_driver:
+  ros__parameters:
+    acel_ms: 950
+    decel_ms: 500
+    use_sim_time: false

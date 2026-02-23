@@ -45,9 +45,9 @@ class BenchTracker(Node):
 
         # Publishes
         self.pub_auto_state = self.create_publisher(String, "/auto_state_cmd", 10)
+        self.pub_errors = self.create_publisher(Float32MultiArray, '/bench_errors', 10)
         self.pub_rpm = self.create_publisher(Float32MultiArray, '/wheel_rpm_auto', 10)
         self.pub_abs_pos = self.create_publisher(Int16MultiArray, '/wheel_abs_pos', 10)
-        #self.steer_pub = self.create_publisher(Float32, '/steer_auto', 10)
 
         self.declare_parameter('base_rpm', 12)
         self.declare_parameter('max_rpm', 25)
@@ -161,6 +161,10 @@ class BenchTracker(Node):
             yaw_ave = ((yaw_left + yaw_right) / 2.0) / 1000
             yaw_distance = int(yaw_ave / self.wheel_circumference * 1024) * YAW_CORRECTION_FACTOR
 
+            bench_error = Float32MultiArray()
+            bench_error.data = [offset_err, yaw_ave]
+            self.pub_errors.publish(bench_error)
+
             if self.auto_state == "align_center" :
                 if self.align_center_triggered:
                     return
@@ -210,15 +214,6 @@ class BenchTracker(Node):
                 sleep(1)
                 self.pub_auto_state.publish(String(data="yaw_correction"))
                 self.publish_abs_pos(0, 0)
-                return
-            
-            if self.auto_state == "align_center" :
-                if self.align_center_triggered:
-                    return
-                self.align_center_triggered = True
-                align_distance = int((offset_err/2) / self.wheel_circumference * 1024) * CENTER_CORRECTION_FACTOR
-                self.get_logger().info(f"Aligning... align_distance={align_distance:.4f} m")
-                self.publish_abs_pos(-align_distance, align_distance)
                 return
             
             if ((self.auto_state == "bench_tracking_f") or (self.auto_state == "bench_tracking_b")):

@@ -7,10 +7,9 @@ import os
 def generate_launch_description():
     pkg_share = get_package_share_directory('bench_robot')
 
-    motor_params = os.path.join(pkg_share,'config','motor_controller.yaml')
     motor_mux_params = os.path.join(pkg_share,'config','motor_control_mux.yaml')
-    hub_motor_driver_params = os.path.join(pkg_share,'config','hub_motor_driver.yaml')
-    bench_tracker_params = os.path.join(pkg_share,'config','bench_tracker_v2.yaml')
+    hub_motor_driver_params = os.path.join(pkg_share,'config','hub_motor_driver_v2.yaml')
+    bench_tracker_params = os.path.join(pkg_share,'config','bench_tracker_v3.yaml')
 
 
     return LaunchDescription([
@@ -21,7 +20,6 @@ def generate_launch_description():
         Node(
             package='bench_robot',
             executable='arduino_bridge',
-            parameters=[motor_params],
             output='screen',
         ),
         Node(
@@ -33,15 +31,15 @@ def generate_launch_description():
         ),
         Node(
             package='bench_robot',
-            executable='hub_motor_driver',
-            name='hub_motor_driver',
+            executable='hub_motor_driver_v2',
+            name='hub_motor_driver_v2',
             parameters=[hub_motor_driver_params],
             output='screen',
         ),
         Node(
             package='bench_robot',
-            executable='bench_tracker_v2',
-            name='bench_tracker_v2',
+            executable='bench_tracker_v3',
+            name='bench_tracker_v3',
             parameters=[bench_tracker_params],
             output='screen',
         ),
