@@ -27,18 +27,21 @@ def generate_launch_description():
         Node(
             package='bench_robot',
             executable='motor_control_mux',
+            name='motor_control_mux',
             parameters=[motor_mux_params],
             output='screen',
         ),
         Node(
             package='bench_robot',
             executable='hub_motor_driver',
+            name='hub_motor_driver',
             parameters=[hub_motor_driver_params],
             output='screen',
         ),
         Node(
             package='bench_robot',
             executable='bench_tracker_v2',
+            name='bench_tracker_v2',
             parameters=[bench_tracker_params],
             output='screen',
         ),

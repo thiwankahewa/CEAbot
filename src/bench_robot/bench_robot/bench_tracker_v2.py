@@ -9,8 +9,9 @@ from rcl_interfaces.msg import SetParametersResult
 
 STOP_THRESHOLD = 25      #if any sensor reads below this,  stop immediately
 YAW_THRESHOLD = 0.05       #if the difference between front and rear on either side exceeds this, trigger yaw correction
+OFFSET_THRESHOLD_M = 0.03
 YAW_CORRECTION_FACTOR = 8
-CENTER_CORRECTION_FACTOR = 20
+CENTER_CORRECTION_FACTOR = 10
 WHEEL_DIAMETER_M = 0.2032
 
 class BenchTracker(Node):
@@ -174,6 +175,16 @@ class BenchTracker(Node):
                 self.get_logger().info(f"Aligning... yaw_ave={yaw_ave:.4f} m -> move {yaw_distance} ticks")
                 self.publish_abs_pos(-yaw_distance, -yaw_distance)
                 return
+
+            if abs(yaw_ave) <= YAW_THRESHOLD and abs(offset_err) >= OFFSET_THRESHOLD_M:
+                self.pub_auto_state.publish(String(data="align_center"))
+                if self.align_center_triggered:
+                    return
+                self.align_center_triggered = True
+                align_distance = int((offset_err/2) / self.wheel_circumference * 1024) * CENTER_CORRECTION_FACTOR
+                self.get_logger().info(f"Aligning... align_distance={align_distance:.4f} m")
+                self.publish_abs_pos(-align_distance, align_distance)
+                return
             
             if self.auto_state == "align_center" :
                 if self.align_center_triggered:
@@ -181,7 +192,7 @@ class BenchTracker(Node):
                 self.align_center_triggered = True
                 align_distance = int((offset_err/2) / self.wheel_circumference * 1024) * CENTER_CORRECTION_FACTOR
                 self.get_logger().info(f"Aligning... align_distance={align_distance:.4f} m")
-                self.publish_abs_pos(-align_distance, -align_distance)
+                self.publish_abs_pos(-align_distance, align_distance)
                 return
             
             if ((self.auto_state == "bench_tracking_f") or (self.auto_state == "bench_tracking_b")):

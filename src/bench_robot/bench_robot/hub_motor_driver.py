@@ -18,7 +18,9 @@ class MotorDriverNode(Node):
         super().__init__('hub_motor_driver')
 
         self.eStop = False
+        self.mode = "manual"
         self.auto_state = None
+        self.bench_track_dir = None
 
         self.connected = False
         self.port = '/dev/ttyUSB0'
@@ -28,9 +30,8 @@ class MotorDriverNode(Node):
         self.cmd_timeout_s = 0.1     # watchdog timeout
         self.last_cmd_time = None
 
-        self.left_abs_pos = 0
-        self.right_abs_pos = 0
-        
+        self.target_l = 0
+        self.target_r = 0
 
         self.parked = False
         self.client = ModbusSerialClient(port=self.port,baudrate=115200,)
@@ -53,6 +54,7 @@ class MotorDriverNode(Node):
         self.sub_rpm = self.create_subscription(Float32MultiArray,'/wheel_rpm_cmd',self.cb_rpm,10)
         self.sub_abs_pos = self.create_subscription(Int16MultiArray,'/wheel_abs_pos',self.cb_abs_pos,10)
         self.sub_estop = self.create_subscription(Bool, '/e_stop', self.cb_estop, 10)
+        self.sub_mode = self.create_subscription(String, '/mode', self.cb_mode, 10)
 
         # Publishers
         self.pub_auto_state = self.create_publisher(String, "/auto_state_cmd", 10)
@@ -194,9 +196,16 @@ class MotorDriverNode(Node):
     # ---------------- Callbacks ----------------
     def cb_estop(self, msg: Bool):
         self.eStop = msg.data
+
+    def cb_mode(self, msg: String):
+        m = (msg.data or "").strip().lower()
+        if m != self.mode:
+            self.mode = m
     
     def cb_auto_state(self, msg: String):
         new_state = (msg.data or "").strip().lower()
+        if new_state in ("bench_tracking_f", "bench_tracking_b"):
+            self.bench_track_dir = new_state
         self.auto_state = new_state
 
     def cb_rpm(self, msg: Float32MultiArray):
@@ -243,32 +252,31 @@ class MotorDriverNode(Node):
         try:
             self._write_single(0x2006, 3)    #reset current absolute position
             self._write_single(0x2005, 3)    #reset feedback position
-            time.sleep(0.02)
-            self._write_abs_pos(self.left_abs_pos, self.right_abs_pos)
             time.sleep(1)
+            self._write_abs_pos(self.left_abs_pos, self.right_abs_pos)
             self._write_single(0x200E, 0x0010)
             self.motion_active = True
-            self.get_logger().info(f"ABS move started: L={self.left_abs_pos} pulses, R={self.right_abs_pos} pulses")
+            self.get_logger().info(f"ABS move started: L={self.target_l} pulses, R={self.target_r} pulses")
         except Exception as e:
             self.get_logger().error(f"ABS move failed: {e}")
             self.motion_active = False
 
     def pos_read_tick(self):
-        if not self.motion_active:
+        if not self.motion_active or self.mode != "auto":
             return
         try:
-            if self.is_abs_move_done(self.left_abs_pos, self.right_abs_pos, tol=50):
+            if self.is_abs_move_done(self.target_l, self.target_r, tol=100):
                 self.motion_active = False
                 if self.auto_state == "yaw_correction":
                     self.pub_steer.publish(Float32(data=90.0)) 
                     self.get_logger().info("steer 90 triggered -> waiting for 4s")
-                    time.sleep(4)
+                    time.sleep(2)
                     self.pub_auto_state.publish(String(data="align_center"))
                 elif self.auto_state == "align_center":
-                    self.pub_auto_state.publish(String(data="idle"))
+                    self.pub_auto_state.publish(String(data=self.bench_track_dir))
                     self.pub_steer.publish(Float32(data=0.0)) 
                     self.get_logger().info("steer 0 triggered -> waiting for 4s")
-                    time.sleep(4)
+                    time.sleep(2)
                     self.pub_correction_done.publish(Bool(data=True))
         except Exception as e:
             self.get_logger().warning(f"pos_read_tick status read failed: {e}")

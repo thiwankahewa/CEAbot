@@ -1,7 +1,6 @@
 /bench_tracker_v2:
   ros__parameters:
-    Kp_error: 0.01
-    Kp_offset: 0.5
+    Kp_offset: 0.4
     Kp_yaw: 0.005
     base_rpm: 12
     k_steer: 100.0
