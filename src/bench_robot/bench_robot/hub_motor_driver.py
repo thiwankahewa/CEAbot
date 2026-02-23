@@ -240,9 +240,15 @@ class MotorDriverNode(Node):
         if not self.ensure_connected():
             self.get_logger().warning("Motor driver not connected -> ignoring move command")
             return
-
+        self._write_single(0x2006, 3)    #reset current absolute position
+        self._write_single(0x2005, 3)    #reset feedback position
+        time.sleep(1)
         self.left_abs_pos = int(msg.data[0])
         self.right_abs_pos = int(msg.data[1])
+
+        cur_l, cur_r = self.read_actual_pos()
+        self.target_l = cur_l + self.left_abs_pos
+        self.target_r = cur_r + self.right_abs_pos
 
         if self.driver_mode != "pos_abs":
             ok = self.set_abs_position_mode()
@@ -250,13 +256,16 @@ class MotorDriverNode(Node):
                 return
             
         try:
-            self._write_single(0x2006, 3)    #reset current absolute position
-            self._write_single(0x2005, 3)    #reset feedback position
-            time.sleep(1)
-            self._write_abs_pos(self.left_abs_pos, self.right_abs_pos)
+            if self.left_abs_pos == 0 and self.right_abs_pos == 0:
+                self.pub_steer.publish(Float32(data=90.0)) 
+                self.get_logger().info("steer 90 triggered with zero positions -> waiting for 4s")
+                time.sleep(2)
+                self.pub_auto_state.publish(String(data="align_center"))
+                return
+            self._write_abs_pos(self.target_l, self.target_r)
             self._write_single(0x200E, 0x0010)
             self.motion_active = True
-            self.get_logger().info(f"ABS move started: L={self.target_l} pulses, R={self.target_r} pulses")
+            self.get_logger().info(f"ABS move started: L={self.left_abs_pos} pulses, R={self.right_abs_pos} pulses")
         except Exception as e:
             self.get_logger().error(f"ABS move failed: {e}")
             self.motion_active = False
@@ -273,10 +282,10 @@ class MotorDriverNode(Node):
                     time.sleep(2)
                     self.pub_auto_state.publish(String(data="align_center"))
                 elif self.auto_state == "align_center":
-                    self.pub_auto_state.publish(String(data=self.bench_track_dir))
                     self.pub_steer.publish(Float32(data=0.0)) 
                     self.get_logger().info("steer 0 triggered -> waiting for 4s")
                     time.sleep(2)
+                    self.pub_auto_state.publish(String(data=self.bench_track_dir))
                     self.pub_correction_done.publish(Bool(data=True))
         except Exception as e:
             self.get_logger().warning(f"pos_read_tick status read failed: {e}")

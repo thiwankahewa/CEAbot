@@ -27,9 +27,9 @@ class AutoStateManager(Node):
 
         self.allowed = {
             "idle": {"align_center", "bench_tracking_f", "bench_tracking_b", "yaw_correction","steer_0", "steer_90"},
-            "align_center": {"steer_0", "idle"},
-            "bench_tracking_f": {"yaw_correction", "idle",  "bench_tracking_b", "align_center"},
-            "bench_tracking_b": {"yaw_correction", "idle", "bench_tracking_f", "align_center"},
+            "align_center": { "idle", "bench_tracking_f", "bench_tracking_b"},
+            "bench_tracking_f": {"yaw_correction", "idle",  "bench_tracking_b"},
+            "bench_tracking_b": {"yaw_correction", "idle", "bench_tracking_f"},
             "yaw_correction": {"align_center", "idle"},
         }
 

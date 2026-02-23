@@ -9,9 +9,9 @@ from rcl_interfaces.msg import SetParametersResult
 
 STOP_THRESHOLD = 25      #if any sensor reads below this,  stop immediately
 YAW_THRESHOLD = 0.05       #if the difference between front and rear on either side exceeds this, trigger yaw correction
-OFFSET_THRESHOLD_M = 0.03
+OFFSET_THRESHOLD_M = 0.1
 YAW_CORRECTION_FACTOR = 8
-CENTER_CORRECTION_FACTOR = 10
+CENTER_CORRECTION_FACTOR = 8
 WHEEL_DIAMETER_M = 0.2032
 
 class BenchTracker(Node):
@@ -30,7 +30,7 @@ class BenchTracker(Node):
         self.sub = self.create_subscription(Int16MultiArray,'/bench_robot/tof_raw',self.dist_cb,10)
         self.last = None
         self.invalid_data_warned = False
-        self.declare_parameter('Kp_offset', 0.005)
+        self.declare_parameter('Kp_offset', 0.02)
         self.declare_parameter('Kp_yaw', 0.005)
         self.Kp_offset = self.get_parameter('Kp_offset').value
         self.Kp_yaw = self.get_parameter('Kp_yaw').value
@@ -122,6 +122,7 @@ class BenchTracker(Node):
         if m != self.mode:
             self.mode = m
             if self.mode != "auto":
+                self.auto_state = "idle"
                 self.yaw_correction_trigered = False
                 self.align_center_triggered = False
 
@@ -160,10 +161,29 @@ class BenchTracker(Node):
             yaw_ave = ((yaw_left + yaw_right) / 2.0) / 1000
             yaw_distance = int(yaw_ave / self.wheel_circumference * 1024) * YAW_CORRECTION_FACTOR
 
+            if self.auto_state == "align_center" :
+                if self.align_center_triggered:
+                    return
+                self.align_center_triggered = True
+                self.get_logger().info(
+                    f"Dist: FL={fl} FR={fr} RL={rl} RR={rr} "
+                    f"off_error={offset_err:.4f} yaw={yaw_ave:.4f} | "
+                )
+                align_distance = int((offset_err/2) / self.wheel_circumference * 1024) * CENTER_CORRECTION_FACTOR
+                self.get_logger().info(f"Aligning... align_distance={align_distance:.4f} m")
+                self.publish_abs_pos(-align_distance, align_distance)
+                return
+            
+
             if (abs(yaw_ave) > YAW_THRESHOLD):
                 if self.yaw_correction_trigered:
                     return
                 self.yaw_correction_trigered = True
+                
+                self.get_logger().info(
+                    f"Dist: FL={fl} FR={fr} RL={rl} RR={rr} "
+                    f"off_error={offset_err:.4f} yaw={yaw_ave:.4f} | "
+                )
                 self.publish_rpm(0.0, 0.0)
                 sleep(1)
                 self.pub_auto_state.publish(String(data="yaw_correction"))
@@ -177,13 +197,19 @@ class BenchTracker(Node):
                 return
 
             if abs(yaw_ave) <= YAW_THRESHOLD and abs(offset_err) >= OFFSET_THRESHOLD_M:
-                self.pub_auto_state.publish(String(data="align_center"))
-                if self.align_center_triggered:
+                
+                if self.yaw_correction_trigered:
                     return
-                self.align_center_triggered = True
-                align_distance = int((offset_err/2) / self.wheel_circumference * 1024) * CENTER_CORRECTION_FACTOR
-                self.get_logger().info(f"Aligning... align_distance={align_distance:.4f} m")
-                self.publish_abs_pos(-align_distance, align_distance)
+                self.yaw_correction_trigered = True
+                self.align_center_triggered = False
+                self.get_logger().info(
+                    f"Dist: FL={fl} FR={fr} RL={rl} RR={rr} "
+                    f"off_error={offset_err:.4f} yaw={yaw_ave:.4f} | "
+                )
+                self.publish_rpm(0.0, 0.0)
+                sleep(1)
+                self.pub_auto_state.publish(String(data="yaw_correction"))
+                self.publish_abs_pos(0, 0)
                 return
             
             if self.auto_state == "align_center" :
@@ -211,7 +237,7 @@ class BenchTracker(Node):
 
                 self.get_logger().info(
                     f"Dist: FL={fl} FR={fr} RL={rl} RR={rr} "
-                    f"off={w:.4f} yaw={yaw_ave:.4f} | "
+                    f"off_error={offset_err:.4f} yaw={yaw_ave:.4f} | "
                     f"L={left_rpm:.1f} R={right_rpm:+.1f} | "
                 )
 
