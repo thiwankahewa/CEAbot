@@ -6,9 +6,9 @@ from std_srvs.srv import Trigger
 
 OUTPUT_DIR = "/home/thiwa/CEAbot/src/bench_robot/config"
 TARGET_NODES = [
-    "/bench_tracker_v2",
+    "/bench_tracker_v3",
     "/motor_control_mux",
-    "/hub_motor_driver",
+    "/hub_motor_driver_v2",
 ]
 
 class SettingsSaver(Node):

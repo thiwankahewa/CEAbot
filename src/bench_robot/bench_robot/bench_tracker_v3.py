@@ -27,45 +27,35 @@ class BenchTracker(Node):
         self.offset_err_m = 0.0
         self.yaw_err_m = 0.0
 
-        # align_center phases (non-blocking)
-        # 0=inactive, 1=steer->90 settle, 2=correcting, 3=steer->0 settle
+        # align_center phases (non-blocking) - 0=inactive, 1=steer->90 settle, 2=correcting, 3=steer->0 settle
         self.align_phase = 0
         self.align_phase_start = None
-
-        # debounce counters
-        self._yaw_ok = 0
+        self._yaw_ok = 0 # debounce counters
         self._off_ok = 0
 
+        self.steer_track_deg = 0.0
+        self.steer_align_deg = 90.0
+
+        self.prev_off = None
+        self.prev_t = None
+        self.off_filt = 0.0
+        self.prev_off_filt = None
+
         # -------- params --------
-        self.declare_parameter('cmd_rate_hz', 20.0)
-        self.declare_parameter('tof_timeout_s', 0.3)
-
-        self.declare_parameter('yaw_threshold_m', 0.02)
-        self.declare_parameter('offset_threshold_m', 0.01)
-
         self.declare_parameter('offset_enter_m', 0.10)
         self.declare_parameter('yaw_enter_m', 0.05)
         self.declare_parameter('offset_exit_m', 0.01)
         self.declare_parameter('yaw_exit_m', 0.02)
 
         self.declare_parameter('Kp_offset', 0.2)
-        self.declare_parameter('Kp_yaw_track', 0.005)
+        self.declare_parameter('Kd_offset', 0.02)     # start small
+        self.declare_parameter('d_filter_t', 0.2)         # seconds, derivative smoothing
 
-        # yaw correction (slow)
-        self.declare_parameter('yaw_corr_rpm', 2.0)
-        self.declare_parameter('Kp_yaw_corr', 30.0)   # maps meters -> rpm-ish after clamp
-
-        # align center (crab) slow
-        self.declare_parameter('align_rpm', 2.0)
-        self.declare_parameter('Kp_align', 30.0)      # maps meters -> rpm-ish after clamp
-
+        self.declare_parameter('corr_rpm', 2.0)
         self.declare_parameter('base_rpm', 12.0)
         self.declare_parameter('max_rpm', 25.0)
         self.track_width_m = 1.515
 
-        # steering angles / timing
-        self.declare_parameter('steer_track_deg', 0.0)
-        self.declare_parameter('steer_align_deg', 90.0)
         self.declare_parameter('steer_settle_s', 2)  # wait after steering change
 
         self._load_params()
@@ -84,15 +74,11 @@ class BenchTracker(Node):
         self.pub_steer = self.create_publisher(Float32, '/steer_angle_deg', 10)
 
         # -------- timer --------
-        period = 1.0 / max(1.0, self.cmd_rate_hz)
-        self.timer = self.create_timer(period, self.control_tick)
+        self.timer = self.create_timer(0.05, self.control_tick)
+
+        self.publish_steer(self.steer_track_deg)
 
     def _load_params(self):
-        self.cmd_rate_hz = float(self.get_parameter('cmd_rate_hz').value)
-        self.tof_timeout_s = float(self.get_parameter('tof_timeout_s').value)
-
-        self.yaw_threshold_m = float(self.get_parameter('yaw_threshold_m').value)
-        self.offset_threshold_m = float(self.get_parameter('offset_threshold_m').value)
 
         self.offset_enter_m = float(self.get_parameter('offset_enter_m').value)
         self.offset_exit_m  = float(self.get_parameter('offset_exit_m').value)
@@ -100,19 +86,14 @@ class BenchTracker(Node):
         self.yaw_exit_m     = float(self.get_parameter('yaw_exit_m').value)
 
         self.Kp_offset_track = float(self.get_parameter('Kp_offset').value)
-        self.Kp_yaw_track = float(self.get_parameter('Kp_yaw_track').value)
+        self.Kd_offset_track = self.get_parameter('Kd_offset').value
+        self.d_filter_tau = self.get_parameter('d_filter_t').value
 
-        self.yaw_corr_rpm = float(self.get_parameter('yaw_corr_rpm').value)
-        self.Kp_yaw_corr = float(self.get_parameter('Kp_yaw_corr').value)
-
-        self.align_rpm = float(self.get_parameter('align_rpm').value)
-        self.Kp_align = float(self.get_parameter('Kp_align').value)
+        self.corr_rpm = float(self.get_parameter('corr_rpm').value)
 
         self.base_rpm = float(self.get_parameter('base_rpm').value)
         self.max_rpm = float(self.get_parameter('max_rpm').value)
 
-        self.steer_track_deg = float(self.get_parameter('steer_track_deg').value)
-        self.steer_align_deg = float(self.get_parameter('steer_align_deg').value)
         self.steer_settle_s = float(self.get_parameter('steer_settle_s').value)
 
     def on_params(self, params):
@@ -200,9 +181,9 @@ class BenchTracker(Node):
 
     # -------- main control loop --------
     def control_tick(self):
-        if self.mode != "auto":
+        if self.mode != "auto":     
             return
-        # basic stop logic
+        
         if self.eStop:
             self.publish_rpm(0.0, 0.0)
             return
@@ -211,7 +192,7 @@ class BenchTracker(Node):
             self.publish_rpm(0.0, 0.0)
             return
 
-        age_s = (self.get_clock().now() - self.last_tof_stamp).nanoseconds * 1e-9
+        age_s = (self.get_clock().now() - 0.3).nanoseconds * 1e-9
         if age_s > self.tof_timeout_s or self.invalid_data_warned:
             self.publish_rpm(0.0, 0.0)
             return
@@ -219,18 +200,14 @@ class BenchTracker(Node):
         off = float(self.offset_err_m)
         yaw = float(self.yaw_err_m)
 
-        
-
-        # If we are currently running align_center phases, handle it FIRST
         if self.auto_state == "align_center":
             self._run_align_center(off)
             return
 
         if self.auto_state in ("bench_tracking_f", "bench_tracking_b"):
-        # transitions to correction states
             if abs(yaw) > self.yaw_enter_m:
                 # ensure steer is in tracking (0 deg) for yaw correction
-                self.publish_steer(self.steer_track_deg)
+                #self.publish_steer(self.steer_track_deg)
                 self.set_state("yaw_correction")
                 self._yaw_ok = 0
                 self.publish_rpm(0.0, 0.0)
@@ -248,13 +225,27 @@ class BenchTracker(Node):
 
         # normal tracking
         if self.auto_state in ("bench_tracking_f", "bench_tracking_b"):
-            self.publish_steer(self.steer_track_deg)
+
+            t = self.now_s()
+            if self.prev_t is None:
+                dt = 0.05
+            else:
+                dt = max(1e-3, t - self.prev_t)
+            alpha = dt / (self.d_filter_tau + dt)
+            self.off_filt = self.off_filt + alpha * (off - self.off_filt)
+            if self.prev_off_filt is None:
+                d_off = 0.0
+            else:
+                d_off = (self.off_filt - self.prev_off_filt) / dt
+            self.prev_off_filt = self.off_filt
+            self.prev_t = t
+
+            #self.publish_steer(self.steer_track_deg)
             direction = 1.0 if self.auto_state == "bench_tracking_f" else -1.0
 
             base_v_mps = direction * ((self.base_rpm * self.wheel_circumference) / 60.0)
 
-            # combined correction
-            w = direction * (-(self.Kp_offset_track * off))
+            w = direction * (-(self.Kp_offset_track * self.off_filt) - (self.Kd_offset_track * d_off))
 
             v_left = base_v_mps - w * (self.track_width_m / 2.0)
             v_right = base_v_mps + w * (self.track_width_m / 2.0)
@@ -262,7 +253,6 @@ class BenchTracker(Node):
             left_rpm = self.clamp(self.mps_to_rpm(v_left), -self.max_rpm, self.max_rpm)
             right_rpm = self.clamp(self.mps_to_rpm(v_right), -self.max_rpm, self.max_rpm)
             self.get_logger().info(f"TRACKING: off={off:.3f} yaw={yaw:.3f} rpm_left={left_rpm:.1f} rpm_right={right_rpm:.1f}")
-
             self.publish_rpm(left_rpm, right_rpm)
             return
 
@@ -284,9 +274,9 @@ class BenchTracker(Node):
 
         # differential spin in place
         if yaw >= 0:
-            left, right = -self.yaw_corr_rpm, +self.yaw_corr_rpm
+            left, right = -self.corr_rpm, +self.corr_rpm
         else:
-            left, right = +self.yaw_corr_rpm, -self.yaw_corr_rpm
+            left, right = +self.corr_rpm, -self.corr_rpm
         self.get_logger().info(f"YAW CORR: off={off:.3f} yaw={yaw:.3f} rpm_left={left:.1f} rpm_right={right:.1f}")
         self.publish_rpm(left, right)
 
@@ -294,7 +284,7 @@ class BenchTracker(Node):
         if self._yaw_ok >= 10:
             self._yaw_ok = 0
             # if offset still large -> go to align_center, else back to track
-            if abs(off) > self.offset_threshold_m:
+            if abs(off) > self.offset_enter_m:
                 self.set_state("align_center")
                 self.align_phase = 1
                 self.align_phase_start = self.now_s()
@@ -304,18 +294,11 @@ class BenchTracker(Node):
                 self.set_state(self.bench_track_dir)
 
     def _run_align_center(self, off: float):
-        """
-        Phases:
-        1) steer->90 settle (stop)
-        2) correction with slow RPM (steer 90)
-        3) steer->0 settle (stop)
-        then return to bench_tracking dir
-        """
         t = self.now_s()
 
         # Phase 1: steer to 90 and wait settle
         if self.align_phase == 1:
-            self.publish_steer(self.steer_align_deg)
+            #self.publish_steer(self.steer_align_deg)
             self.publish_rpm(0.0, 0.0)
             if (t - (self.align_phase_start or t)) >= self.steer_settle_s:
                 self.align_phase = 2
@@ -324,7 +307,7 @@ class BenchTracker(Node):
 
         # Phase 2: apply correction at steer=90
         if self.align_phase == 2:
-            self.publish_steer(self.steer_align_deg)
+            #self.publish_steer(self.steer_align_deg)
 
             # if centered for N cycles, go to phase 3
             if abs(off) <= self.offset_exit_m:
@@ -334,9 +317,9 @@ class BenchTracker(Node):
 
 
             if off >= 0:
-                left, right = -self.align_rpm, -self.align_rpm
+                left, right = -self.corr_rpm, -self.corr_rpm
             else:
-                left, right = +self.align_rpm, +self.align_rpm
+                left, right = +self.corr_rpm, +self.corr_rpm
             self.get_logger().info(f"ALIGN CENTER: off={off:.3f} yaw={self.yaw_err_m:.3f} rpm_left={left:.1f} rpm_right={right:.1f}")
             self.publish_rpm(left, right)
 
@@ -351,7 +334,7 @@ class BenchTracker(Node):
 
         # Phase 3: steer back to 0 settle
         if self.align_phase == 3:
-            self.publish_steer(self.steer_track_deg)
+            #self.publish_steer(self.steer_track_deg)
             self.publish_rpm(0.0, 0.0)
             if (t - (self.align_phase_start or t)) >= self.steer_settle_s:
                 self.align_phase = 0

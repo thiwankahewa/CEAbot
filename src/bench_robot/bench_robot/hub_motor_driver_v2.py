@@ -32,18 +32,11 @@ class MotorDriverNode(Node):
         self.cmd_right_rpm = 0.0
         self.last_cmd_time = None
 
-        self.declare_parameter('cmd_timeout_s', 0.2)
-        self.declare_parameter('write_rate_hz', 20.0)
-
-        # normal profile
+        # -------- params --------
         self.declare_parameter('acel_ms', 1200)
         self.declare_parameter('decel_ms', 1200)
-        self.declare_parameter('max_rpm', 25.0)
-
-        # correction profile
         self.declare_parameter('acel_ms_corr', 1200)
         self.declare_parameter('decel_ms_corr', 1200)
-        self.declare_parameter('corr_rpm_limit', 2.0)
 
         self._load_params()
         self.add_on_set_parameters_callback(self.on_params)
@@ -60,24 +53,17 @@ class MotorDriverNode(Node):
         self.sub_mode = self.create_subscription(String, '/mode', self.cb_mode, 10)
 
         # Timers
-        write_period = 1.0 / max(1.0, self.write_rate_hz)
-        self.write_timer = self.create_timer(write_period, self.write_tick)
+        self.write_timer = self.create_timer(0.05, self.write_tick)
         self.watchdog_timer = self.create_timer(0.05, self.watchdog_tick)
 
         self._profile_is_corr = False
         self._apply_profile(force=True)
 
     def _load_params(self):
-        self.cmd_timeout_s = float(self.get_parameter('cmd_timeout_s').value)
-        self.write_rate_hz = float(self.get_parameter('write_rate_hz').value)
-
         self.acel_ms = int(self.get_parameter('acel_ms').value)
         self.decel_ms = int(self.get_parameter('decel_ms').value)
-        self.max_rpm = float(self.get_parameter('max_rpm').value)
-
         self.acel_ms_corr = int(self.get_parameter('acel_ms_corr').value)
         self.decel_ms_corr = int(self.get_parameter('decel_ms_corr').value)
-        self.corr_rpm_limit = float(self.get_parameter('corr_rpm_limit').value)
 
     def on_params(self, params):
         self._load_params()
@@ -140,11 +126,11 @@ class MotorDriverNode(Node):
         if corr:
             acel = self.acel_ms_corr
             decel = self.decel_ms_corr
-            self.get_logger().info(f"Apply CORR profile acel={acel} decel={decel} rpm_limit={self.corr_rpm_limit}")
+            self.get_logger().info(f"Apply CORR profile acel={acel} decel={decel}")
         else:
             acel = self.acel_ms
             decel = self.decel_ms
-            self.get_logger().info(f"Apply NORMAL profile acel={acel} decel={decel} max_rpm={self.max_rpm}")
+            self.get_logger().info(f"Apply NORMAL profile acel={acel} decel={decel}")
 
         self._write_single(0x2080, int(acel))
         self._write_single(0x2081, int(acel))
@@ -178,7 +164,7 @@ class MotorDriverNode(Node):
         if self.last_cmd_time is None:
             return
         dt = (self.get_clock().now() - self.last_cmd_time).nanoseconds * 1e-9
-        if dt > self.cmd_timeout_s:
+        if dt > 0.2:
             self.get_logger().warning("cmd timeout -> STOP")
             self.stop()
             self.last_cmd_time = None
