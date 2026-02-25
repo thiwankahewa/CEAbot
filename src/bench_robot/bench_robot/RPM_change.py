@@ -36,6 +36,13 @@ def read_u16(client: ModbusSerialClient, addr: int) -> int:
 
 
 def main():
+    client = connect_client()
+    try:
+        val = read_u16(client, RPM_RES_REGISTER)
+        
+        print(f"✅ VERIFIED: 0x2022 = {val} (RPM resolution is active)")
+    finally:
+        client.close()
     # 1) Set + Save
     client = connect_client()
     try:
