@@ -43,6 +43,9 @@ class ArduinoBridge(Node):
             self.ser = serial.Serial(self.port, self.baud, timeout=0.05)
             self.connected = True
             self.get_logger().info(f"Opened serial {self.port} @ {self.baud}")
+            for _ in range(3):
+                self.force_steer_zero()
+                time.sleep(0.05)
             return True
         except Exception as e:
             self.ser = None
@@ -101,6 +104,19 @@ class ArduinoBridge(Node):
         self.send_line(cmd)
         self.last_send_time = now
         self.last_sent_angle = angle
+
+    def force_steer_zero(self):
+        # Choose what “0 degree” means for your robot
+        angle = 0.0
+
+        # Bypass rate limit + delta check
+        cmd = f"CMD A={angle - 15},{angle - 18}"  # right, left
+        self.send_line(cmd)
+
+        # also update trackers so later messages don't get blocked incorrectly
+        self.last_send_time = time.time()
+        self.last_sent_angle = angle
+        self.get_logger().info("Sent steer zero on connect")
 
     def on_tof_restart(self, request, response):
         if not self.ensure_connected():

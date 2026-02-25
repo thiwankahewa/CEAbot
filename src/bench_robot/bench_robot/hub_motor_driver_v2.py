@@ -83,8 +83,8 @@ class MotorDriverNode(Node):
             self.connected = False
 
     def _write_rpms(self, left_rpm: float, right_rpm: float):
-        l_cmd = int(round(left_rpm))
-        r_cmd = int(round(right_rpm))
+        l_cmd = int(round(left_rpm * 10))
+        r_cmd = int(round(right_rpm * 10))
         vals = [to_u16_signed(l_cmd), to_u16_signed(r_cmd)]
         res = self.client.write_registers(0x2088, vals, device_id=self.device_id)
         if res is None or res.isError():
