@@ -21,6 +21,7 @@ class BenchTracker(Node):
         self.auto_state = "idle"
         self.bench_track_dir = "bench_tracking_f"
         self.aruco_stop_request = False
+        self.aruco_stop_handled = False
 
         self.last_tof_stamp = None
         self.invalid_data_warned = False
@@ -155,6 +156,17 @@ class BenchTracker(Node):
     def cb_aruco_stop(self, msg: Bool):
         self.aruco_stop_request = bool(msg.data)
 
+    def cb_aruco_stop(self, msg: Bool):
+        new_req = bool(msg.data)
+
+        if new_req and not self.aruco_stop_request:
+            self.aruco_stop_handled = False
+
+        if not new_req:
+            self.aruco_stop_handled = False
+
+        self.aruco_stop_request = new_req
+
     def dist_cb(self, msg: Int16MultiArray):
         data = msg.data
         if data is None or len(data) < 4:
@@ -195,28 +207,15 @@ class BenchTracker(Node):
             self.publish_rpm(0.0, 0.0)
             return
         
-        if self.aruco_stop_request:
-            self.publish_rpm(0.0, 0.0)
+        if self.aruco_stop_request and not self.aruco_stop_handled:
+            # If not already in correction states, force yaw correction once
+            if self.auto_state not in ("yaw_correction", "align_center"):
+                self.publish_rpm(0.0, 0.0)
+                self.publish_steer(self.steer_track_deg)
+                self.set_state("yaw_correction")
+                self._yaw_ok = 0
+                return
 
-            # do final correction before scanning
-            off = float(self.offset_err_m)
-            yaw = float(self.yaw_err_m)
-
-            if self.auto_state not in ("yaw_correction", "align_center", "scan_init"):
-                if abs(yaw) > self.yaw_enter_m:
-                    self.set_state("yaw_correction")
-                    self._yaw_ok = 0
-                    return
-
-                if abs(off) > self.offset_enter_m:
-                    self.set_state("align_center")
-                    self.align_phase = 1
-                    self.align_phase_start = self.now_s()
-                    self.publish_steer(self.steer_align_deg)
-                    return
-
-            self.set_state("scan_init")
-            return
 
         if self.last_tof_stamp is None:
             self.publish_rpm(0.0, 0.0)
@@ -287,7 +286,7 @@ class BenchTracker(Node):
 
             left_rpm = self.clamp(self.mps_to_rpm(v_left), -self.max_rpm, self.max_rpm)
             right_rpm = self.clamp(self.mps_to_rpm(v_right), -self.max_rpm, self.max_rpm)
-            self.get_logger().info(f"TRACKING: off={off:.3f} yaw={yaw:.3f} rpm_left={right_rpm:.1f} rpm_right={left_rpm:.1f}")
+            #self.get_logger().info(f"TRACKING: off={off:.3f} yaw={yaw:.3f} rpm_left={right_rpm:.1f} rpm_right={left_rpm:.1f}")
             self.publish_rpm(left_rpm, right_rpm)
             return
 
@@ -312,7 +311,7 @@ class BenchTracker(Node):
             left, right = -self.corr_rpm, +self.corr_rpm
         else:
             left, right = +self.corr_rpm, -self.corr_rpm
-        self.get_logger().info(f"YAW CORR: off={off:.3f} yaw={yaw:.3f} rpm_left={left:.1f} rpm_right={right:.1f}")
+        #self.get_logger().info(f"YAW CORR: off={off:.3f} yaw={yaw:.3f} rpm_left={left:.1f} rpm_right={right:.1f}")
         self.publish_rpm(left, right)
 
         # exit after stable
@@ -354,7 +353,7 @@ class BenchTracker(Node):
                 left, right = -self.corr_rpm, -self.corr_rpm
             else:
                 left, right = +self.corr_rpm, +self.corr_rpm
-            self.get_logger().info(f"ALIGN CENTER: off={off:.3f} yaw={self.yaw_err_m:.3f} rpm_left={left:.1f} rpm_right={right:.1f}")
+            #self.get_logger().info(f"ALIGN CENTER: off={off:.3f} yaw={self.yaw_err_m:.3f} rpm_left={left:.1f} rpm_right={right:.1f}")
             self.publish_rpm(left, right)
 
             if self._off_ok >= 10:
@@ -374,7 +373,8 @@ class BenchTracker(Node):
                 self.align_phase = 0
                 self.align_phase_start = None
                 if self.aruco_stop_request:
-                    self.set_state("scan_init")
+                    self.aruco_stop_handled = True
+                    self.set_state("idle")
                 else:
                     self.set_state(self.bench_track_dir)
             return

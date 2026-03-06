@@ -72,7 +72,7 @@ class ArucoManager(Node):
         self.pub_stop = self.create_publisher(Bool, '/aruco_stop_request', 10)
         self.pub_auto_state_cmd = self.create_publisher(String, '/auto_state_cmd', 10)
         self.pub_location = self.create_publisher(Int32MultiArray, '/robot_location', 10)
-        self.pub_seen_id = self.create_publisher(Int32, '/aruco_seen_id', 10)
+        self.pub_seen_id = self.create_publisher(Int16, '/aruco_seen_id', 10)
         self.pub_debug = self.create_publisher(Int16MultiArray, '/aruco_debug', 10)
 
         # ---------------- timer ----------------
@@ -181,14 +181,14 @@ class ArucoManager(Node):
         if self.auto_state not in ("bench_tracking_f", "bench_tracking_b"):
             self.goal_seen_count = 0
 
-    def cb_goal_bench(self, msg: Int32):
+    def cb_goal_bench(self, msg: Int16):
         self.goal_bench = int(msg.data)
         self.goal_seen_count = 0
         self.stop_sent = False
         self.publish_stop(False)
         self.get_logger().info(f"goal_bench updated to {self.goal_bench}")
 
-    def cb_goal_row(self, msg: Int32):
+    def cb_goal_row(self, msg: Int16):
         self.goal_row = int(msg.data)
         self.goal_seen_count = 0
         self.stop_sent = False
@@ -226,9 +226,9 @@ class ArucoManager(Node):
             self.goal_seen_count = 0
             return
 
-        cv2.aruco.drawDetectedMarkers(frame, corners, ids)
+        '''cv2.aruco.drawDetectedMarkers(frame, corners, ids)
         cv2.imshow("Aruco Detection", frame)
-        cv2.waitKey(1)
+        cv2.waitKey(1)'''
 
         ids = ids.flatten().tolist()
 
@@ -245,7 +245,7 @@ class ArucoManager(Node):
             selected_id = int(ids[0])
 
         self.last_seen_marker = selected_id
-        self.pub_seen_id.publish(Int32(data=selected_id))
+        self.pub_seen_id.publish(Int16(data=selected_id))
 
         new_bench, new_row = self.marker_to_location(selected_id)
         self.current_bench = new_bench

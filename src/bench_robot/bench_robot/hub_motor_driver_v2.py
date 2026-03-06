@@ -126,11 +126,11 @@ class MotorDriverNode(Node):
         if corr:
             acel = self.acel_ms_corr
             decel = self.decel_ms_corr
-            self.get_logger().info(f"Apply CORR profile acel={acel} decel={decel}")
+            #self.get_logger().info(f"Apply CORR profile acel={acel} decel={decel}")
         else:
             acel = self.acel_ms
             decel = self.decel_ms
-            self.get_logger().info(f"Apply NORMAL profile acel={acel} decel={decel}")
+            #self.get_logger().info(f"Apply NORMAL profile acel={acel} decel={decel}")
 
         self._write_single(0x2080, int(acel))
         self._write_single(0x2081, int(acel))
