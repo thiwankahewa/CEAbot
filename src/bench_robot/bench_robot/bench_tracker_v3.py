@@ -20,6 +20,7 @@ class BenchTracker(Node):
         self.mode = "manual"
         self.auto_state = "idle"
         self.bench_track_dir = "bench_tracking_f"
+        self.aruco_stop_request = False
 
         self.last_tof_stamp = None
         self.invalid_data_warned = False
@@ -67,6 +68,7 @@ class BenchTracker(Node):
         self.sub_mode = self.create_subscription(String, '/mode', self.cb_mode, 10)
         self.sub_auto_state = self.create_subscription(String, '/auto_state', self.cb_auto_state, 10)
         self.sub_estop = self.create_subscription(Bool, '/e_stop', self.cb_estop, 10)
+        self.sub_aruco_stop = self.create_subscription(Bool, '/aruco_stop_request', self.cb_aruco_stop, 10)
 
         # -------- pubs --------
         self.pub_auto_state_cmd = self.create_publisher(String, '/auto_state_cmd', 10)
@@ -150,6 +152,9 @@ class BenchTracker(Node):
             self.bench_track_dir = st
         self.auto_state = st
 
+    def cb_aruco_stop(self, msg: Bool):
+        self.aruco_stop_request = bool(msg.data)
+
     def dist_cb(self, msg: Int16MultiArray):
         data = msg.data
         if data is None or len(data) < 4:
@@ -188,6 +193,29 @@ class BenchTracker(Node):
         
         if self.eStop:
             self.publish_rpm(0.0, 0.0)
+            return
+        
+        if self.aruco_stop_request:
+            self.publish_rpm(0.0, 0.0)
+
+            # do final correction before scanning
+            off = float(self.offset_err_m)
+            yaw = float(self.yaw_err_m)
+
+            if self.auto_state not in ("yaw_correction", "align_center", "scan_init"):
+                if abs(yaw) > self.yaw_enter_m:
+                    self.set_state("yaw_correction")
+                    self._yaw_ok = 0
+                    return
+
+                if abs(off) > self.offset_enter_m:
+                    self.set_state("align_center")
+                    self.align_phase = 1
+                    self.align_phase_start = self.now_s()
+                    self.publish_steer(self.steer_align_deg)
+                    return
+
+            self.set_state("scan_init")
             return
 
         if self.last_tof_stamp is None:
@@ -345,7 +373,10 @@ class BenchTracker(Node):
             if (t - (self.align_phase_start or t)) >= self.steer_settle_s:
                 self.align_phase = 0
                 self.align_phase_start = None
-                self.set_state(self.bench_track_dir)
+                if self.aruco_stop_request:
+                    self.set_state("scan_init")
+                else:
+                    self.set_state(self.bench_track_dir)
             return
 
         # fallback
