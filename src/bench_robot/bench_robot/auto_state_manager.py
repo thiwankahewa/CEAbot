@@ -23,6 +23,7 @@ class AutoStateManager(Node):
             "bench_tracking_b",
             "yaw_correction",
             "align_center",
+            "scan_start"
         }
 
         self.allowed = {
@@ -31,6 +32,7 @@ class AutoStateManager(Node):
             "bench_tracking_f": {"yaw_correction", "idle",  "bench_tracking_b", "align_center"},
             "bench_tracking_b": {"yaw_correction", "idle", "bench_tracking_f", "align_center"},
             "yaw_correction": {"align_center", "idle", "bench_tracking_b", "bench_tracking_f"},
+            "scan_start": {"align_center", "idle"},
         }
 
         self.mode = "manual"

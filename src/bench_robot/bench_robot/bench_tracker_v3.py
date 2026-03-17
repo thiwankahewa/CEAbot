@@ -29,8 +29,7 @@ class BenchTracker(Node):
         self.offset_err_m = 0.0
         self.yaw_err_m = 0.0
 
-        # align_center phases (non-blocking) - 0=inactive, 1=steer->90 settle, 2=correcting, 3=steer->0 settle
-        self.align_phase = 0
+        self.align_phase = 0             # align_center phases (non-blocking) - 0=inactive, 1=steer->90 settle, 2=correcting, 3=steer->0 settle
         self.align_phase_start = None
         self._yaw_ok = 0 # debounce counters
         self._off_ok = 0
@@ -153,8 +152,6 @@ class BenchTracker(Node):
             self.bench_track_dir = st
         self.auto_state = st
 
-    def cb_aruco_stop(self, msg: Bool):
-        self.aruco_stop_request = bool(msg.data)
 
     def cb_aruco_stop(self, msg: Bool):
         new_req = bool(msg.data)
@@ -272,16 +269,16 @@ class BenchTracker(Node):
             
             if self.auto_state == "bench_tracking_f":
                 direction = 1
-                self.Kp_offset_track = self.Kp_offset_track
+                Kp = self.Kp_offset_track
             else:
                 direction = -1
-                self.Kp_offset_track = self.Kp_offset_track_b
+                Kp = self.Kp_offset_track_b
 
             base_v_mps = direction * ((self.base_rpm * self.wheel_circumference) / 60.0)
 
-            w = direction * (-(self.Kp_offset_track * self.off_filt) - (self.Kd_offset_track * d_off))
+            w = direction * (-(Kp * self.off_filt) - (self.Kd_offset_track * d_off))
 
-            v_left = base_v_mps - w * (self.track_width_m / 2.0)
+            v_left = base_v_mps - w * (self.track_width_m /  2.0)
             v_right = base_v_mps + w * (self.track_width_m / 2.0)
 
             left_rpm = self.clamp(self.mps_to_rpm(v_left), -self.max_rpm, self.max_rpm)
@@ -331,7 +328,6 @@ class BenchTracker(Node):
 
         # Phase 1: steer to 90 and wait settle
         if self.align_phase == 1:
-            #self.publish_steer(self.steer_align_deg)
             self.publish_rpm(0.0, 0.0)
             if (t - (self.align_phase_start or t)) >= self.steer_settle_s:
                 self.align_phase = 2
@@ -340,7 +336,6 @@ class BenchTracker(Node):
 
         # Phase 2: apply correction at steer=90
         if self.align_phase == 2:
-            #self.publish_steer(self.steer_align_deg)
 
             # if centered for N cycles, go to phase 3
             if abs(off) <= self.offset_exit_m:
@@ -353,7 +348,6 @@ class BenchTracker(Node):
                 left, right = -self.corr_rpm, -self.corr_rpm
             else:
                 left, right = +self.corr_rpm, +self.corr_rpm
-            #self.get_logger().info(f"ALIGN CENTER: off={off:.3f} yaw={self.yaw_err_m:.3f} rpm_left={left:.1f} rpm_right={right:.1f}")
             self.publish_rpm(left, right)
 
             if self._off_ok >= 10:
@@ -367,14 +361,13 @@ class BenchTracker(Node):
 
         # Phase 3: steer back to 0 settle
         if self.align_phase == 3:
-            #self.publish_steer(self.steer_track_deg)
             self.publish_rpm(0.0, 0.0)
             if (t - (self.align_phase_start or t)) >= self.steer_settle_s:
                 self.align_phase = 0
                 self.align_phase_start = None
                 if self.aruco_stop_request:
                     self.aruco_stop_handled = True
-                    self.set_state("idle")
+                    self.set_state("scan_start")
                 else:
                     self.set_state(self.bench_track_dir)
             return
