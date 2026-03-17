@@ -75,6 +75,4 @@ def generate_launch_description():
             package="bench_robot",
             executable="aruco_detector",
             output="screen",)
-        
-            output="screen",),
     ])
