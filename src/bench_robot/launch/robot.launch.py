@@ -51,6 +51,10 @@ def generate_launch_description():
         Node(
             package="bench_robot",
             executable="auto_state_manager",
+            output="screen",),
+        Node(
+            package="bench_robot",
+            executable="aruco_detector",
             output="screen",)
         
     ])

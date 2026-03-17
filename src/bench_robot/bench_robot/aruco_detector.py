@@ -20,6 +20,9 @@ class ArucoManager(Node):
         self.mode = "manual"
         self.auto_state = "idle"
 
+        self.current_bench = None
+        self.current_row = None
+
         self.range_from_bench = 1
         self.range_from_row = 11
         self.range_to_bench = 1
