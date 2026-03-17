@@ -1,0 +1,81 @@
+/**:
+  ros__parameters:
+    general:
+      pub_frame_rate: 10.0
+      pub_resolution: "CUSTOM"
+      pub_downscale_factor: 2.0
+      publish_status: false
+
+    video:
+      publish_rgb: true
+      publish_left_right: false
+      publish_raw: false
+      publish_gray: false
+      publish_stereo: false
+      enable_24bit_output: true
+      auto_exposure_gain: false
+      exposure: 60
+      gain: 60
+      auto_whitebalance: true
+
+    sensors:
+      publish_imu_tf: false
+      publish_imu: false
+      publish_imu_raw: false
+      publish_cam_imu_transf: false
+      publish_mag: false
+      publish_baro: false
+      publish_temp: false
+
+    region_of_interest:
+      automatic_roi: false
+      apply_to_depth: true
+      apply_to_positional_tracking: false
+      apply_to_object_detection: false
+      apply_to_body_tracking: false
+      apply_to_spatial_mapping: false
+      publish_roi_mask: false
+
+    depth:
+      depth_mode: "NEURAL_LIGHT"
+      point_cloud_freq: 1.0
+      point_cloud_res: "REDUCED"
+      depth_confidence: 95
+      depth_texture_conf: 100
+      remove_saturated_areas: true
+      publish_depth_map: true
+      publish_depth_info: false
+      publish_point_cloud: false
+      publish_depth_confidence: false
+      publish_disparity: false
+
+    pos_tracking:
+      pos_tracking_enabled: false
+      imu_fusion: false
+      publish_tf: false
+      publish_map_tf: false
+      area_memory: false
+      publish_3d_landmarks: false
+      publish_odom_pose: false
+      publish_pose_cov: false
+      publish_cam_path: false
+
+    gnss_fusion:
+      gnss_fusion_enabled: false
+      publish_utm_tf: false
+
+    mapping:
+      mapping_enabled: false
+      publish_det_plane: false
+
+    object_detection:
+      od_enabled: false
+
+    body_tracking:
+      bt_enabled: false
+
+    stream_server:
+      stream_enabled: false
+
+    debug:
+      sdk_verbose: 1
