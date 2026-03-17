@@ -22,6 +22,7 @@ class ArucoManager(Node):
 
         self.current_bench = None
         self.current_row = None
+        self.row_known = False
 
         self.range_from_bench = 1
         self.range_from_row = 11
@@ -64,6 +65,7 @@ class ArucoManager(Node):
         self.sub_mode = self.create_subscription(String, '/mode', self.cb_mode, 10)
         self.sub_auto_state = self.create_subscription(String, '/auto_state', self.cb_auto_state, 10)
         self.sub_goal_locations = self.create_subscription(Int16MultiArray, '/goal_locations', self.cb_goal_locations, 10)
+        self.sub_current_bench = self.create_subscription(Int16, '/current_bench', self.cb_current_bench, 10)
         self.sub_scan_done = self.create_subscription(Bool, '/scan_done', self.cb_scan_done, 10)
 
         # ---------------- pubs ----------------
@@ -121,6 +123,8 @@ class ArucoManager(Node):
             self.get_logger().info(f"USB camera opened at index {self.usb_cam_index}")
 
     def request_tracking_direction(self):
+        if self.current_bench is None or self.current_row is None or not self.row_known:
+            return
         if self.current_bench != self.goal_bench:
             # For now, do nothing here. Later we can add bench-to-bench routing.
             return
@@ -153,6 +157,19 @@ class ArucoManager(Node):
         if self.auto_state not in ("bench_tracking_f", "bench_tracking_b"):
             self.goal_seen_count = 0
 
+    def cb_current_bench(self, msg: Int16):
+        self.current_bench = int(msg.data)
+        self.current_row = None
+        self.row_known = False
+        self.goal_seen_count = 0
+        self.stop_sent = False
+        self.publish_stop(False)
+
+        self.get_logger().info(f"Current bench set to {self.current_bench}, row unknown")
+        if self.auto_state != "bench_tracking_f":
+            self.pub_auto_state_cmd.publish(String(data="bench_tracking_f"))
+
+
     def cb_goal_locations(self, msg: Int16MultiArray):
         data = list(msg.data)
 
@@ -167,6 +184,15 @@ class ArucoManager(Node):
         self.stop_sent = False
         self.goal_seen_count = 0
         self.publish_stop(False)
+
+         # If row is not known yet, first localize row by moving
+        if self.current_bench is not None and not self.row_known:
+            self.get_logger().info(
+                f"Range received: ({fb},{fr}) -> ({tb},{tr}), waiting to detect current row on bench {self.current_bench}"
+            )
+            if self.auto_state != "bench_tracking_f":
+                self.pub_auto_state_cmd.publish(String(data="bench_tracking_f"))
+            return
 
         self.choose_range_start_end()
 
@@ -184,6 +210,10 @@ class ArucoManager(Node):
     def choose_range_start_end(self):
         fb, fr = self.range_from_bench, self.range_from_row
         tb, tr = self.range_to_bench, self.range_to_row
+
+        if self.current_bench is None or self.current_row is None:
+            self.get_logger().warn("Cannot choose range start/end because current location is incomplete")
+            return
 
         # same exact point
         if fb == tb and fr == tr:
@@ -290,6 +320,31 @@ class ArucoManager(Node):
 
         if selected_id is None:
             selected_id = int(ids[0])
+
+        # If bench is known but row is not, use the first row marker to initialize row
+        if self.current_bench is not None and not self.row_known:
+            if FIRST_ROW_ID <= selected_id <= LAST_ROW_ID:
+                self.current_row = selected_id
+                self.row_known = True
+
+                self.get_logger().info(
+                    f"Initial row fixed: current=({self.current_bench},{self.current_row})"
+                )
+
+                # If a range is already active, now we can decide nearest endpoint
+                if self.range_active:
+                    self.choose_range_start_end()
+                    self.goal_bench = self.scan_start_bench
+                    self.goal_row = self.scan_start_row
+
+                    self.get_logger().info(
+                        f"Range start selected after row detection: "
+                        f"start=({self.goal_bench},{self.goal_row}), "
+                        f"end=({self.scan_end_bench},{self.scan_end_row})"
+                    )
+
+                self.request_tracking_direction()
+            return
 
         new_bench, new_row = self.marker_to_location(selected_id)
         self.current_bench = new_bench
