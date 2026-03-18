@@ -43,9 +43,9 @@ class ArduinoBridge(Node):
             self.ser = serial.Serial(self.port, self.baud, timeout=0.05)
             self.connected = True
             self.get_logger().info(f"Opened serial {self.port} @ {self.baud}")
-            for _ in range(3):
-                self.force_steer_zero()
-                time.sleep(0.05)
+            if initial:
+                self.get_logger().info("Starting steering calibration: Moving to 45°")
+                self.perform_startup_wiggle()
             return True
         except Exception as e:
             self.ser = None
@@ -105,18 +105,29 @@ class ArduinoBridge(Node):
         self.last_send_time = now
         self.last_sent_angle = angle
 
-    def force_steer_zero(self):
-        # Choose what “0 degree” means for your robot
-        angle = 0.0
+    def perform_startup_wiggle(self):
 
-        # Bypass rate limit + delta check
-        cmd = f"CMD A={angle - 15},{angle - 18}"  # right, left
-        self.send_line(cmd)
-
-        # also update trackers so later messages don't get blocked incorrectly
-        self.last_send_time = time.time()
-        self.last_sent_angle = angle
-        self.get_logger().info("Sent steer zero on connect")
+        try:
+            # 1. Move to 45 degrees
+            angle_target = 45.0
+            cmd_45 = f"CMD A={angle_target - 15},{angle_target - 18}\n"
+            self.ser.write(cmd_45.encode('utf-8'))
+            
+            # Wait for hardware to physically move (adjust time as needed)
+            time.sleep(1.5) 
+            
+            # 2. Move back to 0 degrees
+            angle_zero = 0.0
+            cmd_0 = f"CMD A={angle_zero - 15},{angle_zero - 18}\n"
+            self.ser.write(cmd_0.encode('utf-8'))
+            
+            # Update trackers so the next callback doesn't think it's already at 0
+            self.last_sent_angle = angle_zero
+            self.last_send_time = time.time()
+            self.get_logger().info("Steering calibration complete.")
+            
+        except Exception as e:
+            self.get_logger().error(f"Failed startup wiggle: {e}")
 
     def on_tof_restart(self, request, response):
         if not self.ensure_connected():

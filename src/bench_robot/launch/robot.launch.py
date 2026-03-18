@@ -35,6 +35,11 @@ def generate_launch_description():
         Node(
             package='rosbridge_server',
             executable='rosbridge_websocket',
+            parameters=[{
+        'default_call_service_timeout': 5.0, # Sets a 5s timeout instead of blocking forever
+        'call_services_in_new_thread': True, # Prevents service calls from freezing the main thread
+        'send_action_goals_in_new_thread': True, # Prevents action goals from freezing the main thread
+    }]
         ),
         Node(
             package='bench_robot',
