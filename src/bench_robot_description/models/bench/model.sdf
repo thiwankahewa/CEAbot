@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<sdf version="1.9">
+  <model name="bench">
+    <static>true</static>
+
+    <link name="bench_link">
+      <visual name="bench_visual">
+        <geometry>
+          <mesh>
+            <uri>model://bench/greenhouse_bench.stl</uri>
+            <scale>0.001 0.001 0.001</scale>
+          </mesh>
+        </geometry>
+      </visual>
+
+
+      <collision name="bench_collision">
+        <pose>0 1 0 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>1.2192 2 0.05</size>
+          </box>
+        </geometry>
+      </collision>
+
+      
+    </link>
+  </model>
+</sdf>

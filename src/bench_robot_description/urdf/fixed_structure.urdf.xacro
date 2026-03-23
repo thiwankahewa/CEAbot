@@ -1,0 +1,213 @@
+<?xml version="1.0"?>
+
+<robot name="CEAbot" xmlns:xacro="http://www.ros.org/wiki/xacro">
+  
+
+  <!-- ===== Dimensions (meters) ===== -->
+  <xacro:property name="col_w" value="0.06"/>          <!-- 60 mm -->
+  <xacro:property name="col_d" value="0.06"/>          <!-- 60 mm -->
+  <xacro:property name="col_h" value="1.8288"/>        <!-- 6 ft -->
+
+  <xacro:property name="beam_len" value="1.524"/>      <!-- 5 ft -->
+  <xacro:property name="beam_w" value="0.06"/>
+  <xacro:property name="beam_d" value="0.06"/>
+
+  <xacro:property name="plate_x" value="0.43"/>
+  <xacro:property name="plate_y" value="0.06"/>
+  <xacro:property name="plate_z" value="0.43"/>
+
+  <!-- Column spacing: center-to-center distance along X -->
+  <xacro:property name="col_spacing" value="${beam_len}"/>
+  <xacro:property name="half_spacing" value="${col_spacing/2.0}"/>
+
+  <!-- ===== Base frame ===== -->
+  <link name="world" />
+  <!-- ===== Helper macro for box link ===== -->
+  <xacro:macro name="box_link" params="name sx sy sz">
+    <link name="${name}">
+      <visual>
+        <geometry>
+          <box size="${sx} ${sy} ${sz}"/>
+        </geometry>
+      </visual>
+      <collision>
+        <geometry>
+          <box size="${sx} ${sy} ${sz}"/>
+        </geometry>
+      </collision>
+      <inertial>
+        <!-- simple inertial placeholder (ok for RViz; refine later if sim) -->
+        <mass value="1.0"/>
+        <inertia ixx="0.01" ixy="0.0" ixz="0.0" iyy="0.01" iyz="0.0" izz="0.01"/>
+      </inertial>
+    </link>
+  </xacro:macro>
+
+  <!-- ===== Columns ===== -->
+  <xacro:box_link name="column_left_link"  sx="${col_w}" sy="${col_d}" sz="${col_h}"/>
+  <xacro:box_link name="column_right_link" sx="${col_w}" sy="${col_d}" sz="${col_h}"/>
+
+  <!-- Place columns standing on the ground: center at z = col_h/2 -->
+  <joint name="world_to_column_left" type="fixed">
+    <parent link="world"/>
+    <child link="column_left_link"/>
+    <origin xyz="${-half_spacing - 0.03} 0 ${col_h/2.0}" rpy="0 0 0"/>
+  </joint>
+
+  <joint name="base_link_to_column_right" type="fixed">
+    <parent link="world"/>
+    <child link="column_right_link"/>
+    <origin xyz="${half_spacing + 0.03} 0 ${col_h/2.0}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ===== Top beam ===== -->
+  <xacro:box_link name="top_beam_link" sx="${beam_len}" sy="${beam_w}" sz="${beam_d}"/>
+
+  <!-- Put beam center at z = col_h - beam_d/2 so it sits on top of columns -->
+  <joint name="base_link_to_top_beam" type="fixed">
+    <parent link="world"/>
+    <child link="top_beam_link"/>
+    <origin xyz="0 0 ${col_h - beam_d/2.0}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ===== Support plates (one per column at the beam connection) ===== -->
+  <xacro:box_link name="plate_left_link"  sx="${plate_x}" sy="${plate_y}" sz="${plate_z}"/>
+  <xacro:box_link name="plate_right_link" sx="${plate_x}" sy="${plate_y}" sz="${plate_z}"/>
+
+  <!-- Plate centers located at each column, near the top -->
+  <joint name="base_link_to_plate_left" type="fixed">
+    <parent link="world"/>
+    <child link="plate_left_link"/>
+    <origin xyz="${-half_spacing - 0.06} 0 ${col_h}" rpy="0 0.7854 0"/>
+  </joint>
+
+  <joint name="base_link_to_plate_right" type="fixed">
+    <parent link="world"/>
+    <child link="plate_right_link"/>
+    <origin xyz="${half_spacing + 0.06} 0 ${col_h}" rpy="0 0.7854 0"/>
+  </joint>
+
+  <link name="arm_mount_link"/>
+
+  <joint name="chassis_to_arm_mount" type="fixed">
+    <parent link="world"/>
+    <child link="arm_mount_link"/>
+    <origin xyz="0 -0.09 ${col_h }" rpy="0 0 0"/>
+</joint>
+
+  <xacro:arg name="dof" default="7"/>
+  <xacro:arg name="robot_ip" default="yyy.yyy.yyy.yyy"/>
+  <xacro:arg name="port" default="10000"/>
+  <xacro:arg name="username" default="admin"/>
+  <xacro:arg name="password" default="admin"/>
+  <xacro:arg name="sim_ignition" default="false"/>
+  <xacro:arg name="use_fake_hardware" default="false"/>
+  <xacro:arg name="use_internal_bus_gripper_comm" default="false"/>
+
+  <xacro:property name="simulation_controllers" value="$(find kinova_7dof_moveit_config)/config/ros2_controllers.yaml" />
+  
+
+  <xacro:include filename="$(find  bench_robot_description)/urdf/kortex_robot.xacro"/>
+    <xacro:load_robot
+      parent="arm_mount_link"
+      arm="gen3"
+      dof="$(arg dof)"
+      vision="false"
+      prefix=""
+
+      robot_ip="$(arg robot_ip)"
+      port="$(arg port)"
+      username="$(arg username)"
+      password="$(arg password)"
+      port_realtime="10001"
+      session_inactivity_timeout_ms="60000"
+      connection_inactivity_timeout_ms="2000"
+
+      use_fake_hardware="$(arg use_fake_hardware)"
+      fake_sensor_commands="false"
+      sim_gazebo="false"
+      sim_ignition="$(arg sim_ignition)"
+      sim_isaac="false"
+      moveit_active="false"
+      
+      use_internal_bus_gripper_comm="$(arg use_internal_bus_gripper_comm)"
+      gripper="false"
+      gripper_joint_name="robotiq_85_left_knuckle_joint"
+      >
+      <origin xyz="0 0 0" rpy="3.14159 0 0"/>
+</xacro:load_robot>
+
+<xacro:if value="$(arg sim_ignition)">
+    <gazebo reference="world">
+    </gazebo>
+    <gazebo>
+      <plugin filename="libign_ros2_control-system.so" name="ign_ros2_control::IgnitionROS2ControlPlugin">
+        <parameters>${simulation_controllers}</parameters>
+        <controller_manager_node_name>controller_manager</controller_manager_node_name>
+      </plugin>
+      <plugin filename="libignition-gazebo-sensors-system.so" name="ignition::gazebo::systems::Sensors">
+        <render_engine>ogre</render_engine>
+      </plugin>
+    </gazebo>
+    <gazebo reference="zed_camera_center">
+      <sensor name="camera_sensor" type="rgbd_camera">
+        <camera>
+          <horizontal_fov>1.885</horizontal_fov>
+          <image>
+            <width>640</width>
+            <height>480</height>
+            <format>RGB_INT8</format>
+          </image>
+          <clip>
+            <near>0.1</near>
+            <far>5</far>
+          </clip>
+          <distortion>
+            <k1>0.0</k1>
+            <k2>0.0</k2>
+            <k3>0.0</k3>
+            <p1>0.0</p1>
+            <p2>0.0</p2>
+            <center>0.5 0.5</center>
+          </distortion>
+          <lens>
+            <intrinsics>
+              <fx>554.25469</fx>
+              <fy>554.25469</fy>
+              <cx>320.5</cx>
+              <cy>240.5</cy>
+              <s>0</s>
+            </intrinsics>
+            <projection>
+              <p_fx>554.25469</p_fx>
+              <p_fy>554.25469</p_fy>
+              <p_cx>320.5</p_cx>
+              <p_cy>240.5</p_cy>
+              <tx>0</tx>
+              <ty>0</ty>
+            </projection>
+          </lens>
+          <noise>
+            <type>gaussian</type>
+            <mean>0</mean>
+            <stddev>0.00</stddev>
+          </noise>
+          <depth_camera>
+            <clip>
+              <near>0.1</near>
+              <far>5</far>
+            </clip>
+          </depth_camera>
+          <optical_frame_id>zed_camera_center</optical_frame_id>
+        </camera>
+        <ignition_frame_id>zed_camera_center</ignition_frame_id>
+        <always_on>1</always_on>
+        <update_rate>10</update_rate>
+        <visualize>true</visualize>
+        <topic>/zed_sim</topic>
+        <enable_metrics>false</enable_metrics>
+      </sensor>
+    </gazebo>
+  </xacro:if>
+
+</robot>

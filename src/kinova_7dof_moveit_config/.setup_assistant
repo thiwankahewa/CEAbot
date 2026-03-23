@@ -1,0 +1,25 @@
+moveit_setup_assistant_config:
+  urdf:
+    package: bench_robot_description
+    relative_path: urdf/fixed_structure.urdf.xacro
+  srdf:
+    relative_path: config/CEAbot.srdf
+  package_settings:
+    author_name: thiwa
+    author_email: thiwanka@uga.edu
+    generated_timestamp: 1773542314
+  control_xacro:
+    command:
+      - position
+    state:
+      - position
+      - velocity
+  modified_urdf:
+    xacros:
+      - control_xacro
+  control_xacro:
+    command:
+      - position
+    state:
+      - position
+      - velocity

@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="CEAbot">
+    <xacro:arg name="initial_positions_file" default="initial_positions.yaml" />
+
+    <!-- Import CEAbot urdf file -->
+    <xacro:include filename="$(find bench_robot_description)/urdf/fixed_structure.urdf.xacro" />
+
+    <!-- Import control_xacro -->
+    <xacro:include filename="CEAbot.ros2_control.xacro" />
+
+
+    <xacro:CEAbot_ros2_control name="FakeSystem" initial_positions_file="$(arg initial_positions_file)"/>
+
+</robot>

@@ -1,0 +1,54 @@
+<?xml version="1.0"?>
+<sdf version="1.9">
+  <model name="tomato_plant_refined">
+    <static>true</static>
+    <link name="plant_link">
+
+      <visual name="stem_visual">
+        <pose>0 0 0.15 0 0 0</pose>
+        <geometry>
+          <cylinder>
+            <radius>0.015</radius> <length>0.3</length>
+          </cylinder>
+        </geometry>
+        <material>
+          <ambient>0.13 0.37 0.13 1</ambient>
+          <diffuse>0.13 0.37 0.13 1</diffuse>
+        </material>
+      </visual>
+
+      <visual name="canopy_visual">
+        <pose>0 0 0.225 0 0 0</pose>
+        <geometry>
+          <sphere>
+            <radius>0.15</radius> </sphere>
+        </geometry>
+        <scale>1 1 1.5</scale> 
+        <material>
+          <ambient>0.05 0.4 0.05 1</ambient>
+          <diffuse>0.1 0.5 0.1 1</diffuse>
+        </material>
+      </visual>
+
+      <visual name="fruit_1">
+        <pose>0.1 0.05 0.25 0 0 0</pose>
+        <geometry><sphere><radius>0.025</radius></sphere></geometry>
+        <material>
+          <ambient>0.8 0 0 1</ambient>
+          <diffuse>0.8 0 0 1</diffuse>
+        </material>
+      </visual>
+
+      <collision name="plant_collision">
+        <pose>0 0 0.225 0 0 0</pose>
+        <geometry>
+          <cylinder>
+            <radius>0.15</radius>
+            <length>0.45</length>
+          </cylinder>
+        </geometry>
+      </collision>
+
+    </link>
+  </model>
+</sdf>
