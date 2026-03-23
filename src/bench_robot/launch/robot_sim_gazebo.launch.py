@@ -6,6 +6,8 @@ from launch.actions import (
     IncludeLaunchDescription,
     OpaqueFunction,
     RegisterEventHandler,
+    SetEnvironmentVariable,
+    TimerAction,
 )
 from launch.conditions import IfCondition, UnlessCondition
 from launch.event_handlers import OnProcessExit, OnProcessStart
@@ -80,7 +82,6 @@ def launch_setup(context, *args, **kwargs):
     robot_description = {"robot_description": robot_description_content.perform(context)}
 
     dof_raw = context.perform_substitution(LaunchConfiguration("dof"))
-    moveit_package_name = PythonExpression(["'kinova_' + '", dof, "' + 'dof_moveit_config'"])
     moveit_package_str = f"kinova_{dof_raw}dof_moveit_config"
 
     # --- Controller Manager Path ---
@@ -176,8 +177,6 @@ def launch_setup(context, *args, **kwargs):
         ]
     )
 
-    moveit_py_param_file = os.path.join(get_package_share_directory("bench_robot"),"config","moveit_py.yaml",)
-
     arm_controller_node = Node(
         package="bench_robot_cpp",
         executable="arm_controller",
@@ -192,24 +191,49 @@ def launch_setup(context, *args, **kwargs):
     # --- Execution Logic ---
     nodes_to_start = [robot_state_publisher_node, ros2_control_node, marker_422_left, marker_722_left,marker_bench_left]
 
-    gz_bridge_params = os.path.join(get_package_share_directory("bench_robot_moveit"), "config", "gazebo_default.config")
+    
 
     if is_sim:
+
+        pkg_desc = get_package_share_directory("bench_robot_description")
+        world_path = os.path.join(pkg_desc, "worlds", "greenhouse.world.sdf")
+        models_path = os.path.join(pkg_desc, "models")
+
+        gz_resource_path = SetEnvironmentVariable(name="GZ_SIM_RESOURCE_PATH",value=models_path + ":" + os.environ.get("GZ_SIM_RESOURCE_PATH", ""))
+        
+        gz_sim = IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                [FindPackageShare("ros_gz_sim"), "/launch/gz_sim.launch.py"]
+            ),
+            launch_arguments={"gz_args": f"-r -v 3 {world_path}"}.items(),
+            #launch_arguments={"ign_args": " -r -v 3 empty.sdf"}.items(),
+        )
+            
         # GAZEBO MODE
         ignition_spawn_entity = Node(
             package="ros_gz_sim",
             executable="create",
-            arguments=["-string", robot_description_content, "-name", "gen3", "-z", "0.3"],
+            arguments=["-string",  robot_description["robot_description"], "-name", "gen3", "-z", "0.3"],
         )
+
+        delayed_spawn = TimerAction(period=5.0,actions=[ignition_spawn_entity])
+
+        camera_bridge = Node(
+            package="ros_gz_bridge",
+            executable="parameter_bridge",
+            arguments=[
+                "/zed_sim/image@sensor_msgs/msg/Image@ignition.msgs.Image",
+                "/zed_sim/depth_image@sensor_msgs/msg/Image@ignition.msgs.Image",
+                "/zed_sim/camera_info@sensor_msgs/msg/CameraInfo@ignition.msgs.CameraInfo",
+            ],
+            output="screen",
+        )
+
         nodes_to_start += [
-            IncludeLaunchDescription(
-                PythonLaunchDescriptionSource([FindPackageShare("ros_gz_sim"), "/launch/gz_sim.launch.py"]),
-                launch_arguments={"ign_args": "-r -v 3 empty.sdf",}.items(),
-            ),
-            ignition_spawn_entity,
-            RegisterEventHandler(
-                OnProcessExit(target_action=ignition_spawn_entity, on_exit=[joint_state_broadcaster_spawner])
-            ),
+            gz_resource_path,
+            gz_sim,
+            delayed_spawn,
+            RegisterEventHandler(OnProcessExit(target_action=ignition_spawn_entity, on_exit=[joint_state_broadcaster_spawner])),
         ]
     else:
         # REAL ROBOT or FAKE MODE

@@ -165,7 +165,7 @@ class MotorDriverNode(Node):
             return
         dt = (self.get_clock().now() - self.last_cmd_time).nanoseconds * 1e-9
         if dt > 0.2:
-            self.get_logger().warning("cmd timeout -> STOP")
+            #self.get_logger().warning("cmd timeout -> STOP")
             self.stop()
             self.last_cmd_time = None
 
