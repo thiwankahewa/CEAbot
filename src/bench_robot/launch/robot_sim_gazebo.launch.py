@@ -85,15 +85,14 @@ def launch_setup(context, *args, **kwargs):
     moveit_package_str = f"kinova_{dof_raw}dof_moveit_config"
 
     # --- Controller Manager Path ---
-    ros2_controllers_path = os.path.join(
-        get_package_share_directory(moveit_package_str), "config", "ros2_controllers.yaml"
-    )
+    ros2_controllers_path = os.path.join(get_package_share_directory(moveit_package_str), "config", "ros2_controllers.yaml")
 
     # --- Nodes Definition ---
     robot_state_publisher_node = Node(
         package="robot_state_publisher",
         executable="robot_state_publisher",
-        output="both",
+        #output="both",
+        arguments=["--ros-args", "--log-level", "warn"],
         parameters=[robot_description, {"use_sim_time": actual_sim_time}],
     )
 
@@ -102,20 +101,23 @@ def launch_setup(context, *args, **kwargs):
         package="controller_manager",
         executable="ros2_control_node",
         parameters=[robot_description, ros2_controllers_path, {"use_sim_time": actual_sim_time}],
-        output="both",
+        #output="both",
+        arguments=["--ros-args", "--log-level", "warn"],
         condition=UnlessCondition(sim_ignition_val), # Run if NOT in simulation
     )
 
     joint_state_broadcaster_spawner = Node(
         package="controller_manager",
         executable="spawner",
-        arguments=["joint_state_broadcaster", "--controller-manager", "/controller_manager"],
+        name="joint_state_broadcaster_spawner",
+        arguments=["joint_state_broadcaster", "--controller-manager", "/controller_manager", "--ros-args", "--log-level", "warn"],
     )
 
     robot_traj_controller_spawner = Node(
         package="controller_manager",
         executable="spawner",
-        arguments=["joint_trajectory_controller", "--controller-manager", "/controller_manager"],
+        name="robot_traj_controller_spawner",
+        arguments=["joint_trajectory_controller", "--controller-manager", "/controller_manager","--ros-args", "--log-level", "warn"],
     )
 
     # --- MoveIt 2 Configuration ---
@@ -134,7 +136,8 @@ def launch_setup(context, *args, **kwargs):
     move_group_node = Node(
         package="moveit_ros_move_group",
         executable="move_group",
-        output="screen",
+        #output="screen",
+        arguments=["--ros-args", "--log-level", "warn"],
         parameters=[moveit_config.to_dict(), {"use_sim_time": actual_sim_time}],
         
     )
@@ -142,9 +145,10 @@ def launch_setup(context, *args, **kwargs):
     rviz_node = Node(
         package="rviz2",
         executable="rviz2",
-        arguments=["-d", os.path.join(get_package_share_directory(moveit_package_str), "config", "moveit.rviz")],
+        arguments=["-d", os.path.join(get_package_share_directory(moveit_package_str), "config", "moveit.rviz"), 
+                   "--ros-args", "--log-level", "warn"],
         parameters=[moveit_config.to_dict(), {"use_sim_time": actual_sim_time}],
-        condition=UnlessCondition(launch_arm_controller),
+        #condition=UnlessCondition(launch_arm_controller),
     )
 
     marker_422_left = Node(
@@ -153,8 +157,9 @@ def launch_setup(context, *args, **kwargs):
         arguments=[
             '--x', '-0.792', '--y', '0', '--z', '-0.452', # 422mm down from beam
             '--frame-id', 'top_beam_link', 
-            '--child-frame-id', 'height_marker_422_left'
-        ]
+            '--child-frame-id', 'height_marker_422_left',
+            "--ros-args", "--log-level", "warn"
+        ],
     )
 
     marker_722_left = Node(
@@ -163,8 +168,9 @@ def launch_setup(context, *args, **kwargs):
         arguments=[
             '--x', '-0.792', '--y', '0', '--z', '-0.752', 
             '--frame-id', 'top_beam_link', 
-            '--child-frame-id', 'height_marker_722_left'
-        ]
+            '--child-frame-id', 'height_marker_722_left',
+            "--ros-args", "--log-level", "warn"
+        ],
     )
 
     marker_bench_left = Node(
@@ -173,8 +179,9 @@ def launch_setup(context, *args, **kwargs):
         arguments=[
             '--x', '-0.792', '--y', '0', '--z', '-1.202', 
             '--frame-id', 'top_beam_link', 
-            '--child-frame-id', 'height_marker_bench_left'
-        ]
+            '--child-frame-id', 'height_marker_bench_left',
+            "--ros-args", "--log-level", "warn"
+        ],
     )
 
     arm_controller_node = Node(
@@ -188,8 +195,33 @@ def launch_setup(context, *args, **kwargs):
         condition=IfCondition(launch_arm_controller),
     )
 
+    zed_wrapper_dir = get_package_share_directory("zed_wrapper")
+    zed_launch = os.path.join(zed_wrapper_dir, "launch", "zed_camera.launch.py")
+    my_pkg_dir = get_package_share_directory("bench_robot")
+    zed_params = os.path.join(my_pkg_dir, "config", "zed_mini.yaml")
+
+    zed_camera = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(zed_launch),
+        launch_arguments={
+            "camera_model": "zed2i",
+            "ros_params_override_path": zed_params,
+            "serial_number": "0",
+            "publish_urdf": "false",
+            "publish_tf": "false",
+            "enable_ipc": "false",
+        }.items()
+    )
+
+
+    zed_local_mapper_node = Node(
+        package="bench_robot",
+        executable="zed_local_mapper",
+        output="screen",
+        condition=IfCondition(launch_arm_controller),
+    )
+
     # --- Execution Logic ---
-    nodes_to_start = [robot_state_publisher_node, ros2_control_node, marker_422_left, marker_722_left,marker_bench_left]
+    nodes_to_start = [robot_state_publisher_node, ros2_control_node, marker_422_left, marker_722_left,marker_bench_left, zed_camera,zed_local_mapper_node]
 
     
 
@@ -245,7 +277,7 @@ def launch_setup(context, *args, **kwargs):
             OnProcessExit(target_action=joint_state_broadcaster_spawner, on_exit=[robot_traj_controller_spawner])
         ),
         RegisterEventHandler(
-            OnProcessExit(target_action=robot_traj_controller_spawner, on_exit=[move_group_node, rviz_node,arm_controller_node])
+            OnProcessExit(target_action=robot_traj_controller_spawner, on_exit=[move_group_node, rviz_node, arm_controller_node])
         ),
         
     ]

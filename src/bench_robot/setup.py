@@ -36,6 +36,7 @@ setup(
             'motor_control_mux = bench_robot.motor_control_mux:main',
             'auto_state_manager = bench_robot.auto_state_manager:main',
             'aruco_detector = bench_robot.aruco_detector:main',
+            'zed_local_mapper = bench_robot.zed_local_mapper:main',
         ],
     },
 )

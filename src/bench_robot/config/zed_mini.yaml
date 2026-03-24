@@ -44,8 +44,8 @@
       depth_texture_conf: 100
       remove_saturated_areas: true
       publish_depth_map: true
-      publish_depth_info: false
-      publish_point_cloud: false
+      publish_depth_info: true
+      publish_point_cloud: true
       publish_depth_confidence: false
       publish_disparity: false
 
