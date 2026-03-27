@@ -278,6 +278,31 @@ class ArucoManager(Node):
 
         self.request_tracking_direction()
 
+    def is_in_selected_range(self, bench: int, row: int) -> bool:
+        if not self.range_active:
+            return bench == self.goal_bench and row == self.goal_row
+
+        # only same-bench range for now
+        if self.range_from_bench != self.range_to_bench:
+            return False
+
+        if bench != self.range_from_bench:
+            return False
+
+        low = min(self.range_from_row, self.range_to_row)
+        high = max(self.range_from_row, self.range_to_row)
+
+        return low <= row <= high
+    
+    def is_active_stop_target(self, bench: int, row: int) -> bool:
+        if bench is None or row is None:
+            return False
+
+        if not self.is_in_selected_range(bench, row):
+            return False
+
+        return bench == self.goal_bench and row == self.goal_row
+
     
 
     def detect_tick(self):
@@ -357,7 +382,7 @@ class ArucoManager(Node):
             self.get_logger().info(f"marker={selected_id}, current=({self.current_bench},{self.current_row}), "f"goal=({self.goal_bench},{self.goal_row})")
             self.prev_selected_id = selected_id
 
-        if self.current_bench == self.goal_bench and self.current_row == self.goal_row:
+        if self.is_active_stop_target(self.current_bench, self.current_row):
             self.goal_seen_count += 1
         else:
             self.goal_seen_count = 0
