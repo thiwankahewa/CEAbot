@@ -16,6 +16,9 @@ ros2 launch bench_robot zed.launch.py
 ros2 topic pub /auto_state std_msgs/msg/String "{data: scan_start}" --once
 
 
+ros2 run tf2_ros tf2_echo base_link zed_camera_center
+
+
 
 
 

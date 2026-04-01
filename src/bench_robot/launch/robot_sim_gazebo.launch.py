@@ -157,7 +157,7 @@ def launch_setup(context, *args, **kwargs):
         arguments=[
             '--x', '-0.792', '--y', '0', '--z', '-0.452', # 422mm down from beam
             '--frame-id', 'top_beam_link', 
-            '--child-frame-id', 'height_marker_422_left',
+            '--child-frame-id', 'marker_422_left',
             "--ros-args", "--log-level", "warn"
         ],
     )
@@ -168,7 +168,7 @@ def launch_setup(context, *args, **kwargs):
         arguments=[
             '--x', '-0.792', '--y', '0', '--z', '-0.752', 
             '--frame-id', 'top_beam_link', 
-            '--child-frame-id', 'height_marker_722_left',
+            '--child-frame-id', 'marker_722_left',
             "--ros-args", "--log-level", "warn"
         ],
     )
@@ -179,7 +179,29 @@ def launch_setup(context, *args, **kwargs):
         arguments=[
             '--x', '-0.792', '--y', '0', '--z', '-1.202', 
             '--frame-id', 'top_beam_link', 
-            '--child-frame-id', 'height_marker_bench_left',
+            '--child-frame-id', 'marker_bench_left',
+            "--ros-args", "--log-level", "warn"
+        ],
+    )
+
+    marker_bench_center = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        arguments=[
+            '--x', '0', '--y', '0', '--z', '-1.202', 
+            '--frame-id', 'top_beam_link', 
+            '--child-frame-id', 'marker_bench_center',
+            "--ros-args", "--log-level", "warn"
+        ],
+    )
+
+    marker_bench_third = Node(
+        package='tf2_ros',
+        executable='static_transform_publisher',
+        arguments=[
+            '--x', '-0.5', '--y', '0', '--z', '-1.202', 
+            '--frame-id', 'top_beam_link', 
+            '--child-frame-id', 'marker_bench_third',
             "--ros-args", "--log-level", "warn"
         ],
     )
@@ -221,7 +243,9 @@ def launch_setup(context, *args, **kwargs):
     )
 
     # --- Execution Logic ---
-    nodes_to_start = [robot_state_publisher_node, ros2_control_node, marker_422_left, marker_722_left,marker_bench_left, zed_camera,zed_local_mapper_node]
+    nodes_to_start = [robot_state_publisher_node, ros2_control_node, marker_422_left, 
+                      marker_722_left,marker_bench_left, marker_bench_center, marker_bench_third,
+                      zed_camera,zed_local_mapper_node]
 
     
 

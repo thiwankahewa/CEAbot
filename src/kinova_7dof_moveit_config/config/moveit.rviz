@@ -1,16 +1,14 @@
 Panels:
   - Class: rviz_common/Displays
-    Help Height: 0
+    Help Height: 70
     Name: Displays
     Property Tree Widget:
       Expanded:
-        - /Global Options1
         - /MotionPlanning1
-        - /MotionPlanning1/Scene Geometry1
         - /TF1
         - /TF1/Frames1
       Splitter Ratio: 0.5
-    Tree Height: 454
+    Tree Height: 207
   - Class: rviz_common/Help
     Name: Help
   - Class: rviz_common/Views
@@ -155,6 +153,7 @@ Visualization Manager:
             Alpha: 1
             Show Axes: false
             Show Trail: false
+            Value: true
           zed_camera_link:
             Alpha: 1
             Show Axes: false
@@ -175,12 +174,12 @@ Visualization Manager:
             Alpha: 1
             Show Axes: false
             Show Trail: false
-        Loop Animation: false
+        Loop Animation: true
         Robot Alpha: 0.5
         Robot Color: 150; 50; 150
         Show Robot Collision: false
-        Show Robot Visual: false
-        Show Trail: true
+        Show Robot Visual: true
+        Show Trail: false
         State Display Time: 0.05 s
         Trail Step Size: 1
         Trajectory Topic: display_planned_path
@@ -199,7 +198,7 @@ Visualization Manager:
         Interactive Marker Size: 0
         Joint Violation Color: 255; 0; 255
         Planning Group: arm
-        Query Goal State: false
+        Query Goal State: true
         Query Start State: false
         Show Workspace: false
         Start State Alpha: 1
@@ -306,6 +305,7 @@ Visualization Manager:
             Alpha: 1
             Show Axes: false
             Show Trail: false
+            Value: true
           zed_camera_link:
             Alpha: 1
             Show Axes: false
@@ -339,7 +339,7 @@ Visualization Manager:
         arm_mount_link:
           Value: false
         base_link:
-          Value: true
+          Value: false
         bracelet_link:
           Value: false
         column_left_link:
@@ -354,11 +354,13 @@ Visualization Manager:
           Value: false
         half_arm_2_link:
           Value: false
-        height_marker_422_left:
+        marker_422_left:
           Value: true
-        height_marker_722_left:
+        marker_722_left:
           Value: true
-        height_marker_bench_left:
+        marker_bench_center:
+          Value: true
+        marker_bench_left:
           Value: true
         plate_left_link:
           Value: false
@@ -424,11 +426,13 @@ Visualization Manager:
           plate_right_link:
             {}
           top_beam_link:
-            height_marker_422_left:
+            marker_422_left:
               {}
-            height_marker_722_left:
+            marker_722_left:
               {}
-            height_marker_bench_left:
+            marker_bench_center:
+              {}
+            marker_bench_left:
               {}
       Update Interval: 0
       Value: true
@@ -450,30 +454,30 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 3.5246834754943848
+      Distance: 4.370607376098633
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 0.3022172152996063
-        Y: 0.45825299620628357
-        Z: 0.7257881164550781
+        X: -0.10000000149011612
+        Y: 0.25
+        Z: 0.30000001192092896
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.5149996876716614
+      Pitch: 0.3400000333786011
       Target Frame: world
       Value: Orbit (rviz_default_plugins)
-      Yaw: 4.780178070068359
+      Yaw: 4.730185031890869
     Saved: ~
 Window Geometry:
   Displays:
     collapsed: false
-  Height: 1016
+  Height: 1107
   Help:
     collapsed: false
   Hide Left Dock: false
@@ -482,9 +486,9 @@ Window Geometry:
     collapsed: false
   MotionPlanning - Trajectory Slider:
     collapsed: false
-  QMainWindow State: 000000ff00000000fd0000000100000000000001f30000039efc0200000005fb00000044004d006f00740069006f006e0050006c0061006e006e0069006e00670020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff0000004100fffffffb000000100044006900730070006c006100790073010000003d00000203000000c900fffffffb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e00670000000133000001e50000017d00fffffffb0000000800480065006c0070000000029a0000006e0000006e00fffffffb0000000a00560069006500770073010000024600000195000000a400ffffff000005410000039e00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  QMainWindow State: 000000ff00000000fd0000000100000000000002b4000003fdfc0200000005fb00000044004d006f00740069006f006e0050006c0061006e006e0069006e00670020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff0000003f00fffffffb000000100044006900730070006c006100790073010000003b00000150000000c700fffffffb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e00670100000191000001d00000016900fffffffb0000000800480065006c0070000000029a0000006e0000006e00fffffffb0000000a005600690065007700730100000367000000d1000000a000ffffff000004ba000003fd00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
   Views:
     collapsed: false
-  Width: 1850
-  X: 70
-  Y: 27
+  Width: 1908
+  X: 0
+  Y: 0

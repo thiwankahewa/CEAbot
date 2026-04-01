@@ -139,6 +139,8 @@ private:
 
         RCLCPP_INFO(get_logger(), "Trying pose target: x=%.3f y=%.3f z=%.3f", x, y, z);
 
+        move_group_->clearPoseTargets();
+        move_group_->clearPathConstraints();
         move_group_->setStartStateToCurrentState();
         auto constraints = make_z_box_constraint("base_link", "zed_camera_center");
         move_group_->setPathConstraints(constraints);
@@ -153,6 +155,7 @@ private:
         if (plan_result != moveit::core::MoveItErrorCode::SUCCESS) {
             RCLCPP_ERROR(get_logger(), "Planning to pose target failed.");
             move_group_->clearPoseTargets();
+            move_group_->clearPathConstraints();
             return false;
         }
 
@@ -187,7 +190,7 @@ private:
         box.dimensions[shape_msgs::msg::SolidPrimitive::BOX_Y] = 2.0;
 
         // z allowed range: 0.00 to 0.29
-        box.dimensions[shape_msgs::msg::SolidPrimitive::BOX_Z] = 0.35;
+        box.dimensions[shape_msgs::msg::SolidPrimitive::BOX_Z] = 0.5;
 
         geometry_msgs::msg::Pose box_pose;
         box_pose.orientation.w = 1.0;
@@ -195,7 +198,7 @@ private:
         // Center of box is halfway between 0 and 0.29
         box_pose.position.x = 0.0;
         box_pose.position.y = 0.0;
-        box_pose.position.z = 0.175;
+        box_pose.position.z = 0.25;
 
         pc.constraint_region.primitives.push_back(box);
         pc.constraint_region.primitive_poses.push_back(box_pose);
@@ -323,17 +326,17 @@ private:
 
         reset_sync_flags();
 
-        publish_status("moving_to_scan_start");
+        /*publish_status("moving_to_scan_start");
         if (!move_named_pose("scan_start")) {
             publish_status("scan_failed");
             busy_ = false;
             return;
-        }
+        }*/
 
         std::vector<ViewPose> views = {
-            {-0.674, -0.226, 0.29, 0.000, -0.715, 0.000, 0.699},   // left
-            {0.0, -0.226, 0.29, 0.000, -0.715, 0.000, 0.699},   // center
-            {0.674, -0.226, 0.29, 0.000, -0.715, 0.000, 0.699}   // right
+               // left
+            {-0.008, -0.185, 0.334, -0.001, -0.710, -0.005, 0.705},   // center
+            {0.626, -0.190, 0.338, -0.001, -0.710, -0.005, 0.705}   // right
         };
 
         for (size_t i = 0; i < views.size(); ++i) {
