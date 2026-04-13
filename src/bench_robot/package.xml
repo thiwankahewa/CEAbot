@@ -12,6 +12,10 @@
   <depend>geometry_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>rcl_interfaces</depend>
+  <depend>std_srvs</depend>
+  <depend>sensor_msgs_py</depend>
+  <depend>cv_bridge</depend>
+  <depend>message_filters</depend>
 
   <exec_depend>serial</exec_depend>
   <exec_depend>ros2launch</exec_depend>

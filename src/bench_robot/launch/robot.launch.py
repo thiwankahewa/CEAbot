@@ -31,11 +31,19 @@ def generate_launch_description():
     orbbec_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([
-                FindPackageShare("bench_robot"),
+                FindPackageShare("orbbec_camera"),
                 "launch",
-                "orbbec_custom_launch.py"
+                "gemini_330_series.launch.py"
             ])
-        )
+        ),
+        launch_arguments={
+        'enable_color:': 'false',
+        'enable_depth': 'false',
+        'enable_point_cloud': 'true',
+        'enable_colored_point_cloud': 'true',
+        'depth_registration': 'true',
+
+    }.items()
     )
 
 
