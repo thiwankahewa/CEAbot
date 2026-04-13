@@ -37,6 +37,7 @@ setup(
             'auto_state_manager = bench_robot.auto_state_manager:main',
             'aruco_detector = bench_robot.aruco_detector:main',
             'zed_local_mapper = bench_robot.zed_local_mapper:main',
+            'orbbec_test_scan = bench_robot.orbbec_test_scan:main',
         ],
     },
 )
