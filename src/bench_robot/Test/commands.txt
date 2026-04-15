@@ -1,3 +1,5 @@
+ros2 launch rosbridge_server rosbridge_websocket_launch.xml 
+
 colcon build --symlink-install
 
 ros2 launch moveit_setup_assistant setup_assistant.launch.py

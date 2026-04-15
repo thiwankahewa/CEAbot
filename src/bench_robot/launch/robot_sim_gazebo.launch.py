@@ -217,7 +217,7 @@ def launch_setup(context, *args, **kwargs):
         condition=IfCondition(launch_arm_controller),
     )
 
-    zed_wrapper_dir = get_package_share_directory("zed_wrapper")
+    '''zed_wrapper_dir = get_package_share_directory("zed_wrapper")
     zed_launch = os.path.join(zed_wrapper_dir, "launch", "zed_camera.launch.py")
     my_pkg_dir = get_package_share_directory("bench_robot")
     zed_params = os.path.join(my_pkg_dir, "config", "zed_mini.yaml")
@@ -232,7 +232,7 @@ def launch_setup(context, *args, **kwargs):
             "publish_tf": "false",
             "enable_ipc": "false",
         }.items()
-    )
+    )'''
 
 
     zed_local_mapper_node = Node(
@@ -244,8 +244,7 @@ def launch_setup(context, *args, **kwargs):
 
     # --- Execution Logic ---
     nodes_to_start = [robot_state_publisher_node, ros2_control_node, marker_422_left, 
-                      marker_722_left,marker_bench_left, marker_bench_center, marker_bench_third,
-                      zed_camera,zed_local_mapper_node]
+                      marker_722_left,marker_bench_left, marker_bench_center, marker_bench_third,]
 
     
 

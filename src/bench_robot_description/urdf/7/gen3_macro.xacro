@@ -452,7 +452,8 @@
         xyz="0 0 0" />
     </joint>
 
-    <xacro:include filename="$(find zed_wrapper)/urdf/zed_macro.urdf.xacro" />
+    <!--<xacro:include filename="$(find zed_wrapper)/urdf/zed_macro.urdf.xacro" />
+    
 
     <xacro:zed_camera name="zed" model="zedm" enable_gnss="false">
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -461,6 +462,14 @@
       <parent link="${prefix}end_effector_link"/>
       <child link="zed_camera_link"/>
       <origin xyz="0.0133 0 0.012" rpy="0 -1.5708 0"/>
+    </joint>-->
+
+    <xacro:include filename="$(find orbbec_description)/urdf/gemini_335_336.urdf.xacro" />
+
+    <joint name="orbbec_mount_joint" type="fixed">
+      <parent link="${prefix}end_effector_link"/>
+      <child link="camera_link"/>
+      <origin xyz="0 0 0.02" rpy="0 -1.5708 0"/>
     </joint>
     
   </xacro:macro>
