@@ -5,7 +5,7 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from rcl_interfaces.msg import SetParametersResult
-from std_msgs.msg import String, Bool, Int16, Int32MultiArray,Int16MultiArray
+from std_msgs.msg import String, Bool, Int16, Int32MultiArray, Int16MultiArray, Float32MultiArray
 
 FIRST_BENCH_ID = 1
 LAST_BENCH_ID = 10
@@ -72,6 +72,7 @@ class ArucoManager(Node):
         self.pub_stop = self.create_publisher(Bool, '/aruco_stop_request', 10)
         self.pub_auto_state_cmd = self.create_publisher(String, '/auto_state_cmd', 10)
         self.pub_location = self.create_publisher(Int16MultiArray, '/robot_location', 10)
+        self.pub_align_error = self.create_publisher(Float32MultiArray, '/aruco_target_error', 10)
 
         # ---------------- timer ----------------
         self.timer = self.create_timer(self.detect_period_s, self.detect_tick)
@@ -106,12 +107,25 @@ class ArucoManager(Node):
         self.pub_stop.publish(Bool(data=bool(stop)))
 
     def publish_location(self, marker_id: int, bench: int, row: int, goal_bench: int, goal_row: int):
+        if bench is None or row is None or goal_bench is None or goal_row is None:
+            self.get_logger().warn(f"Skipping publish_location: marker={marker_id}, bench={bench}, row={row}, "f"goal_bench={goal_bench}, goal_row={goal_row}")
+            return
         msg = Int16MultiArray()
         msg.data = [int(marker_id), int(bench), int(row),int(goal_bench), int(goal_row) ]
         self.pub_location.publish(msg)
 
+    def publish_align_error(self, visible: bool, center_error_px: float = 0.0):
+        msg = Float32MultiArray()
+        msg.data = [1.0 if visible else 0.0, float(center_error_px)]
+        self.pub_align_error.publish(msg)
+
+    @staticmethod
+    def marker_center_x(marker_corners) -> float:
+        pts = np.asarray(marker_corners).reshape(-1, 2)
+        return float(np.mean(pts[:, 1]))
+
     def _open_camera(self):
-        self.cap = cv2.VideoCapture(self.usb_cam_index)
+        self.cap = cv2.VideoCapture("/dev/v4l/by-id/usb-Arducam_Technology_Co.__Ltd._Arducam-B0578-2.3MP-GS_SN001-video-index0",cv2.CAP_V4L2)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.usb_cam_width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.usb_cam_height)
         self.cap.set(cv2.CAP_PROP_FPS, self.usb_cam_fps)
@@ -137,10 +151,7 @@ class ArucoManager(Node):
             return
 
         if desired_state != self.auto_state:
-            self.get_logger().info(
-                f"Direction/state change: current=({self.current_bench},{self.current_row}) "
-                f"goal=({self.goal_bench},{self.goal_row}) -> {desired_state}"
-            )
+            self.get_logger().info(f"Direction/state change: current=({self.current_bench},{self.current_row}) "f"goal=({self.goal_bench},{self.goal_row}) -> {desired_state}")
             self.pub_auto_state_cmd.publish(String(data=desired_state))
 
     # ---------------- callbacks ----------------
@@ -187,9 +198,7 @@ class ArucoManager(Node):
 
          # If row is not known yet, first localize row by moving
         if self.current_bench is not None and not self.row_known:
-            self.get_logger().info(
-                f"Range received: ({fb},{fr}) -> ({tb},{tr}), waiting to detect current row on bench {self.current_bench}"
-            )
+            self.get_logger().info(f"Range received: ({fb},{fr}) -> ({tb},{tr}), waiting to detect current row on bench {self.current_bench}")
             if self.auto_state != "bench_tracking_f":
                 self.pub_auto_state_cmd.publish(String(data="bench_tracking_f"))
             return
@@ -199,11 +208,7 @@ class ArucoManager(Node):
         self.goal_bench = self.scan_start_bench
         self.goal_row = self.scan_start_row
 
-        self.get_logger().info(
-            f"New range: ({fb},{fr}) -> ({tb},{tr}), "
-            f"start=({self.goal_bench},{self.goal_row}), "
-            f"end=({self.scan_end_bench},{self.scan_end_row})"
-        )
+        self.get_logger().info(f"New range: ({fb},{fr}) -> ({tb},{tr}), "f"start=({self.goal_bench},{self.goal_row}), "f"end=({self.scan_end_bench},{self.scan_end_row})")
 
         self.request_tracking_direction()
 
@@ -252,21 +257,23 @@ class ArucoManager(Node):
             self.goal_seen_count = 0
             self.publish_stop(False)
             if self.range_active:
-                self.advance_to_next_goal()
+                has_next = self.advance_to_next_goal()
+                if not has_next:
+                    self.pub_auto_state_cmd.publish(String(data="idle"))
             else:
-                self.request_tracking_direction()
+                self.pub_auto_state_cmd.publish(String(data="idle"))
 
     def advance_to_next_goal(self):
         # only same-bench range for now
         if self.goal_bench != self.scan_end_bench:
             self.get_logger().warn("Multi-bench range advance not implemented yet")
             self.range_active = False
-            return
+            return False
 
         if self.goal_row == self.scan_end_row:
             self.get_logger().info("Range scan complete")
             self.range_active = False
-            return
+            return False
 
         step = 1 if self.scan_end_row > self.goal_row else -1
         self.goal_row += step
@@ -277,6 +284,7 @@ class ArucoManager(Node):
         )
 
         self.request_tracking_direction()
+        return True
 
     def is_in_selected_range(self, bench: int, row: int) -> bool:
         if not self.range_active:
@@ -307,17 +315,21 @@ class ArucoManager(Node):
 
     def detect_tick(self):
         if self.mode != "auto":
+            self.publish_align_error(False)
             return
 
-        if self.auto_state not in ("bench_tracking_f", "bench_tracking_b"):
+        if self.auto_state not in ("bench_tracking_f", "bench_tracking_b","align_center", "aruco_centering"):
+            self.publish_align_error(False)
             return
 
         if self.cap is None:
+            self.publish_align_error(False)
             return
 
         ok, frame = self.cap.read()
         if not ok or frame is None:
             self.goal_seen_count = 0
+            self.publish_align_error(False)
             return
         
 
@@ -326,25 +338,25 @@ class ArucoManager(Node):
 
         if ids is None or len(ids) == 0:
             self.goal_seen_count = 0
+            self.publish_align_error(False)
             return
-
-        '''cv2.aruco.drawDetectedMarkers(frame, corners, ids)
-        cv2.imshow("Aruco Detection", frame)
-        cv2.waitKey(1)'''
 
         ids = ids.flatten().tolist()
 
         selected_id = None
+        selected_corners = None
 
         # Prefer goal marker if visible
-        for marker_id in ids:
+        for idx, marker_id in enumerate(ids):
             bench, row = self.marker_to_location(int(marker_id))
             if bench == self.goal_bench and row == self.goal_row:
                 selected_id = int(marker_id)
+                selected_corners = corners[idx]
                 break
 
         if selected_id is None:
             selected_id = int(ids[0])
+            selected_corners = corners[0]
 
         # If bench is known but row is not, use the first row marker to initialize row
         if self.current_bench is not None and not self.row_known:
@@ -352,9 +364,7 @@ class ArucoManager(Node):
                 self.current_row = selected_id
                 self.row_known = True
 
-                self.get_logger().info(
-                    f"Initial row fixed: current=({self.current_bench},{self.current_row})"
-                )
+                self.get_logger().info(f"Initial row fixed: current=({self.current_bench},{self.current_row})")
 
                 # If a range is already active, now we can decide nearest endpoint
                 if self.range_active:
@@ -362,11 +372,7 @@ class ArucoManager(Node):
                     self.goal_bench = self.scan_start_bench
                     self.goal_row = self.scan_start_row
 
-                    self.get_logger().info(
-                        f"Range start selected after row detection: "
-                        f"start=({self.goal_bench},{self.goal_row}), "
-                        f"end=({self.scan_end_bench},{self.scan_end_row})"
-                    )
+                    self.get_logger().info(f"Range start selected after row detection: "f"start=({self.goal_bench},{self.goal_row}), "f"end=({self.scan_end_bench},{self.scan_end_row})")
 
                 self.request_tracking_direction()
             return
@@ -382,7 +388,21 @@ class ArucoManager(Node):
             self.get_logger().info(f"marker={selected_id}, current=({self.current_bench},{self.current_row}), "f"goal=({self.goal_bench},{self.goal_row})")
             self.prev_selected_id = selected_id
 
-        if self.is_active_stop_target(self.current_bench, self.current_row):
+        center_error_px = None
+        active_goal_visible = False
+        if selected_corners is not None:
+            frame_center_x = frame.shape[0] / 2.0
+            marker_center_x = self.marker_center_x(selected_corners)
+            center_error_px = marker_center_x - frame_center_x
+            active_goal_visible = self.is_active_stop_target(self.current_bench, self.current_row)
+
+        if active_goal_visible and center_error_px is not None:
+            self.publish_align_error(True, center_error_px)
+            self.get_logger().debug(f"Goal visible: center_error_px={center_error_px:.1f}")
+        else:
+            self.publish_align_error(False, 0.0)
+
+        if active_goal_visible:
             self.goal_seen_count += 1
         else:
             self.goal_seen_count = 0
@@ -391,7 +411,9 @@ class ArucoManager(Node):
             self.stop_sent = True
             self.publish_stop(True)
             self.prev_selected_id = None
-            self.get_logger().info(f"Goal reached: bench={self.current_bench}, row={self.current_row}, marker={selected_id}")
+            logged_center_error_px = center_error_px if center_error_px is not None else 0.0
+
+            self.get_logger().info(f"Goal centered and reached: bench={self.current_bench}, row={self.current_row}, "f"marker={selected_id}, center_error_px={logged_center_error_px:.1f}")
 
     def destroy_node(self):
         try:

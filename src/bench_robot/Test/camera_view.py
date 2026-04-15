@@ -2,7 +2,12 @@ import cv2
 
 # Open USB camera (0 = first camera)
 
-cap = cv2.VideoCapture(0)
+
+
+cap = cv2.VideoCapture(
+    "/dev/v4l/by-id/usb-Arducam_Technology_Co.__Ltd._Arducam-B0578-2.3MP-GS_SN001-video-index0",
+    cv2.CAP_V4L2
+)
 
 if not cap.isOpened():
     print("Cannot open camera")

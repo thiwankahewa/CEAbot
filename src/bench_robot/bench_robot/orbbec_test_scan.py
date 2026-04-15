@@ -11,7 +11,8 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 
-from std_msgs.msg import String
+from sensor_msgs import msg
+from std_msgs.msg import Bool, Int16MultiArray, String
 from std_srvs.srv import SetBool
 from sensor_msgs.msg import Image, PointCloud2
 from cv_bridge import CvBridge
@@ -28,6 +29,7 @@ class OrbbecTestScanNode(Node):
         self.capture_requested = False
         self.waiting_for_streams = False
         self.capture_timer = None
+        self.scan_done = False
 
         self.latest_color = None
         self.latest_depth = None
@@ -35,16 +37,17 @@ class OrbbecTestScanNode(Node):
         self.latest_color_msg = None
         self.latest_depth_msg = None
 
+        self.current_location = None
+
         self.save_dir = os.path.expanduser('~/scan_data')
         os.makedirs(self.save_dir, exist_ok=True)
 
         # Listen for scan_start command
-        self.cmd_sub = self.create_subscription(
-            String,
-            '/auto_state_cmd',
-            self.auto_state_callback,
-            10
-        )
+        self.cmd_sub = self.create_subscription(String,'/auto_state',self.auto_state_callback,10)
+        self.location_sub = self.create_subscription(Int16MultiArray, '/robot_location', self.location_callback, 10)
+        
+
+        self.scan_done_pub = self.create_publisher(Bool, '/scan_done', 10)
 
         # Time-synchronized color + depth + point cloud
         self.color_sub = Subscriber(self, Image, '/camera/color/image_raw')
@@ -72,6 +75,10 @@ class OrbbecTestScanNode(Node):
         self.get_logger().info('Depth topic: /camera/depth/image_raw')
         self.get_logger().info('Cloud topic: /camera/depth/points')
         self.get_logger().info(f'Saving data to: {self.save_dir}')
+
+    def location_callback(self, msg: Int16MultiArray):
+        if len(msg.data) >= 5:
+            self.current_location = msg.data[1], msg.data[2]
 
     def auto_state_callback(self, msg: String):
         state = msg.data.strip().lower()
@@ -149,6 +156,10 @@ class OrbbecTestScanNode(Node):
         self.save_capture()
         self.capture_requested = False
 
+        msg = Bool()
+        msg.data = True
+        self.scan_done_pub.publish(msg)
+
         self.get_logger().info('Disabling all streams after capture...')
         self.disable_all_streams()
 
@@ -177,8 +188,12 @@ class OrbbecTestScanNode(Node):
             return
 
         stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        run_dir = os.path.join(self.save_dir, f'scan_{stamp}')
+        bench, row = self.current_location
+        location_str = f"b{bench}_r{row}"
+        run_dir = os.path.join(self.save_dir, f"{location_str}_{stamp}")
         os.makedirs(run_dir, exist_ok=True)
+
+        
 
         color_path = os.path.join(run_dir, 'color.png')
         depth_npy_path = os.path.join(run_dir, 'depth.npy')

@@ -23,16 +23,19 @@ class AutoStateManager(Node):
             "bench_tracking_b",
             "yaw_correction",
             "align_center",
-            "scan_start"
+            "scan_start",
+            "aruco_centering"
         }
 
         self.allowed = {
             "idle": {"align_center", "bench_tracking_f", "bench_tracking_b", "yaw_correction","steer_0", "steer_90"},
-            "align_center": { "idle", "bench_tracking_f", "bench_tracking_b"},
+            
             "bench_tracking_f": {"yaw_correction", "idle",  "bench_tracking_b", "align_center"},
             "bench_tracking_b": {"yaw_correction", "idle", "bench_tracking_f", "align_center"},
-            "yaw_correction": {"align_center", "idle", "bench_tracking_b", "bench_tracking_f"},
-            "scan_start": {"align_center", "idle"},
+            "yaw_correction": {"align_center", "idle"},
+            "align_center": { "idle", "bench_tracking_f", "bench_tracking_b","aruco_centering"},
+            "aruco_centering": {"idle", "scan_start", },
+            "scan_start": {"bench_tracking_f", "bench_tracking_b", "idle", "aruco_centering"},
         }
 
         self.mode = "manual"

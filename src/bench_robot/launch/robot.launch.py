@@ -1,5 +1,5 @@
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription
+from launch.actions import IncludeLaunchDescription, GroupAction, SetEnvironmentVariable
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
@@ -37,11 +37,9 @@ def generate_launch_description():
             ])
         ),
         launch_arguments={
-        'enable_color:': 'false',
-        'enable_depth': 'false',
-        'enable_point_cloud': 'true',
         'enable_colored_point_cloud': 'true',
-        'depth_registration': 'true',
+        'depth_registration': 'true'
+
 
     }.items()
     )

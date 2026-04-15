@@ -29,6 +29,12 @@ class BenchTracker(Node):
         self.offset_err_m = 0.0
         self.yaw_err_m = 0.0
 
+        self.aruco_visible = False
+        self.aruco_err = 0.0
+        self.last_aruco_stamp = None
+
+        self._aruco_center_ok = 0
+
         self.align_phase = 0             # align_center phases (non-blocking) - 0=inactive, 1=steer->90 settle, 2=correcting, 3=steer->0 settle
         self.align_phase_start = None
         self._yaw_ok = 0 # debounce counters
@@ -56,6 +62,16 @@ class BenchTracker(Node):
         self.declare_parameter('corr_rpm', 2.0)
         self.declare_parameter('base_rpm', 12.0)
         self.declare_parameter('max_rpm', 25.0)
+
+        self.declare_parameter('aruco_center_kp', 20.0)
+        self.declare_parameter('aruco_center_kd', 4.0)
+        self.declare_parameter('aruco_center_base_rpm', 2.0)
+        self.declare_parameter('aruco_center_max_turn_rpm', 6.0)
+        self.declare_parameter('aruco_center_entry_norm', 0.03)
+        self.declare_parameter('aruco_center_done_norm', 10.0)
+        self.declare_parameter('aruco_center_timeout_s', 0.30)
+        self.declare_parameter('aruco_center_stable_cycles', 10)
+
         self.track_width_m = 1.515
 
         self.declare_parameter('steer_settle_s', 2)  # wait after steering change
@@ -69,6 +85,7 @@ class BenchTracker(Node):
         self.sub_auto_state = self.create_subscription(String, '/auto_state', self.cb_auto_state, 10)
         self.sub_estop = self.create_subscription(Bool, '/e_stop', self.cb_estop, 10)
         self.sub_aruco_stop = self.create_subscription(Bool, '/aruco_stop_request', self.cb_aruco_stop, 10)
+        self.sub_aruco_error = self.create_subscription(Float32MultiArray, '/aruco_target_error', self.cb_aruco_error, 10)
 
         # -------- pubs --------
         self.pub_auto_state_cmd = self.create_publisher(String, '/auto_state_cmd', 10)
@@ -97,6 +114,15 @@ class BenchTracker(Node):
 
         self.base_rpm = float(self.get_parameter('base_rpm').value)
         self.max_rpm = float(self.get_parameter('max_rpm').value)
+
+        self.aruco_center_kp = float(self.get_parameter('aruco_center_kp').value)
+        self.aruco_center_kd = float(self.get_parameter('aruco_center_kd').value)
+        self.aruco_center_base_rpm = float(self.get_parameter('aruco_center_base_rpm').value)
+        self.aruco_center_max_turn_rpm = float(self.get_parameter('aruco_center_max_turn_rpm').value)
+        self.aruco_center_entry_norm = float(self.get_parameter('aruco_center_entry_norm').value)
+        self.aruco_center_done_norm = float(self.get_parameter('aruco_center_done_norm').value)
+        self.aruco_center_timeout_s = float(self.get_parameter('aruco_center_timeout_s').value)
+        self.aruco_center_stable_cycles = int(self.get_parameter('aruco_center_stable_cycles').value)
 
         self.steer_settle_s = float(self.get_parameter('steer_settle_s').value)
 
@@ -164,6 +190,22 @@ class BenchTracker(Node):
 
         self.aruco_stop_request = new_req
 
+    def cb_aruco_error(self, msg: Float32MultiArray):
+        data = list(msg.data)
+        if len(data) < 2:
+            self.aruco_visible = False
+            self.aruco_err = 0.0
+            return
+
+        self.last_aruco_stamp = self.get_clock().now()
+        self.aruco_visible = bool(data[0] >= 0.5)
+
+        if not self.aruco_visible:
+            self.aruco_err = 0.0
+            return
+
+        self.aruco_err = float(data[1]) 
+
     def dist_cb(self, msg: Int16MultiArray):
         data = msg.data
         if data is None or len(data) < 4:
@@ -212,7 +254,6 @@ class BenchTracker(Node):
                 self.set_state("yaw_correction")
                 self._yaw_ok = 0
                 return
-
 
         if self.last_tof_stamp is None:
             self.publish_rpm(0.0, 0.0)
@@ -291,8 +332,13 @@ class BenchTracker(Node):
         if self.auto_state == "yaw_correction":
             self._run_yaw_correction(yaw, off)
             return
+        
+        if self.auto_state == "aruco_centering":
+            self._run_aruco_centering()
+            return
 
         self.publish_rpm(0.0, 0.0)
+
 
     def _run_yaw_correction(self, yaw: float, off: float):
         # steer should be 0 for yaw correction
@@ -367,7 +413,8 @@ class BenchTracker(Node):
                 self.align_phase_start = None
                 if self.aruco_stop_request:
                     self.aruco_stop_handled = True
-                    self.set_state("scan_start")
+                    self._aruco_center_ok = 0
+                    self.set_state("aruco_centering")
                 else:
                     self.set_state(self.bench_track_dir)
             return
@@ -375,6 +422,39 @@ class BenchTracker(Node):
         # fallback
         self.align_phase = 1
         self.align_phase_start = t
+
+    def _run_aruco_centering(self):
+        # steer straight
+        self.publish_steer(self.steer_track_deg)
+
+        # if marker lost, stop safely
+        if not self.aruco_visible or self.last_aruco_stamp is None:
+            self.publish_rpm(0.0, 0.0)
+            return
+
+        age_s = (self.get_clock().now() - self.last_aruco_stamp).nanoseconds * 1e-9
+        if age_s > self.aruco_center_timeout_s:
+            self.publish_rpm(0.0, 0.0)
+            return
+
+        err = self.aruco_err
+        self.get_logger().info(f"ARUCO CENTERING: err={err:.3f}")
+
+        if abs(err) <= self.aruco_center_done_norm:
+            self._aruco_center_ok += 1
+        else:
+            self._aruco_center_ok = 0
+            if err > 0.0:
+                rpm = self.aruco_center_base_rpm
+            else:
+                rpm = -self.aruco_center_base_rpm
+            self.publish_rpm(rpm, rpm)
+
+        if self._aruco_center_ok >= self.aruco_center_stable_cycles:
+            self.publish_rpm(0.0, 0.0)
+            self.aruco_stop_handled = True
+            self._aruco_center_ok = 0
+            self.set_state("scan_start")
 
 
 def main(args=None):
