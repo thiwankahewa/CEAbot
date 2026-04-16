@@ -39,8 +39,6 @@ def generate_launch_description():
         launch_arguments={
         'enable_colored_point_cloud': 'true',
         'depth_registration': 'true'
-
-
     }.items()
     )
 
