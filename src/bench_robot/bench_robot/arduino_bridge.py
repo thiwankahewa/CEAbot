@@ -5,7 +5,6 @@ from rclpy.node import Node
 from std_msgs.msg import Int16MultiArray, Float32
 from std_srvs.srv import Trigger
 import serial
-from serial.serialutil import SerialException
 import time
 
 
@@ -13,100 +12,34 @@ class ArduinoBridge(Node):
     def __init__(self):
         super().__init__('arduino_bridge')
 
+        # -------- States and variables --------
         self.port = '/dev/controllino'
         self.baud = 115200
         self.ser = None
         self.connected = False
 
-        # Services
-        self.srv_tof_restart = self.create_service(Trigger, "/arduino_bridge/tof_restart", self.on_tof_restart)
-        self.srv_arduino_reconnect = self.create_service(Trigger, "/arduino_bridge/arduino_reconnect", self.on_arduino_reconnect)
-
-        # Timer to read serial data
-        self.timer = self.create_timer(0.01, self.read_serial)
-
-        # Subscribers
-        self.sub_steer = self.create_subscription( Float32,'/steer_angle_deg',self.steer_cb,10)
-        self.send_period = 100.0  # Hz
+        self.send_period = 10.0  # Hz
         self.send_delta = 1
         self.last_send_time = 0.0
         self.last_sent_angle = None
 
-        # Publishers
+        # -------- services --------
+        self.srv_arduino_reconnect = self.create_service(Trigger, "/arduino_bridge/arduino_reconnect", self.on_arduino_reconnect)
+
+        # -------- subs --------
+        self.sub_steer = self.create_subscription( Float32,'/steer_angle_deg',self.steer_cb,10)
+
+        # -------- pubs --------
         self.pub_tof = self.create_publisher(Int16MultiArray,'/bench_robot/tof_raw',10)
+
+        # -------- timers --------
+        self.timer = self.create_timer(0.01, self.read_serial)
 
         self.open_serial(initial=True)
 
-    #---Helper functions---#
-    def open_serial(self, initial=False) -> bool:
-        try:
-            self.ser = serial.Serial(self.port, self.baud, timeout=0.05)
-            self.connected = True
-            self.get_logger().info(f"Opened serial {self.port} @ {self.baud}")
-            if initial:
-                self.get_logger().info("Starting steering calibration: Moving to 45°")
-                self.perform_startup_wiggle()
-            return True
-        except Exception as e:
-            self.ser = None
-            self.connected = False
-            if initial:
-                self.get_logger().warn(f"Arduino not connected ({self.port}): {e} (node will stay alive)")
-            return False
-        
-    def ensure_connected(self) -> bool:
-        if self.connected and self.ser and self.ser.is_open:
-            return True
-        return self.open_serial(initial=False)
-
-    def send_line(self, line: str):
-        if not self.connected or self.ser is None:
-            return
-        try:
-            self.ser.write((line + "\n").encode('utf-8'))
-        except Exception as e:
-            self.get_logger().warning(f"Serial write error: {e}")
-
-    #---Main functions---#
-    def read_serial(self):
-        try:
-            if self.ser.in_waiting:
-                raw = self.ser.readline()
-                if not raw:
-                    return
-                line = raw.decode('utf-8', errors='replace').strip()
-                # Example: VL53,4,mm1,mm2,mm3,mm4
-                if line.startswith('VL53'):    #ToF sensor data
-                    parts = line.split(',')
-                    vals = []
-                    for i in parts[1:5]:
-                        vals.append(int(i))
-
-                    msg = Int16MultiArray()
-                    msg.data = vals
-                    self.pub_tof.publish(msg)
-
-        except Exception as e:
-            return
-            #self.get_logger().warn(f"Serial read error: {e}")
-
-    def steer_cb(self, msg: Float32):
-        angle = float(msg.data)
-
-        now = time.time()
-        if (now - self.last_send_time) < (1/self.send_period):   # frequency limit
-            return
-        
-        if self.last_sent_angle is not None and abs(angle - self.last_sent_angle) < self.send_delta:        # only send on change
-            return
-
-        cmd = f"CMD A={angle - 15},{angle - 18}"   #right, left steer values 
-        self.send_line(cmd)
-        self.last_send_time = now
-        self.last_sent_angle = angle
+    # -------- helper functions --------
 
     def perform_startup_wiggle(self):
-
         try:
             # 1. Move to 45 degrees
             angle_target = 45.0
@@ -124,23 +57,72 @@ class ArduinoBridge(Node):
             # Update trackers so the next callback doesn't think it's already at 0
             self.last_sent_angle = angle_zero
             self.last_send_time = time.time()
-            self.get_logger().info("Steering calibration complete.")
+            self.get_logger().info("Performed servo calibration.")
             
         except Exception as e:
             self.get_logger().error(f"Failed startup wiggle: {e}")
 
-    def on_tof_restart(self, request, response):
-        if not self.ensure_connected():
-            response.success = False
-            response.message = "Arduino not connected."
-            self.get_logger().warn("Cannot restart ToF: Arduino not connected.")
-            return response
+    def send_line(self, line: str):
+        if not self.connected or self.ser is None:
+            return
+        try:
+            self.ser.write((line + "\n").encode('utf-8'))
+        except Exception as e:
+            self.get_logger().warning(f"Serial write error: {e}")
+
+    # -------- callbacks --------
+
+    def steer_cb(self, msg: Float32):
+        angle = float(msg.data)
+        now = time.time()
+        if (now - self.last_send_time) < (1/self.send_period):   # frequency limit
+            return
         
-        ok = self.send_line("TOF_RESET")
-        response.success = bool(ok)
-        response.message = "ToF restart command sent." if ok else "Failed to send TOF_RESET."
-        self.get_logger().info(response.message)
-        return response
+        if self.last_sent_angle is not None and abs(angle - self.last_sent_angle) < self.send_delta:        # only send on change
+            return
+
+        cmd = f"CMD A={angle - 15},{angle - 18}"   #right, left steer values 
+        self.send_line(cmd)
+        self.last_send_time = now
+        self.last_sent_angle = angle
+
+    # -------- main functions --------
+
+    def open_serial(self, initial=False) -> bool:
+        try:
+            self.ser = serial.Serial(self.port, self.baud, timeout=0.05)
+            self.connected = True
+            self.get_logger().info(f"Opened serial {self.port} @ {self.baud}")
+            if initial:
+                self.perform_startup_wiggle()
+            return True
+        except Exception as e:
+            self.ser = None
+            self.connected = False
+            if initial:
+                self.get_logger().warn(f"Arduino not connected ({self.port}): {e} (node will stay alive)")
+            return False
+        
+    def read_serial(self):
+        try:
+            if self.ser.in_waiting:
+                raw = self.ser.readline()
+                if not raw:
+                    return
+                line = raw.decode('utf-8', errors='replace').strip()
+                if line.startswith('VL53'):    #ToF sensor data: VL53,4,mm1,mm2,mm3,mm4
+                    parts = line.split(',')
+                    vals = []
+                    for i in parts[1:5]:
+                        vals.append(int(i))
+
+                    msg = Int16MultiArray()
+                    msg.data = vals
+                    self.pub_tof.publish(msg)
+
+        except Exception as e:
+            self.get_logger().warn(f"Serial read error: {e}")
+            return
     
     def on_arduino_reconnect(self, request, response):
         try:
@@ -163,7 +145,6 @@ def main(args=None):
     rclpy.spin(node)
     node.destroy_node()
     rclpy.shutdown()
-
 
 if __name__ == '__main__':
     main()
