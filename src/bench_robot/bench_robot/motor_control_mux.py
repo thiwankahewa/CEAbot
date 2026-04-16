@@ -8,6 +8,10 @@ class MotorControlMux(Node):
     def __init__(self):
         super().__init__('motor_control_mux')
 
+        # -------- params --------
+        self.declare_parameter('manual_rpm', 10.0)
+        self.MANUAL_RPM = self.get_parameter('manual_rpm').value
+
         # -------- states and variables --------
         self.cmd_to_rpm = {
             "forward":  ( -self.MANUAL_RPM,  -self.MANUAL_RPM),
@@ -17,10 +21,6 @@ class MotorControlMux(Node):
             "stop":     (0, 0),
         }
 
-        # -------- params --------
-        self.declare_parameter('manual_rpm', 10.0)
-        self.MANUAL_RPM = self.get_parameter('manual_rpm').value
-
         # -------- subs --------
         self.sub_man_rpm = self.create_subscription(String, '/wheel_rpm_manual', self.cb_manual_RPM, 10)
         self.sub_man_steer = self.create_subscription(Float32, '/steer_manual', self.cb_manual_steer, 10)
@@ -28,9 +28,6 @@ class MotorControlMux(Node):
         # -------- pubs --------
         self.pub_RPM = self.create_publisher(Float32MultiArray, '/wheel_rpm_cmd', 10)
         self.pub_steer = self.create_publisher(Float32, '/steer_angle_deg', 10)
-
-        # -------- timers --------
-        self.timer = self.create_timer(0.05, self.tick)  # 20 Hz output
 
         self._rebuild_cmd_map()
         self.add_on_set_parameters_callback(self.on_params)

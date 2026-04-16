@@ -88,20 +88,11 @@ class MotorDriverNode(Node):
             self.get_logger().error(f"write_registers failed @0x2088: {res}")
             self.connected = False
 
-    def set_velocity_mode(self):
-        self._write_single(0x200D, 0x0003)
-        time.sleep(0.02)
-        self._write_single(0x200E, 0x0008)
-
     def set_parking(self, enable: bool):
         if not self.ensure_connected():
             return
         self._write_single(0x200C, 1 if enable else 0)
         self.parked = enable
-
-    def maybe_unpark_for_motion(self, l: float, r: float):
-        if self.parked and (abs(l) > 0.01 or abs(r) > 0.01):
-            self.set_parking(False)
 
     def stop(self):
         if not self.ensure_connected():
@@ -172,7 +163,9 @@ class MotorDriverNode(Node):
         left = float(self.cmd_left_rpm)
         right = float(self.cmd_right_rpm)
 
-        self.maybe_unpark_for_motion(left, right)
+        if self.parked and (abs(left) > 0.01 or abs(right) > 0.01):
+            self.set_parking(False)
+
         # Keep your mapping (right inverted)
         self._write_rpms(left, -right)
 
@@ -185,7 +178,9 @@ class MotorDriverNode(Node):
                 self.get_logger().info("Connected to ZLAC8015D" if init else "Reconnected to ZLAC8015D")
                 self._write_single(0x2022, 10)
                 time.sleep(0.02)
-                self.set_velocity_mode()
+                self._write_single(0x200D, 0x0003)  # velocity mode
+                time.sleep(0.02)
+                self._write_single(0x200E, 0x0008)
                 self.set_parking(False)
                 return True
             self.connected = False

@@ -4,8 +4,7 @@ import cv2
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from rcl_interfaces.msg import SetParametersResult
-from std_msgs.msg import String, Bool, Int16, Int32MultiArray, Int16MultiArray, Float32MultiArray
+from std_msgs.msg import String, Bool, Int16, Int16MultiArray, Float32MultiArray
 
 FIRST_BENCH_ID = 1
 LAST_BENCH_ID = 10
@@ -16,7 +15,7 @@ class ArucoManager(Node):
     def __init__(self):
         super().__init__('aruco_detector')
 
-        # ---------------- state ----------------
+        # ---------------- states and variables ----------------
         self.mode = "manual"
         self.auto_state = "idle"
 
@@ -42,17 +41,11 @@ class ArucoManager(Node):
         self.stop_sent = False
         self.range_active = False
 
-        # ---------------- params ----------------
-        self.declare_parameter('usb_cam_index', 0)
-        self.declare_parameter('usb_cam_width', 640)
-        self.declare_parameter('usb_cam_height', 480)
-        self.declare_parameter('usb_cam_fps', 15)
-
-        self.declare_parameter('detect_period_s', 0.10)
-        self.declare_parameter('stable_goal_frames', 3)
-
-        self._load_params()
-        self.add_on_set_parameters_callback(self.on_params)
+        self.stable_goal_frames = 3
+        self.usb_cam_index = 0
+        self.usb_cam_width = 640
+        self.usb_cam_height = 480
+        self.usb_cam_fps = 15
 
         # ---------------- camera, aruco setup ----------------
         self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_100)
@@ -75,22 +68,9 @@ class ArucoManager(Node):
         self.pub_align_error = self.create_publisher(Float32MultiArray, '/aruco_target_error', 10)
 
         # ---------------- timer ----------------
-        self.timer = self.create_timer(self.detect_period_s, self.detect_tick)
-
-        # ---------------- helper ----------------
-
-    def _load_params(self):
-        self.usb_cam_index = int(self.get_parameter('usb_cam_index').value)
-        self.usb_cam_width = int(self.get_parameter('usb_cam_width').value)
-        self.usb_cam_height = int(self.get_parameter('usb_cam_height').value)
-        self.usb_cam_fps = int(self.get_parameter('usb_cam_fps').value)
-
-        self.detect_period_s = float(self.get_parameter('detect_period_s').value)
-        self.stable_goal_frames = int(self.get_parameter('stable_goal_frames').value)
-
-    def on_params(self, params):
-        self._load_params()
-        return SetParametersResult(successful=True)
+        self.timer = self.create_timer(0.1, self.detect_tick)
+    
+        # ---------------- helper functions ----------------
     
     def marker_to_location(self, marker_id: int):
         # bench start markers
@@ -154,6 +134,93 @@ class ArucoManager(Node):
             self.get_logger().info(f"Direction/state change: current=({self.current_bench},{self.current_row}) "f"goal=({self.goal_bench},{self.goal_row}) -> {desired_state}")
             self.pub_auto_state_cmd.publish(String(data=desired_state))
 
+    def choose_range_start_end(self):
+        fb, fr = self.range_from_bench, self.range_from_row
+        tb, tr = self.range_to_bench, self.range_to_row
+
+        if self.current_bench is None or self.current_row is None:
+            self.get_logger().warn("Cannot choose range start/end because current location is incomplete")
+            return
+
+        # same exact point
+        if fb == tb and fr == tr:
+            self.scan_start_bench = fb
+            self.scan_start_row = fr
+            self.scan_end_bench = tb
+            self.scan_end_row = tr
+            return
+
+        # same bench range
+        if fb == tb == self.current_bench:
+            d_from = abs(self.current_row - fr)
+            d_to = abs(self.current_row - tr)
+
+            if d_from <= d_to:
+                self.scan_start_bench = fb
+                self.scan_start_row = fr
+                self.scan_end_bench = tb
+                self.scan_end_row = tr
+            else:
+                self.scan_start_bench = tb
+                self.scan_start_row = tr
+                self.scan_end_bench = fb
+                self.scan_end_row = fr
+            return
+
+        # fallback
+        self.scan_start_bench = fb
+        self.scan_start_row = fr
+        self.scan_end_bench = tb
+        self.scan_end_row = tr
+
+    def advance_to_next_goal(self):
+        # only same-bench range for now
+        if self.goal_bench != self.scan_end_bench:
+            self.get_logger().warn("Multi-bench range advance not implemented yet")
+            self.range_active = False
+            return False
+
+        if self.goal_row == self.scan_end_row:
+            self.get_logger().info("Range scan complete")
+            self.range_active = False
+            return False
+
+        step = 1 if self.scan_end_row > self.goal_row else -1
+        self.goal_row += step
+        self.goal_bench = self.scan_end_bench
+
+        self.get_logger().info(
+            f"Next goal in range: ({self.goal_bench},{self.goal_row})"
+        )
+
+        self.request_tracking_direction()
+        return True
+
+    def is_in_selected_range(self, bench: int, row: int) -> bool:
+        if not self.range_active:
+            return bench == self.goal_bench and row == self.goal_row
+
+        # only same-bench range for now
+        if self.range_from_bench != self.range_to_bench:
+            return False
+
+        if bench != self.range_from_bench:
+            return False
+
+        low = min(self.range_from_row, self.range_to_row)
+        high = max(self.range_from_row, self.range_to_row)
+
+        return low <= row <= high
+    
+    def is_active_stop_target(self, bench: int, row: int) -> bool:
+        if bench is None or row is None:
+            return False
+
+        if not self.is_in_selected_range(bench, row):
+            return False
+
+        return bench == self.goal_bench and row == self.goal_row
+
     # ---------------- callbacks ----------------
 
     def cb_mode(self, msg: String):
@@ -212,45 +279,6 @@ class ArucoManager(Node):
 
         self.request_tracking_direction()
 
-    def choose_range_start_end(self):
-        fb, fr = self.range_from_bench, self.range_from_row
-        tb, tr = self.range_to_bench, self.range_to_row
-
-        if self.current_bench is None or self.current_row is None:
-            self.get_logger().warn("Cannot choose range start/end because current location is incomplete")
-            return
-
-        # same exact point
-        if fb == tb and fr == tr:
-            self.scan_start_bench = fb
-            self.scan_start_row = fr
-            self.scan_end_bench = tb
-            self.scan_end_row = tr
-            return
-
-        # same bench range
-        if fb == tb == self.current_bench:
-            d_from = abs(self.current_row - fr)
-            d_to = abs(self.current_row - tr)
-
-            if d_from <= d_to:
-                self.scan_start_bench = fb
-                self.scan_start_row = fr
-                self.scan_end_bench = tb
-                self.scan_end_row = tr
-            else:
-                self.scan_start_bench = tb
-                self.scan_start_row = tr
-                self.scan_end_bench = fb
-                self.scan_end_row = fr
-            return
-
-        # fallback
-        self.scan_start_bench = fb
-        self.scan_start_row = fr
-        self.scan_end_bench = tb
-        self.scan_end_row = tr
-
     def cb_scan_done(self, msg: Bool):
         if bool(msg.data):
             self.stop_sent = False
@@ -263,55 +291,7 @@ class ArucoManager(Node):
             else:
                 self.pub_auto_state_cmd.publish(String(data="idle"))
 
-    def advance_to_next_goal(self):
-        # only same-bench range for now
-        if self.goal_bench != self.scan_end_bench:
-            self.get_logger().warn("Multi-bench range advance not implemented yet")
-            self.range_active = False
-            return False
-
-        if self.goal_row == self.scan_end_row:
-            self.get_logger().info("Range scan complete")
-            self.range_active = False
-            return False
-
-        step = 1 if self.scan_end_row > self.goal_row else -1
-        self.goal_row += step
-        self.goal_bench = self.scan_end_bench
-
-        self.get_logger().info(
-            f"Next goal in range: ({self.goal_bench},{self.goal_row})"
-        )
-
-        self.request_tracking_direction()
-        return True
-
-    def is_in_selected_range(self, bench: int, row: int) -> bool:
-        if not self.range_active:
-            return bench == self.goal_bench and row == self.goal_row
-
-        # only same-bench range for now
-        if self.range_from_bench != self.range_to_bench:
-            return False
-
-        if bench != self.range_from_bench:
-            return False
-
-        low = min(self.range_from_row, self.range_to_row)
-        high = max(self.range_from_row, self.range_to_row)
-
-        return low <= row <= high
-    
-    def is_active_stop_target(self, bench: int, row: int) -> bool:
-        if bench is None or row is None:
-            return False
-
-        if not self.is_in_selected_range(bench, row):
-            return False
-
-        return bench == self.goal_bench and row == self.goal_row
-
-    
+    # ---------------- timer functions ----------------
 
     def detect_tick(self):
         if self.mode != "auto":
@@ -434,7 +414,6 @@ def main(args=None):
         node.publish_stop(False)
         node.destroy_node()
         rclpy.shutdown()
-
 
 if __name__ == '__main__':
     main()
