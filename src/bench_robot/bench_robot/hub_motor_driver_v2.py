@@ -12,19 +12,19 @@ from rcl_interfaces.msg import SetParametersResult
 def to_u16_signed(val: int) -> int:
     return val & 0xFFFF
 
-
 class MotorDriverNode(Node):
     def __init__(self):
         super().__init__('hub_motor_driver_v2')
 
+        # -------- States and variables --------
         self.eStop = False
-        self.mode = "manual"
         self.auto_state = "idle"
 
         self.connected = False
         self.port = '/dev/ttyUSB0'
         self.device_id = 1
         self.parked = False
+        self._profile_is_corr = False
 
         self.client = ModbusSerialClient(port=self.port, baudrate=115200)
 
@@ -38,27 +38,23 @@ class MotorDriverNode(Node):
         self.declare_parameter('acel_ms_corr', 1200)
         self.declare_parameter('decel_ms_corr', 1200)
 
-        self._load_params()
-        self.add_on_set_parameters_callback(self.on_params)
-
-        self.try_connect(init=True)
-
-        # Service
+        # -------- services --------
         self.srv_reconnect = self.create_service(Trigger, "/arduino_bridge/hub_servo_reconnect", self.on_reconnect)
 
-        # Subscribers
+        # -------- subs --------
         self.sub_auto_state = self.create_subscription(String, "/auto_state", self.cb_auto_state, 10)
         self.sub_rpm = self.create_subscription(Float32MultiArray, '/wheel_rpm_cmd', self.cb_rpm_cmd, 10)
         self.sub_estop = self.create_subscription(Bool, '/e_stop', self.cb_estop, 10)
-        self.sub_mode = self.create_subscription(String, '/mode', self.cb_mode, 10)
 
-        # Timers
+        # -------- timers --------
         self.write_timer = self.create_timer(0.05, self.write_tick)
         self.watchdog_timer = self.create_timer(0.05, self.watchdog_tick)
 
-        self._profile_is_corr = False
+        self._load_params()
+        self.add_on_set_parameters_callback(self.on_params)
+        self.try_connect(init=True)
         self._apply_profile(force=True)
-
+        
     def _load_params(self):
         self.acel_ms = int(self.get_parameter('acel_ms').value)
         self.decel_ms = int(self.get_parameter('decel_ms').value)
@@ -70,7 +66,8 @@ class MotorDriverNode(Node):
         self._apply_profile(force=True)
         return SetParametersResult(successful=True)
 
-    # ---- Modbus helpers ----
+    # ---- helper functions ----
+
     def ensure_connected(self) -> bool:
         if self.connected:
             return True
@@ -113,24 +110,21 @@ class MotorDriverNode(Node):
         if not self.parked:
             self.set_parking(True)
 
-    def _is_corr_state(self) -> bool:
-        return self.auto_state in ("yaw_correction", "align_center")
-
     def _apply_profile(self, force: bool = False):
         if not self.ensure_connected():
             return
-        corr = self._is_corr_state()
+        
+        corr = self.auto_state in ("yaw_correction", "align_center", "aruco_centering")
+
         if (not force) and (corr == self._profile_is_corr):
             return
 
         if corr:
             acel = self.acel_ms_corr
             decel = self.decel_ms_corr
-            #self.get_logger().info(f"Apply CORR profile acel={acel} decel={decel}")
         else:
             acel = self.acel_ms
             decel = self.decel_ms
-            #self.get_logger().info(f"Apply NORMAL profile acel={acel} decel={decel}")
 
         self._write_single(0x2080, int(acel))
         self._write_single(0x2081, int(acel))
@@ -140,11 +134,9 @@ class MotorDriverNode(Node):
         self._profile_is_corr = corr
 
     # ---- callbacks ----
+
     def cb_estop(self, msg: Bool):
         self.eStop = bool(msg.data)
-
-    def cb_mode(self, msg: String):
-        self.mode = (msg.data or "").strip().lower()
 
     def cb_auto_state(self, msg: String):
         st = (msg.data or "").strip().lower()
@@ -159,7 +151,8 @@ class MotorDriverNode(Node):
         self.cmd_right_rpm = float(msg.data[1])
         self.last_cmd_time = self.get_clock().now()
 
-    # ---- timers ----
+    # ---- timer functions ----
+    
     def watchdog_tick(self):
         if self.last_cmd_time is None:
             return
@@ -180,11 +173,11 @@ class MotorDriverNode(Node):
         right = float(self.cmd_right_rpm)
 
         self.maybe_unpark_for_motion(left, right)
-
         # Keep your mapping (right inverted)
         self._write_rpms(left, -right)
 
-    # ---- connect ----
+    # ---- connect functions ----
+
     def try_connect(self, init=False) -> bool:
         try:
             if self.client.connect():
@@ -205,7 +198,6 @@ class MotorDriverNode(Node):
 
     def on_reconnect(self, request, response):
         try:
-            self.get_logger().info("Reconnecting ZLAC...")
             try:
                 if self.connected:
                     self.stop()
@@ -226,11 +218,11 @@ class MotorDriverNode(Node):
             self.last_cmd_time = None
             response.success = True
             response.message = "Reconnected."
+            self.get_logger().info("Reconnected to ZLAC8015D")
         except Exception as e:
             response.success = False
             response.message = f"Failed: {e}"
         return response
-
 
 def main(args=None):
     rclpy.init(args=args)
@@ -250,7 +242,6 @@ def main(args=None):
             pass
         node.destroy_node()
         rclpy.shutdown()
-
 
 if __name__ == '__main__':
     main()
