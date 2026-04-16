@@ -15,8 +15,10 @@ class SettingsSaver(Node):
     def __init__(self):
         super().__init__("settings_saver")
 
-        # Service
+        # -------- services --------
         self.srv = self.create_service(Trigger, "/settings/save_all", self.on_save)
+
+    # -------- main functions --------
 
     def on_save(self, request, response):
         failed = []
