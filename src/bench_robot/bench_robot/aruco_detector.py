@@ -105,7 +105,7 @@ class ArucoManager(Node):
         return float(np.mean(pts[:, 1]))
 
     def _open_camera(self):
-        self.cap = cv2.VideoCapture("/dev/v4l/by-id/usb-Arducam_Technology_Co.__Ltd._Arducam-B0578-2.3MP-GS_SN001-video-index0",cv2.CAP_V4L2)
+        self.cap = cv2.VideoCapture("/dev/v4l/by-id/usb-Arducam_Technology_Co.__Ltd._USB_2.0_Camera_SN0001-video-index0",cv2.CAP_V4L2)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.usb_cam_width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.usb_cam_height)
         self.cap.set(cv2.CAP_PROP_FPS, self.usb_cam_fps)

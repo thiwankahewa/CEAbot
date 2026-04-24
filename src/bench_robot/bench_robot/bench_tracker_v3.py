@@ -18,7 +18,7 @@ class BenchTracker(Node):
         # -------- states and variables --------
         self.eStop = False
         self.mode = "manual"
-        self.auto_state = "idle"
+        self.auto_state = "manual"
         self.bench_track_dir = "bench_tracking_f"
         self.aruco_stop_request = False
         self.aruco_stop_handled = False
@@ -65,11 +65,7 @@ class BenchTracker(Node):
         self.declare_parameter('base_rpm', 12.0)
         self.declare_parameter('max_rpm', 25.0)
 
-        self.declare_parameter('aruco_center_kp', 20.0)
-        self.declare_parameter('aruco_center_kd', 4.0)
-        self.declare_parameter('aruco_center_base_rpm', 2.0)
-        self.declare_parameter('aruco_center_max_turn_rpm', 6.0)
-        self.declare_parameter('aruco_center_entry_norm', 0.03)
+        self.declare_parameter('aruco_center_base_rpm', 1.0)
         self.declare_parameter('aruco_center_done_norm', 10.0)
         self.declare_parameter('aruco_center_timeout_s', 0.30)
         self.declare_parameter('aruco_center_stable_cycles', 10)
@@ -107,11 +103,7 @@ class BenchTracker(Node):
         self.corr_rpm = float(self.get_parameter('corr_rpm').value)
         self.base_rpm = float(self.get_parameter('base_rpm').value)
         self.max_rpm = float(self.get_parameter('max_rpm').value)
-        self.aruco_center_kp = float(self.get_parameter('aruco_center_kp').value)
-        self.aruco_center_kd = float(self.get_parameter('aruco_center_kd').value)
         self.aruco_center_base_rpm = float(self.get_parameter('aruco_center_base_rpm').value)
-        self.aruco_center_max_turn_rpm = float(self.get_parameter('aruco_center_max_turn_rpm').value)
-        self.aruco_center_entry_norm = float(self.get_parameter('aruco_center_entry_norm').value)
         self.aruco_center_done_norm = float(self.get_parameter('aruco_center_done_norm').value)
         self.aruco_center_timeout_s = float(self.get_parameter('aruco_center_timeout_s').value)
         self.aruco_center_stable_cycles = int(self.get_parameter('aruco_center_stable_cycles').value)

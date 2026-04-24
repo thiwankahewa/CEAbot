@@ -21,11 +21,13 @@ class AutoStateManager(Node):
             "yaw_correction",
             "align_center",
             "scan_start",
-            "aruco_centering"
+            "aruco_centering",
+            "manual"
         }
         # Allowed transitions 
         self.allowed = {
-            "idle": {"align_center", "bench_tracking_f", "bench_tracking_b", "yaw_correction","steer_0", "steer_90"},
+            "manual": {"idle", "bench_tracking_f", "bench_tracking_b", "scan_start"},
+            "idle": {"manual","align_center", "bench_tracking_f", "bench_tracking_b", "yaw_correction","steer_0", "steer_90"},
             "bench_tracking_f": {"yaw_correction", "idle",  "bench_tracking_b", "align_center"},
             "bench_tracking_b": {"yaw_correction", "idle", "bench_tracking_f", "align_center"},
             "yaw_correction": {"align_center", "idle"},
@@ -64,7 +66,7 @@ class AutoStateManager(Node):
 
         # If leaving AUTO, force state to idle (global safety)
         if self.mode != "auto":
-            self.set_state("idle", reason="mode!=auto (forced)")
+            self.set_state("manual", reason="mode!=auto (forced)")
 
     def cb_state_cmd(self, msg: String):
         cmd = (msg.data or "").strip().lower()
