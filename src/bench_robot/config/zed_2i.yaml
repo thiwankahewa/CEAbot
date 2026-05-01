@@ -13,7 +13,7 @@
       publish_gray: false
       publish_stereo: false
       enable_24bit_output: true
-      auto_exposure_gain: false
+      auto_exposure_gain: true
       exposure: 60
       gain: 60
       auto_whitebalance: true
@@ -41,7 +41,7 @@
       point_cloud_freq: 1.0
       depth_stabilization: 0
       point_cloud_res: "COMPACT"
-      depth_confidence: 70
+      depth_confidence: 95
       depth_texture_conf: 80
       remove_saturated_areas: true
       publish_depth_map: true

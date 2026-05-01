@@ -25,7 +25,7 @@ def generate_launch_description():
             "publish_urdf": "false",
             "publish_tf": "false",
             "enable_ipc": "false",
-            "node_log_type": "log",
+            #"node_log_type": "log",
         }.items()
     )
 

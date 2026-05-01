@@ -26,7 +26,7 @@ class ZedTestScanNode(Node):
         self.save_dir = os.path.expanduser("~/scan_data_zed")
         os.makedirs(self.save_dir, exist_ok=True)
 
-        self.declare_parameter("fresh_wait_time", 1.0)
+        self.declare_parameter("fresh_wait_time", 2.0)
         self.declare_parameter("capture_timeout", 5.0)
 
         self.latest_color_msg = None
