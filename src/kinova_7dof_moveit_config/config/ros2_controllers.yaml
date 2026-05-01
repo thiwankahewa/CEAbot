@@ -39,4 +39,3 @@ twist_controller:
 fault_controller:
   ros__parameters:
     joints: []
--
