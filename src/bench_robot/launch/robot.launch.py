@@ -14,17 +14,18 @@ def generate_launch_description():
     motor_mux_params = os.path.join(pkg_share,'config','motor_control_mux.yaml')
     hub_motor_driver_params = os.path.join(pkg_share,'config','hub_motor_driver_v2.yaml')
     bench_tracker_params = os.path.join(pkg_share,'config','bench_tracker_v3.yaml')
-    zed_params = os.path.join(pkg_share, 'config', 'zed_mini.yaml')
+    zed_params = os.path.join(pkg_share, 'config', 'zed_2i.yaml')
 
     zed_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(PathJoinSubstitution([FindPackageShare("zed_wrapper"),"launch","zed_camera.launch.py"])),
         launch_arguments={
-            "camera_model": "zedm",
+            "camera_model": "zed2i",
             "ros_params_override_path": zed_params,
             "serial_number": "0",
             "publish_urdf": "false",
             "publish_tf": "false",
             "enable_ipc": "false",
+            "node_log_type": "log",
         }.items()
     )
 
@@ -44,7 +45,8 @@ def generate_launch_description():
 
 
     return LaunchDescription([
-        orbbec_launch,
+        #orbbec_launch,
+        zed_launch,
 
         Node(
             package='rosbridge_server',
@@ -94,8 +96,10 @@ def generate_launch_description():
             package="bench_robot",
             executable="aruco_detector",
             output="screen",),
+   
         Node(
             package="bench_robot",
-            executable="orbbec_test_scan",
+            executable="zed_test_scan",
             output="screen",)
+        
     ])

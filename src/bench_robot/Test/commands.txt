@@ -20,6 +20,9 @@ ros2 run orbbec_camera list_devices_node
 
 
 ros2 topic pub /auto_state std_msgs/msg/String "{data: scan_start}" --once
+ros2 topic pub /robot_location std_msgs/msg/Int16MultiArray "{data: [0, 1, 15, 1, 15]}" --once
+
+ros2 echo
 
 
 ros2 run tf2_ros tf2_echo base_link zed_camera_center
