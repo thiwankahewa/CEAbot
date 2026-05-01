@@ -33,6 +33,9 @@ class MotorDriverNode(Node):
         self.parked = False
         self.motor_enabled = True
         self._profile_is_corr = False
+        self.connection_error_reported = False
+        self.last_connect_attempt = 0.0
+        self.connect_retry_interval = 10.0
 
         self.client = ModbusSerialClient(port=self.port, baudrate=115200)
 
@@ -88,6 +91,13 @@ class MotorDriverNode(Node):
     def ensure_connected(self) -> bool:
         if self.connected:
             return True
+        now = time.time()
+
+        # prevent spamming reconnect attempts
+        if (now - self.last_connect_attempt) < self.connect_retry_interval:
+            return False
+
+        self.last_connect_attempt = now
         return self.try_connect(init=False)
 
     def _write_single(self, addr: int, value: int):
@@ -241,6 +251,7 @@ class MotorDriverNode(Node):
         try:
             if self.client.connect():
                 self.connected = True
+                self.connection_error_reported = False 
                 self.get_logger().info("Connected to ZLAC8015D" if init else "Reconnected to ZLAC8015D")
                 self._write_single(0x2022, 10)
                 time.sleep(0.02)
@@ -250,11 +261,15 @@ class MotorDriverNode(Node):
                 self.set_parking(False)
                 return True
             self.connected = False
-            self.get_logger().error("ZLAC8015D connection failed")
+            if not self.connection_error_reported:
+                self.get_logger().warn("Failed to connect to ZLAC8015D")
+                self.connection_error_reported = True
             return False
         except Exception as e:
             self.connected = False
-            self.get_logger().error(f"connect exception: {e}")
+            if not self.connection_error_reported:
+                self.get_logger().error(f"connect exception: {e}")
+                self.connection_error_reported = True
             return False
 
     def on_reconnect(self, request, response):

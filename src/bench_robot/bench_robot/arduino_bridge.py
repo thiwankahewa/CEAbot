@@ -17,6 +17,7 @@ class ArduinoBridge(Node):
         self.baud = 115200
         self.ser = None
         self.connected = False
+        self.serial_error_reported = False
 
         self.send_period = 10.0  # Hz
         self.send_delta = 1
@@ -92,6 +93,7 @@ class ArduinoBridge(Node):
         try:
             self.ser = serial.Serial(self.port, self.baud, timeout=0.05)
             self.connected = True
+            self.serial_error_reported = False
             self.get_logger().info(f"Opened serial {self.port} @ {self.baud}")
             if initial:
                 self.perform_startup_wiggle()
@@ -99,11 +101,14 @@ class ArduinoBridge(Node):
         except Exception as e:
             self.ser = None
             self.connected = False
-            if initial:
+            if not self.serial_error_reported:
                 self.get_logger().warn(f"Arduino not connected ({self.port}): {e} (node will stay alive)")
+                self.serial_error_reported = True
             return False
         
     def read_serial(self):
+        if not self.connected or self.ser is None:
+            return
         try:
             if self.ser.in_waiting:
                 raw = self.ser.readline()
@@ -121,7 +126,9 @@ class ArduinoBridge(Node):
                     self.pub_tof.publish(msg)
 
         except Exception as e:
-            self.get_logger().warn(f"Serial read error: {e}")
+            if not self.serial_error_reported:
+                self.get_logger().warn(f"Serial read error: {e}")
+                self.serial_error_reported = True
             return
     
     def on_arduino_reconnect(self, request, response):
