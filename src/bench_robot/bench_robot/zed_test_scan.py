@@ -5,12 +5,13 @@ import struct
 from datetime import datetime
 import cv2
 import numpy as np
+import yaml
 
 import rclpy
 from rclpy.node import Node
 from rclpy.time import Time
 from std_msgs.msg import Bool, Int16MultiArray, String
-from sensor_msgs.msg import Image, PointCloud2
+from sensor_msgs.msg import Image, PointCloud2, CameraInfo
 from cv_bridge import CvBridge
 from message_filters import Subscriber, ApproximateTimeSynchronizer
 
@@ -34,6 +35,8 @@ class ZedTestScanNode(Node):
         self.latest_cloud_msg = None
         self.latest_color = None
         self.latest_depth = None
+        self.latest_rgb_info_msg = None
+        self.latest_depth_info_msg = None
 
         self.synced_count = 0
         self.camera_ready = False
@@ -45,6 +48,8 @@ class ZedTestScanNode(Node):
         # -------- subs --------
         self.location_sub = self.create_subscription(Int16MultiArray,"/robot_location",self.cb_location,10,)
         self.state_sub = self.create_subscription(String,"/auto_state",self.cb_auto_state,10,)
+        self.rgb_info_sub = self.create_subscription(CameraInfo,"/zed/zed_node/rgb/color/rect/camera_info",self.cb_rgb_camera_info,10,)
+        self.depth_info_sub = self.create_subscription(CameraInfo,"/zed/zed_node/depth/camera_info",self.cb_depth_camera_info,10,)
 
         self.color_sub = Subscriber(self, Image, "/zed/zed_node/rgb/color/rect/image")
         self.depth_sub = Subscriber(self, Image, "/zed/zed_node/depth/depth_registered")
@@ -57,9 +62,16 @@ class ZedTestScanNode(Node):
 
         self.get_logger().info("ZED scan node started.")
 
+    # -------- callback functions --------
     def cb_location(self, msg: Int16MultiArray):
         if len(msg.data) >= 5:
             self.current_location = msg.data[1], msg.data[2]
+
+    def cb_rgb_camera_info(self, msg: CameraInfo):
+        self.latest_rgb_info_msg = msg
+
+    def cb_depth_camera_info(self, msg: CameraInfo):
+        self.latest_depth_info_msg = msg
 
     def cb_auto_state(self, msg: String):
         state = msg.data.strip().lower()
@@ -162,10 +174,10 @@ class ZedTestScanNode(Node):
         depth_npy_path = os.path.join(run_dir, "depth.npy")
         cloud_xyzrgb_npy_path = os.path.join(run_dir, "cloud_xyzrgb.npy")
         cloud_ply_path = os.path.join(run_dir, "cloud.ply")
-        meta_path = os.path.join(run_dir, "meta.txt")
+        meta_path = os.path.join(run_dir, "metadata.yaml")
 
         cv2.imwrite(color_path, self.latest_color)
-        np.save(color_npy_path, self.latest_depth)
+        np.save(color_npy_path, self.latest_color)
         np.save(depth_npy_path, self.latest_depth)
 
         xyzrgb_points, has_rgb = self.extract_pointcloud_arrays(self.latest_cloud_msg)
@@ -174,22 +186,38 @@ class ZedTestScanNode(Node):
             np.save(cloud_xyzrgb_npy_path, xyzrgb_points)
             self.save_ply_xyzrgb(xyzrgb_points, cloud_ply_path)
 
-        with open(meta_path, "w") as f:
-            f.write("camera: ZED 2i\n")
-            f.write(f"timestamp: {stamp}\n")
-            f.write(f"location: {location_str}\n")
-            f.write(f"color_shape: {self.latest_color.shape}\n")
-            f.write(f"depth_shape: {self.latest_depth.shape}\n")
-            f.write(f"depth_dtype: {self.latest_depth.dtype}\n")
-            f.write(f"color_frame_id: {self.latest_color_msg.header.frame_id}\n")
-            f.write(f"depth_frame_id: {self.latest_depth_msg.header.frame_id}\n")
-            f.write(f"cloud_frame_id: {self.latest_cloud_msg.header.frame_id}\n")
-            f.write(f"cloud_width: {self.latest_cloud_msg.width}\n")
-            f.write(f"cloud_height: {self.latest_cloud_msg.height}\n")
-            f.write(f"cloud_point_step: {self.latest_cloud_msg.point_step}\n")
+        metadata = {
+            "camera": "ZED 2i",
+            "timestamp": stamp,
+            "location": location_str,
 
-            if xyzrgb_points is not None:
-                f.write(f"cloud_xyzrgb_point_count: {len(xyzrgb_points)}\n")
+            "image": {
+                "color_shape": list(self.latest_color.shape),
+                "depth_shape": list(self.latest_depth.shape),
+                "depth_dtype": str(self.latest_depth.dtype),
+            },
+
+            "frames": {
+                "color_frame_id": self.latest_color_msg.header.frame_id,
+                "depth_frame_id": self.latest_depth_msg.header.frame_id,
+                "cloud_frame_id": self.latest_cloud_msg.header.frame_id,
+            },
+
+            "point_cloud": {
+                "width": self.latest_cloud_msg.width,
+                "height": self.latest_cloud_msg.height,
+                "point_step": self.latest_cloud_msg.point_step,
+                "point_count": int(self.latest_cloud_msg.width * self.latest_cloud_msg.height),
+            },
+
+            "camera_info": {
+                "rgb": self.build_camera_info_dict(self.latest_rgb_info_msg),
+                "depth": self.build_camera_info_dict(self.latest_depth_info_msg),
+            }
+        }
+
+        with open(meta_path, "w") as f:
+            yaml.dump(metadata, f, sort_keys=False)
 
     def extract_pointcloud_arrays(self, cloud_msg):
         field_map = {field.name: field for field in cloud_msg.fields}
@@ -259,6 +287,34 @@ class ZedTestScanNode(Node):
             for pt in xyzrgb_points:
                 x, y, z, r, g, b = pt
                 f.write(f"{x:.6f} {y:.6f} {z:.6f} {int(r)} {int(g)} {int(b)}\n")
+
+    def build_camera_info_dict(self, msg):
+        if msg is None:
+            return None
+
+        return {
+            "frame_id": msg.header.frame_id,
+            "stamp": {
+                "sec": msg.header.stamp.sec,
+                "nanosec": msg.header.stamp.nanosec,
+            },
+            "height": msg.height,
+            "width": msg.width,
+            "distortion_model": msg.distortion_model,
+            "D": list(msg.d),
+            "K": list(msg.k),
+            "R": list(msg.r),
+            "P": list(msg.p),
+            "binning_x": msg.binning_x,
+            "binning_y": msg.binning_y,
+            "roi": {
+                "x_offset": msg.roi.x_offset,
+                "y_offset": msg.roi.y_offset,
+                "height": msg.roi.height,
+                "width": msg.roi.width,
+                "do_rectify": msg.roi.do_rectify,
+            }
+        }
 
 
 def main(args=None):
