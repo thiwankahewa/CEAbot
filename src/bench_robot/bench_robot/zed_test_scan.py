@@ -191,12 +191,6 @@ class ZedTestScanNode(Node):
             "timestamp": stamp,
             "location": location_str,
 
-            "image": {
-                "color_shape": list(self.latest_color.shape),
-                "depth_shape": list(self.latest_depth.shape),
-                "depth_dtype": str(self.latest_depth.dtype),
-            },
-
             "frames": {
                 "color_frame_id": self.latest_color_msg.header.frame_id,
                 "depth_frame_id": self.latest_depth_msg.header.frame_id,
@@ -212,7 +206,6 @@ class ZedTestScanNode(Node):
 
             "camera_info": {
                 "rgb": self.build_camera_info_dict(self.latest_rgb_info_msg),
-                "depth": self.build_camera_info_dict(self.latest_depth_info_msg),
             }
         }
 
