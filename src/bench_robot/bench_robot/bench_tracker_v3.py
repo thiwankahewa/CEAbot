@@ -65,10 +65,10 @@ class BenchTracker(Node):
         self.declare_parameter('base_rpm', 12.0)
         self.declare_parameter('max_rpm', 25.0)
 
-        self.declare_parameter('aruco_center_base_rpm', 1.0)
-        self.declare_parameter('aruco_center_done_norm', 10.0)
+        self.declare_parameter('aruco_center_base_rpm', 2.0)
+        self.declare_parameter('aruco_center_done_norm', 5.0)
         self.declare_parameter('aruco_center_timeout_s', 0.30)
-        self.declare_parameter('aruco_center_stable_cycles', 10)
+        self.declare_parameter('aruco_center_stable_cycles', 3)
 
         self.declare_parameter('steer_settle_s', 2)  # wait after steering change
 

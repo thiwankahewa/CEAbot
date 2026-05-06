@@ -41,7 +41,7 @@ class ArucoManager(Node):
         self.stop_sent = False
         self.range_active = False
 
-        self.stable_goal_frames = 3
+        self.stable_goal_frames = 2
         self.usb_cam_index = 0
         self.usb_cam_width = 640
         self.usb_cam_height = 480

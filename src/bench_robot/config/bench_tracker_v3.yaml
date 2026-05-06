@@ -3,6 +3,10 @@
     Kd_offset: 1.0
     Kp_offset: 0.5
     Kp_offset_b: 0.05
+    aruco_center_base_rpm: 1.0
+    aruco_center_done_norm: 5.0
+    aruco_center_stable_cycles: 3
+    aruco_center_timeout_s: 0.3
     base_rpm: 12.0
     corr_rpm: 2.0
     d_filter_t: 1.0
