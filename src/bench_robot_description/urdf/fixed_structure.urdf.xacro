@@ -93,9 +93,40 @@
     <parent link="world"/>
     <child link="arm_mount_link"/>
     <origin xyz="0 -0.09 ${col_h }" rpy="0 0 0"/>
-</joint>
+  </joint>
 
-  <xacro:arg name="dof" default="7"/>
+  <link name="camera_bracket_link">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://bench_robot_description/meshes/zed_2i_bracket.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+      <material name="white">
+        <color rgba="1 1 1 1"/>
+      </material>
+    </visual>
+
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://bench_robot_description/meshes/zed_2i_bracket.stl" scale="0.001 0.001 0.001"/>
+      </geometry>
+    </collision>
+
+    <inertial>
+      <mass value="0.2"/>
+      <origin xyz="0 0 0"/>
+      <inertia ixx="0.0001" iyy="0.0001" izz="0.0001"
+              ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+
+  <joint name="camera_bracket_joint" type="fixed">
+    <parent link="top_beam_link"/>
+    <child link="camera_bracket_link"/>
+    <origin xyz="0 0 -0.0445" rpy="1.5708 0 0"/>
+  </joint>
+
   <xacro:arg name="robot_ip" default="yyy.yyy.yyy.yyy"/>
   <xacro:arg name="port" default="10000"/>
   <xacro:arg name="username" default="admin"/>
@@ -111,7 +142,7 @@
     <xacro:load_robot
       parent="arm_mount_link"
       arm="gen3"
-      dof="$(arg dof)"
+      dof="7"
       vision="false"
       prefix=""
 

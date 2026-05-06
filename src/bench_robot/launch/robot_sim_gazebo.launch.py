@@ -1,23 +1,11 @@
 import os
 
 from launch import LaunchDescription
-from launch.actions import (
-    DeclareLaunchArgument,
-    IncludeLaunchDescription,
-    OpaqueFunction,
-    RegisterEventHandler,
-    SetEnvironmentVariable,
-    TimerAction,
-)
+from launch.actions import (DeclareLaunchArgument,IncludeLaunchDescription,OpaqueFunction,RegisterEventHandler,SetEnvironmentVariable,TimerAction,)
 from launch.conditions import IfCondition, UnlessCondition
 from launch.event_handlers import OnProcessExit, OnProcessStart
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import (
-    Command,
-    FindExecutable,
-    LaunchConfiguration,
-    PathJoinSubstitution,
-)
+from launch.substitutions import (Command,FindExecutable,LaunchConfiguration,PathJoinSubstitution,)
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from launch.substitutions import PythonExpression, NotSubstitution
@@ -28,7 +16,6 @@ from moveit_configs_utils import MoveItConfigsBuilder
 
 def launch_setup(context, *args, **kwargs):
     # --- Launch Configurations ---
-    dof = LaunchConfiguration("dof")
     robot_ip = LaunchConfiguration("robot_ip")
     username = LaunchConfiguration("username")
     password = LaunchConfiguration("password")
@@ -60,11 +47,7 @@ def launch_setup(context, *args, **kwargs):
         [
             PathJoinSubstitution([FindExecutable(name="xacro")]),
             " ",
-            PathJoinSubstitution(
-                [FindPackageShare("bench_robot_description"), "urdf", "fixed_structure.urdf.xacro"]
-            ),
-            " ",
-            "dof:=", dof,
+            PathJoinSubstitution([FindPackageShare("bench_robot_description"), "urdf", "fixed_structure.urdf.xacro"]),
             " ",
             "robot_ip:=", robot_ip,
             " ",
@@ -79,29 +62,24 @@ def launch_setup(context, *args, **kwargs):
             "use_fake_hardware:=", use_fake_hw_val,
         ]
     )
+
     robot_description = {"robot_description": robot_description_content.perform(context)}
 
-    dof_raw = context.perform_substitution(LaunchConfiguration("dof"))
-    moveit_package_str = f"kinova_{dof_raw}dof_moveit_config"
+    moveit_package_str = "kinova_7dof_moveit_config"
 
-    # --- Controller Manager Path ---
-    ros2_controllers_path = os.path.join(get_package_share_directory(moveit_package_str), "config", "ros2_controllers.yaml")
-
-    # --- Nodes Definition ---
     robot_state_publisher_node = Node(
         package="robot_state_publisher",
         executable="robot_state_publisher",
-        #output="both",
         arguments=["--ros-args", "--log-level", "warn"],
         parameters=[robot_description, {"use_sim_time": actual_sim_time}],
     )
 
     # Standalone Controller Manager (Required for Real Robot and Fake Hardware)
+    ros2_controllers_path = os.path.join(get_package_share_directory(moveit_package_str), "config", "ros2_controllers.yaml")
     ros2_control_node = Node(
         package="controller_manager",
         executable="ros2_control_node",
         parameters=[robot_description, ros2_controllers_path, {"use_sim_time": actual_sim_time}],
-        #output="both",
         arguments=["--ros-args", "--log-level", "warn"],
         condition=UnlessCondition(sim_ignition_val), # Run if NOT in simulation
     )
@@ -136,7 +114,6 @@ def launch_setup(context, *args, **kwargs):
     move_group_node = Node(
         package="moveit_ros_move_group",
         executable="move_group",
-        #output="screen",
         arguments=["--ros-args", "--log-level", "warn"],
         parameters=[moveit_config.to_dict(), {"use_sim_time": actual_sim_time}],
         
@@ -148,7 +125,6 @@ def launch_setup(context, *args, **kwargs):
         arguments=["-d", os.path.join(get_package_share_directory(moveit_package_str), "config", "moveit.rviz"), 
                    "--ros-args", "--log-level", "warn"],
         parameters=[moveit_config.to_dict(), {"use_sim_time": actual_sim_time}],
-        #condition=UnlessCondition(launch_arm_controller),
     )
 
     marker_422_left = Node(
@@ -173,17 +149,6 @@ def launch_setup(context, *args, **kwargs):
         ],
     )
 
-    marker_bench_left = Node(
-        package='tf2_ros',
-        executable='static_transform_publisher',
-        arguments=[
-            '--x', '-0.792', '--y', '0', '--z', '-1.202', 
-            '--frame-id', 'top_beam_link', 
-            '--child-frame-id', 'marker_bench_left',
-            "--ros-args", "--log-level", "warn"
-        ],
-    )
-
     marker_bench_center = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
@@ -191,17 +156,6 @@ def launch_setup(context, *args, **kwargs):
             '--x', '0', '--y', '0', '--z', '-1.202', 
             '--frame-id', 'top_beam_link', 
             '--child-frame-id', 'marker_bench_center',
-            "--ros-args", "--log-level", "warn"
-        ],
-    )
-
-    marker_bench_third = Node(
-        package='tf2_ros',
-        executable='static_transform_publisher',
-        arguments=[
-            '--x', '-0.5', '--y', '0', '--z', '-1.202', 
-            '--frame-id', 'top_beam_link', 
-            '--child-frame-id', 'marker_bench_third',
             "--ros-args", "--log-level", "warn"
         ],
     )
@@ -232,21 +186,17 @@ def launch_setup(context, *args, **kwargs):
             "publish_tf": "false",
             "enable_ipc": "false",
         }.items()
-    )'''
-
+    )
 
     zed_local_mapper_node = Node(
         package="bench_robot",
         executable="zed_local_mapper",
         output="screen",
         condition=IfCondition(launch_arm_controller),
-    )
+    )'''
 
     # --- Execution Logic ---
-    nodes_to_start = [robot_state_publisher_node, ros2_control_node, marker_422_left, 
-                      marker_722_left,marker_bench_left, marker_bench_center, marker_bench_third,]
-
-    
+    nodes_to_start = [robot_state_publisher_node, ros2_control_node, marker_422_left, marker_722_left, marker_bench_center,]
 
     if is_sim:
 
@@ -273,7 +223,7 @@ def launch_setup(context, *args, **kwargs):
 
         delayed_spawn = TimerAction(period=5.0,actions=[ignition_spawn_entity])
 
-        camera_bridge = Node(
+        '''camera_bridge = Node(
             package="ros_gz_bridge",
             executable="parameter_bridge",
             arguments=[
@@ -282,7 +232,7 @@ def launch_setup(context, *args, **kwargs):
                 "/zed_sim/camera_info@sensor_msgs/msg/CameraInfo@ignition.msgs.CameraInfo",
             ],
             output="screen",
-        )
+        )'''
 
         nodes_to_start += [
             gz_resource_path,
@@ -290,19 +240,12 @@ def launch_setup(context, *args, **kwargs):
             delayed_spawn,
             RegisterEventHandler(OnProcessExit(target_action=ignition_spawn_entity, on_exit=[joint_state_broadcaster_spawner])),
         ]
-    else:
-        # REAL ROBOT or FAKE MODE
-        nodes_to_start += [joint_state_broadcaster_spawner]
+    else:               
+        nodes_to_start += [joint_state_broadcaster_spawner]     # REAL ROBOT or FAKE MODE
 
-    # Shared Controller -> MoveIt chain
     nodes_to_start += [
-        RegisterEventHandler(
-            OnProcessExit(target_action=joint_state_broadcaster_spawner, on_exit=[robot_traj_controller_spawner])
-        ),
-        RegisterEventHandler(
-            OnProcessExit(target_action=robot_traj_controller_spawner, on_exit=[move_group_node, rviz_node, arm_controller_node])
-        ),
-        
+        RegisterEventHandler(OnProcessExit(target_action=joint_state_broadcaster_spawner, on_exit=[robot_traj_controller_spawner])),
+        RegisterEventHandler(OnProcessExit(target_action=robot_traj_controller_spawner, on_exit=[move_group_node, rviz_node, arm_controller_node])), 
     ]
 
     return nodes_to_start
@@ -311,7 +254,6 @@ def launch_setup(context, *args, **kwargs):
 def generate_launch_description():
     return LaunchDescription([
         # Robot Connection Arguments
-        DeclareLaunchArgument("dof", default_value="7"),
         DeclareLaunchArgument("robot_ip", default_value="xxx.xxx.xxx.xxx"),
         DeclareLaunchArgument("username", default_value="admin"),
         DeclareLaunchArgument("password", default_value="admin"),

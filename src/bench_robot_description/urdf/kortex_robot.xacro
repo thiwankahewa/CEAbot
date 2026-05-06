@@ -34,7 +34,7 @@
     moveit_active:=false">
 
     <!-- Include and load arm macro files -->
-    <xacro:include filename="$(find bench_robot_description)/urdf/${dof}/gen3_macro.xacro" />
+    <xacro:include filename="$(find bench_robot_description)/urdf/gen3_macro.xacro" />
 
     <!-- Load the arm -->
     <xacro:load_arm
