@@ -204,6 +204,31 @@ Visualization Manager:
           Alpha: 1
           Show Axes: false
           Show Trail: false
+        zed2i_camera_center:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        zed2i_camera_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        zed2i_left_camera_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        zed2i_left_camera_frame_optical:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        zed2i_right_camera_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        zed2i_right_camera_frame_optical:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
       Mass Properties:
         Inertia: false
         Mass: false
@@ -273,6 +298,18 @@ Visualization Manager:
           Value: false
         world:
           Value: true
+        zed2i_camera_center:
+          Value: false
+        zed2i_camera_link:
+          Value: false
+        zed2i_left_camera_frame:
+          Value: false
+        zed2i_left_camera_frame_optical:
+          Value: true
+        zed2i_right_camera_frame:
+          Value: false
+        zed2i_right_camera_frame_optical:
+          Value: false
       Marker Scale: 1
       Name: TF
       Show Arrows: false
@@ -317,7 +354,14 @@ Visualization Manager:
             {}
           top_beam_link:
             camera_bracket_link:
-              {}
+              zed2i_camera_link:
+                zed2i_camera_center:
+                  zed2i_left_camera_frame:
+                    zed2i_left_camera_frame_optical:
+                      {}
+                  zed2i_right_camera_frame:
+                    zed2i_right_camera_frame_optical:
+                      {}
       Update Interval: 0
       Value: true
   Enabled: true
@@ -402,5 +446,5 @@ Window Geometry:
   Views:
     collapsed: false
   Width: 1908
-  X: 0
-  Y: 0
+  X: -32
+  Y: -32

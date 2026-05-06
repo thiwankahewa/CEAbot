@@ -7,6 +7,8 @@ import time
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
+import tf2_ros
+from rclpy.time import Time
 
 from geometry_msgs.msg import Pose, Point, Quaternion
 from shape_msgs.msg import SolidPrimitive
@@ -29,7 +31,7 @@ class PlantLocatorNode(Node):
 
         self.declare_parameter("csv_path","/home/thiwa/scan_data_zed/b1_r12_20260505_115253/plant_coordinates_camera_frame.csv",)
         self.declare_parameter("planning_group", "arm")
-        self.declare_parameter("base_frame", "arm_mount_link")
+        self.declare_parameter("base_frame", "zed2i_left_camera_frame_optical")
         self.declare_parameter("ee_link", "end_effector_link")
 
         self.declare_parameter("position_tolerance", 0.02)   # meters
@@ -46,6 +48,9 @@ class PlantLocatorNode(Node):
         self.declare_parameter("qy", 0.0)
         self.declare_parameter("qz", 0.0)
         self.declare_parameter("qw", 1.0)
+
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         self.move_group_client = ActionClient(self, MoveGroup, "/move_action")
         self.execute_client = ActionClient(self, ExecuteTrajectory, "/execute_trajectory")
@@ -215,7 +220,34 @@ class PlantLocatorNode(Node):
                 self.get_logger().warn(f"Execution failed for target {i}")
                 continue
 
+            time.sleep(0.2)
+
+            self.print_ee_wrt_camera()
+
             time.sleep(self.get_parameter("sleep_between_targets").value)
+
+    def print_ee_wrt_camera(self):
+        camera_frame = self.get_parameter("base_frame").value
+        ee_link = self.get_parameter("ee_link").value
+
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                camera_frame,
+                ee_link,
+                Time()
+            )
+
+            t = transform.transform.translation
+            r = transform.transform.rotation
+
+            self.get_logger().info(
+                f"EE wrt Camera:\n"
+                f"Position: x={t.x:.3f}, y={t.y:.3f}, z={t.z:.3f}\n"
+                f"Orientation: x={r.x:.3f}, y={r.y:.3f}, z={r.z:.3f}, w={r.w:.3f}"
+            )
+
+        except Exception as e:
+            self.get_logger().warn(f"TF lookup failed: {e}")
 
 
 def main(args=None):

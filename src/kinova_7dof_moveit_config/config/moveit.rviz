@@ -4,6 +4,7 @@ Panels:
     Name: Displays
     Property Tree Widget:
       Expanded:
+        - /TF1
         - /TF1/Frames1
       Splitter Ratio: 0.5
     Tree Height: 207
@@ -202,6 +203,31 @@ Visualization Manager:
             Alpha: 1
             Show Axes: false
             Show Trail: false
+          zed2i_camera_center:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+            Value: true
+          zed2i_camera_link:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+          zed2i_left_camera_frame:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+          zed2i_left_camera_frame_optical:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+          zed2i_right_camera_frame:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+          zed2i_right_camera_frame_optical:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
         Loop Animation: true
         Robot Alpha: 0.5
         Robot Color: 150; 50; 150
@@ -384,6 +410,31 @@ Visualization Manager:
             Alpha: 1
             Show Axes: false
             Show Trail: false
+          zed2i_camera_center:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+            Value: true
+          zed2i_camera_link:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+          zed2i_left_camera_frame:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+          zed2i_left_camera_frame_optical:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+          zed2i_right_camera_frame:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+          zed2i_right_camera_frame_optical:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
         Robot Alpha: 0.5
         Show Robot Collision: false
         Show Robot Visual: true
@@ -456,6 +507,18 @@ Visualization Manager:
           Value: false
         world:
           Value: true
+        zed2i_camera_center:
+          Value: false
+        zed2i_camera_link:
+          Value: false
+        zed2i_left_camera_frame:
+          Value: false
+        zed2i_left_camera_frame_optical:
+          Value: true
+        zed2i_right_camera_frame:
+          Value: false
+        zed2i_right_camera_frame_optical:
+          Value: false
       Marker Scale: 1
       Name: TF
       Show Arrows: false
@@ -500,7 +563,14 @@ Visualization Manager:
             {}
           top_beam_link:
             camera_bracket_link:
-              {}
+              zed2i_camera_link:
+                zed2i_camera_center:
+                  zed2i_left_camera_frame:
+                    zed2i_left_camera_frame_optical:
+                      {}
+                  zed2i_right_camera_frame:
+                    zed2i_right_camera_frame_optical:
+                      {}
             marker_422_left:
               {}
             marker_722_left:
@@ -559,9 +629,9 @@ Window Geometry:
     collapsed: false
   MotionPlanning - Trajectory Slider:
     collapsed: false
-  QMainWindow State: 000000ff00000000fd0000000100000000000002b4000003fdfc0200000005fb00000044004d006f00740069006f006e0050006c0061006e006e0069006e00670020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff0000003f00fffffffb000000100044006900730070006c006100790073010000003b00000150000000c700fffffffb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e00670100000191000001d00000016a00fffffffb0000000800480065006c0070000000029a0000006e0000006e00fffffffb0000000a005600690065007700730100000367000000d1000000a000ffffff000004ba000003fd00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  QMainWindow State: 000000ff00000000fd0000000100000000000002b4000003fdfc0200000005fb00000044004d006f00740069006f006e0050006c0061006e006e0069006e00670020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff0000003f00fffffffb000000100044006900730070006c006100790073010000003b00000150000000c700fffffffb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e00670100000191000001d00000016900fffffffb0000000800480065006c0070000000029a0000006e0000006e00fffffffb0000000a005600690065007700730100000367000000d1000000a000ffffff000004ba000003fd00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
   Views:
     collapsed: false
   Width: 1908
-  X: 0
-  Y: 0
+  X: -32
+  Y: -32
