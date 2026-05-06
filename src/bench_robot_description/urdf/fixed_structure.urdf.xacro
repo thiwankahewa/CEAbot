@@ -92,7 +92,7 @@
   <joint name="chassis_to_arm_mount" type="fixed">
     <parent link="world"/>
     <child link="arm_mount_link"/>
-    <origin xyz="0 -0.09 ${col_h }" rpy="0 0 0"/>
+    <origin xyz="0 -0.09 ${col_h }" rpy="3.14159 0 0"/>
   </joint>
 
   <link name="camera_bracket_link">
@@ -165,7 +165,7 @@
       gripper="false"
       gripper_joint_name="robotiq_85_left_knuckle_joint"
       >
-      <origin xyz="0 0 0" rpy="3.14159 0 0"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
 </xacro:load_robot>
 
 <xacro:if value="$(arg sim_ignition)">

@@ -28,7 +28,6 @@ install(
     models
     worlds
     meshes
-    config
   DESTINATION share/${PROJECT_NAME}
 )
 

@@ -7,6 +7,8 @@ Panels:
         - /Global Options1
         - /Status1
         - /RobotModel1
+        - /TF1
+        - /TF1/Frames1
       Splitter Ratio: 0.5
     Tree Height: 816
   - Class: rviz_common/Selection
@@ -89,6 +91,7 @@ Visualization Manager:
           Alpha: 1
           Show Axes: false
           Show Trail: false
+          Value: true
         camera_color_frame:
           Alpha: 1
           Show Axes: false
@@ -209,6 +212,114 @@ Visualization Manager:
       Update Interval: 0
       Value: true
       Visual Enabled: true
+    - Class: rviz_default_plugins/TF
+      Enabled: true
+      Frame Timeout: 15
+      Frames:
+        All Enabled: false
+        arm_mount_link:
+          Value: true
+        base_link:
+          Value: false
+        bracelet_link:
+          Value: false
+        camera_bottom_screw_frame:
+          Value: false
+        camera_bracket_link:
+          Value: false
+        camera_color_frame:
+          Value: false
+        camera_color_optical_frame:
+          Value: false
+        camera_depth_frame:
+          Value: false
+        camera_depth_optical_frame:
+          Value: false
+        camera_left_ir_frame:
+          Value: false
+        camera_left_ir_optical_frame:
+          Value: false
+        camera_link:
+          Value: false
+        camera_right_ir_frame:
+          Value: false
+        camera_right_ir_optical_frame:
+          Value: false
+        column_left_link:
+          Value: false
+        column_right_link:
+          Value: false
+        end_effector_link:
+          Value: true
+        forearm_link:
+          Value: false
+        half_arm_1_link:
+          Value: false
+        half_arm_2_link:
+          Value: false
+        plate_left_link:
+          Value: false
+        plate_right_link:
+          Value: false
+        shoulder_link:
+          Value: false
+        spherical_wrist_1_link:
+          Value: false
+        spherical_wrist_2_link:
+          Value: false
+        tool_frame:
+          Value: false
+        top_beam_link:
+          Value: false
+        world:
+          Value: true
+      Marker Scale: 1
+      Name: TF
+      Show Arrows: false
+      Show Axes: true
+      Show Names: false
+      Tree:
+        world:
+          arm_mount_link:
+            base_link:
+              shoulder_link:
+                half_arm_1_link:
+                  half_arm_2_link:
+                    forearm_link:
+                      spherical_wrist_1_link:
+                        spherical_wrist_2_link:
+                          bracelet_link:
+                            end_effector_link:
+                              camera_link:
+                                camera_bottom_screw_frame:
+                                  {}
+                                camera_depth_frame:
+                                  camera_color_frame:
+                                    camera_color_optical_frame:
+                                      {}
+                                  camera_depth_optical_frame:
+                                    {}
+                                  camera_left_ir_frame:
+                                    camera_left_ir_optical_frame:
+                                      {}
+                                  camera_right_ir_frame:
+                                    camera_right_ir_optical_frame:
+                                      {}
+                              tool_frame:
+                                {}
+          column_left_link:
+            {}
+          column_right_link:
+            {}
+          plate_left_link:
+            {}
+          plate_right_link:
+            {}
+          top_beam_link:
+            camera_bracket_link:
+              {}
+      Update Interval: 0
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
@@ -255,7 +366,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 3.7401316165924072
+      Distance: 10
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -265,15 +376,15 @@ Visualization Manager:
         X: 0
         Y: 0
         Z: 0
-      Focal Shape Fixed Size: true
+      Focal Shape Fixed Size: false
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 1.1203978061676025
+      Pitch: 0.7853981852531433
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz)
-      Yaw: 0.4953981637954712
+      Yaw: 0.7853981852531433
     Saved: ~
 Window Geometry:
   Displays:

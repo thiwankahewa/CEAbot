@@ -40,7 +40,7 @@ def generate_launch_description():
     )
 
     rviz_config_file = PathJoinSubstitution(
-        [bench_robot_description_dir, "config", "rviz.rviz"]
+        [bench_robot_description_dir, "rviz", "view_robot.rviz"]
     )
 
     rviz_node = Node(
