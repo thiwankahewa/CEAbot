@@ -29,6 +29,11 @@ ros2 run tf2_ros tf2_echo base_link zed_camera_center
 
 
 
+git pull --rebase origin main
+
+
+ sudo chown -R thiwa:thiwa /home/thiwa/scan_data_zed
+
 
 
 
