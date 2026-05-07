@@ -6,10 +6,7 @@ from rclpy.node import Node
 from std_msgs.msg import Int16MultiArray, Float32MultiArray, String, Bool, Float32
 from rcl_interfaces.msg import SetParametersResult
 
-STOP_THRESHOLD_MM = 25
-TOF_MAX_MM = 500
 WHEEL_DIAMETER_M = 0.2032
-
 
 class BenchTracker(Node):
     def __init__(self):
@@ -51,6 +48,9 @@ class BenchTracker(Node):
         self.track_width_m = 1.515
 
         # -------- params --------
+        self.declare_parameter('min_tof', 25)
+        self.declare_parameter('max_tof', 500)
+
         self.declare_parameter('offset_enter_m', 0.10)
         self.declare_parameter('yaw_enter_m', 0.05)
         self.declare_parameter('offset_exit_m', 0.01)
@@ -65,7 +65,6 @@ class BenchTracker(Node):
         self.declare_parameter('base_rpm', 12.0)
         self.declare_parameter('max_rpm', 25.0)
 
-        self.declare_parameter('aruco_center_base_rpm', 2.0)
         self.declare_parameter('aruco_center_done_norm', 5.0)
         self.declare_parameter('aruco_center_timeout_s', 0.30)
         self.declare_parameter('aruco_center_stable_cycles', 3)
@@ -92,6 +91,8 @@ class BenchTracker(Node):
         self.timer = self.create_timer(0.05, self.control_tick)
 
     def _load_params(self):
+        self.min_tof = int(self.get_parameter('min_tof').value)
+        self.max_tof = int(self.get_parameter('max_tof').value)
         self.offset_enter_m = float(self.get_parameter('offset_enter_m').value)
         self.offset_exit_m  = float(self.get_parameter('offset_exit_m').value)
         self.yaw_enter_m    = float(self.get_parameter('yaw_enter_m').value)
@@ -103,7 +104,6 @@ class BenchTracker(Node):
         self.corr_rpm = float(self.get_parameter('corr_rpm').value)
         self.base_rpm = float(self.get_parameter('base_rpm').value)
         self.max_rpm = float(self.get_parameter('max_rpm').value)
-        self.aruco_center_base_rpm = float(self.get_parameter('aruco_center_base_rpm').value)
         self.aruco_center_done_norm = float(self.get_parameter('aruco_center_done_norm').value)
         self.aruco_center_timeout_s = float(self.get_parameter('aruco_center_timeout_s').value)
         self.aruco_center_stable_cycles = int(self.get_parameter('aruco_center_stable_cycles').value)
@@ -195,7 +195,7 @@ class BenchTracker(Node):
         rl, fl, rr, fr = data
 
         def valid(x):
-            return (x is not None) and (STOP_THRESHOLD_MM <= x <= TOF_MAX_MM)
+            return (x is not None) and (self.min_tof <= x <= self.max_tof)
 
         if not all(valid(x) for x in (fl, fr, rl, rr)):
             self.invalid_data_warned = True
@@ -419,9 +419,9 @@ class BenchTracker(Node):
         else:
             self._aruco_center_ok = 0
             if err > 0.0:
-                rpm = self.aruco_center_base_rpm
+                rpm = self.corr_rpm
             else:
-                rpm = -self.aruco_center_base_rpm
+                rpm = -self.corr_rpm
             self.publish_rpm(rpm, rpm)
 
         if self._aruco_center_ok >= self.aruco_center_stable_cycles:

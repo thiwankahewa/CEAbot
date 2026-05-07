@@ -2,6 +2,8 @@
 
 import cv2
 import numpy as np
+from std_srvs.srv import Trigger
+import time
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String, Bool, Int16, Int16MultiArray, Float32MultiArray
@@ -47,12 +49,16 @@ class ArucoManager(Node):
         self.usb_cam_height = 480
         self.usb_cam_fps = 15
 
+                # ---------------- services ----------------
+        self.srv_reconnect = self.create_service(Trigger,"/aruco_detector/aruco_camera_reconnect",self.on_camera_reconnect)
+
         # ---------------- camera, aruco setup ----------------
         self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_100)
         self.aruco_params = cv2.aruco.DetectorParameters()
         self.detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.aruco_params)
         self.cap = None
         self._open_camera()
+
 
         # ---------------- subs ----------------
         self.sub_mode = self.create_subscription(String, '/mode', self.cb_mode, 10)
@@ -112,9 +118,51 @@ class ArucoManager(Node):
 
         if not self.cap.isOpened():
             self.get_logger().error(f"Could not open USB camera index {self.usb_cam_index}")
+            self.cap.release()
             self.cap = None
-        else:
-            self.get_logger().info(f"USB camera opened at index {self.usb_cam_index}")
+            return False
+        
+        self.get_logger().info(f"Aruco camera opened at index {self.usb_cam_index}")
+        return True
+    
+    def on_camera_reconnect(self, request, response):
+        try:
+            self.get_logger().warn("Aruco camera reconnect requested...")
+
+            try:
+                if self.cap is not None:
+                    self.cap.release()
+                    self.cap = None
+                    time.sleep(0.5)
+            except Exception as e:
+                self.get_logger().warning(f"Aruco camera release failed: {e}")
+
+            self.goal_seen_count = 0
+            self.prev_selected_id = None
+            self.stop_sent = False
+            self.publish_stop(False)
+            self.publish_align_error(False)
+
+            ok = self._open_camera()
+            if not ok:
+                raise RuntimeError("Aruco camera reopen failed")
+
+            time.sleep(0.2)
+            frame_ok, frame = self.cap.read()
+
+            if not frame_ok or frame is None:
+                raise RuntimeError("Aruco camera opened, but frame read failed")
+
+            response.success = True
+            response.message = "Aruco camera reconnected successfully."
+            self.get_logger().info("Aruco camera reconnected successfully.")
+
+        except Exception as e:
+            response.success = False
+            response.message = f"Aruco camera reconnect failed: {e}"
+            self.get_logger().error(response.message)
+
+        return response
 
     def request_tracking_direction(self):
         if self.current_bench is None or self.current_row is None or not self.row_known:

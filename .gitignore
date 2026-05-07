@@ -4,3 +4,6 @@ log/
 src/bench_robot/launch/__pycache__/
 src/bench_robot/bench_robot/__pycache__/
 /.vscode
+mobile_sam.pt
+sam2.1_b.pt
+/runs

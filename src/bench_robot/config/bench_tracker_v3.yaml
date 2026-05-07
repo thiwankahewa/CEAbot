@@ -1,9 +1,10 @@
 /bench_tracker_v3:
   ros__parameters:
+    min_tof: 25
+    max_tof: 500
     Kd_offset: 1.0
     Kp_offset: 0.5
     Kp_offset_b: 0.05
-    aruco_center_base_rpm: 1.0
     aruco_center_done_norm: 5.0
     aruco_center_stable_cycles: 3
     aruco_center_timeout_s: 0.3

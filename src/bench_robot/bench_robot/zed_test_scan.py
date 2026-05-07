@@ -36,7 +36,6 @@ class ZedTestScanNode(Node):
         self.latest_color = None
         self.latest_depth = None
         self.latest_rgb_info_msg = None
-        self.latest_depth_info_msg = None
 
         self.synced_count = 0
         self.camera_ready = False
@@ -49,7 +48,6 @@ class ZedTestScanNode(Node):
         self.location_sub = self.create_subscription(Int16MultiArray,"/robot_location",self.cb_location,10,)
         self.state_sub = self.create_subscription(String,"/auto_state",self.cb_auto_state,10,)
         self.rgb_info_sub = self.create_subscription(CameraInfo,"/zed/zed_node/rgb/color/rect/camera_info",self.cb_rgb_camera_info,10,)
-        self.depth_info_sub = self.create_subscription(CameraInfo,"/zed/zed_node/depth/camera_info",self.cb_depth_camera_info,10,)
 
         self.color_sub = Subscriber(self, Image, "/zed/zed_node/rgb/color/rect/image")
         self.depth_sub = Subscriber(self, Image, "/zed/zed_node/depth/depth_registered")
@@ -69,9 +67,6 @@ class ZedTestScanNode(Node):
 
     def cb_rgb_camera_info(self, msg: CameraInfo):
         self.latest_rgb_info_msg = msg
-
-    def cb_depth_camera_info(self, msg: CameraInfo):
-        self.latest_depth_info_msg = msg
 
     def cb_auto_state(self, msg: String):
         state = msg.data.strip().lower()
