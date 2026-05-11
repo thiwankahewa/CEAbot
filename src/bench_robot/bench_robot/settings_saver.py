@@ -9,6 +9,7 @@ TARGET_NODES = [
     "/bench_tracker_v3",
     "/motor_control_mux",
     "/hub_motor_driver_v2",
+    "/plant_locator"
 ]
 
 class SettingsSaver(Node):

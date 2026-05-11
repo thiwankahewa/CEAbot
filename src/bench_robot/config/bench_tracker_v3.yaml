@@ -1,7 +1,5 @@
 /bench_tracker_v3:
   ros__parameters:
-    min_tof: 25
-    max_tof: 500
     Kd_offset: 1.0
     Kp_offset: 0.5
     Kp_offset_b: 0.05
@@ -12,6 +10,8 @@
     corr_rpm: 2.0
     d_filter_t: 1.0
     max_rpm: 25.0
+    max_tof: 500
+    min_tof: 25
     offset_enter_m: 0.1
     offset_exit_m: 0.01
     steer_settle_s: 2

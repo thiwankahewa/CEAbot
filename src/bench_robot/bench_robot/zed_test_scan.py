@@ -6,7 +6,7 @@ from datetime import datetime
 import cv2
 import numpy as np
 import yaml
-
+from rcl_interfaces.msg import SetParametersResult
 import rclpy
 from rclpy.node import Node
 from rclpy.time import Time
@@ -29,6 +29,8 @@ class ZedTestScanNode(Node):
 
         self.declare_parameter("fresh_wait_time", 2.0)
         self.declare_parameter("capture_timeout", 5.0)
+        self.declare_parameter("bench_height", 0.75)
+        self.declare_parameter("pot_height", 0.15)
 
         self.latest_color_msg = None
         self.latest_depth_msg = None
@@ -43,6 +45,9 @@ class ZedTestScanNode(Node):
         self.scan_active = False
         self.scan_request_time = None
         self.capture_timer = None
+
+        self._load_params()
+        self.add_on_set_parameters_callback(self.on_params)
 
         # -------- subs --------
         self.location_sub = self.create_subscription(Int16MultiArray,"/robot_location",self.cb_location,10,)
@@ -61,6 +66,14 @@ class ZedTestScanNode(Node):
         self.get_logger().info("ZED scan node started.")
 
     # -------- callback functions --------
+    def _load_params(self):
+        self.bench_height = self.get_parameter("bench_height").value
+        self.pot_height = self.get_parameter("pot_height").value
+
+    def on_params(self, params):
+        self._load_params()
+        return SetParametersResult(successful=True)
+    
     def cb_location(self, msg: Int16MultiArray):
         if len(msg.data) >= 5:
             self.current_location = msg.data[1], msg.data[2]

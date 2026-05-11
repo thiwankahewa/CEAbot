@@ -12,7 +12,7 @@ def generate_launch_description():
 
     # Replace this with your actual package name that contains the yaml file
     my_pkg_dir = get_package_share_directory("bench_robot")
-    zed_params = os.path.join(my_pkg_dir, "config", "zed_mini.yaml")
+    zed_params = os.path.join(my_pkg_dir, "config", "zed_2i.yaml")
 
     zed_camera = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(zed_launch),
