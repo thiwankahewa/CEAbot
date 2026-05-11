@@ -4,6 +4,7 @@ from pathlib import Path
 from datetime import datetime
 import yaml
 import csv
+import json
 
 # ============================================================
 # USER SETTINGS
@@ -12,23 +13,27 @@ import csv
 BASE_DIR = Path("/home/thiwa/scan_data_zed")
 
 # Select folders by timestamp in folder name:
-START_DATETIME = "20260505_110000"
-END_DATETIME   = "20260505_180000"
+START_DATETIME = "20260504_090000"
+END_DATETIME   = "20260506_180000"
 
 # Crop region from full color.png
-x1, y1 = 140, 162
-x2, y2 = 1836, 900
+x1, y1 = 213, 288
+x2, y2 = 1772, 885
 
 # HSV range for green plants
 lower_green = np.array([22, 27, 0])
 upper_green = np.array([95, 255, 255])
 
-MIN_AREA = 10000        # Contour filtering
+MIN_AREA = 15000        # Contour filtering
 KERNEL_SIZE = 5     # Morphology cleaning
 
 DEPTH_SCALE = 1000.0
 TOP_PERCENTILE = 5          # use closest 5% depth pixels
 CENTER_WINDOW_SIZE = 9      # depth median around centroid
+
+bench_height = 0.75
+pot_height = 0.15
+CAMERA_HEIGHT = 1.8
 
 # ============================================================
 # FUNCTIONS
@@ -130,6 +135,18 @@ def get_top_point_from_contour(depth_full, contour_crop, crop_x1, crop_y1):
 
     return top_u_full, top_v_full, top_depth, top_u_crop, top_v_crop
 
+def calculate_contour_radius_mm(cnt, depth_mm, area, fx, fy):
+    if depth_mm is None or depth_mm <= 0:
+        return None
+
+    # mm per pixel at this depth
+    mm_per_px_x = depth_mm / fx
+    mm_per_px_y = depth_mm / fy
+    area_mm2 = area * mm_per_px_x * mm_per_px_y
+    radius_mm = np.sqrt(area_mm2 / np.pi)
+
+    return int(radius_mm)
+
 def process_folder(folder_path):
     color_path = folder_path / "color.png"
     depth_path = folder_path / "depth.npy"
@@ -139,6 +156,8 @@ def process_folder(folder_path):
 
     img = cv2.imread(str(color_path))
     depth = np.load(str(depth_path)).astype(np.float32) * DEPTH_SCALE
+
+    depth_threshold_mm = (CAMERA_HEIGHT - pot_height - bench_height) * 1000.0
 
     crop = img[y1:y2, x1:x2]
     hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
@@ -159,7 +178,7 @@ def process_folder(folder_path):
 
     valid_contours = sorted(valid_contours,key=cv2.contourArea,reverse=True)
 
-    results = []
+    plant_records = []
 
     for i, cnt in enumerate(valid_contours):
         area = cv2.contourArea(cnt)
@@ -192,13 +211,17 @@ def process_folder(folder_path):
         cv2.rectangle(detection, (x, y), (x + bw, y + bh), (0, 255, 0), 2)
 
         depth_for_center_xy = center_depth if center_depth is not None else top_depth
+        radius_mm = calculate_contour_radius_mm(cnt,depth_for_center_xy,area,fx,fy)
 
         center_xy_3d = None
 
         if depth_for_center_xy is not None:
             center_xy_3d = pixel_depth_to_3d(center_x_full,center_y_full,depth_for_center_xy,fx,fy,cx_intr,cy_intr)
+        
+        
 
         row = {
+            "plant_id": i+1,
             "area_px": area,
 
             "center_x": center_xy_3d[0] if center_xy_3d else None,
@@ -213,12 +236,17 @@ def process_folder(folder_path):
             "target_x": center_xy_3d[0] if center_xy_3d else None,
             "target_y": center_xy_3d[1] if center_xy_3d else None,
             "target_z": top_3d[2] if top_3d else None,
+
+            "radius_mm": radius_mm,
         }
 
-        results.append(row)
-        results = sorted(results,key=lambda r: r["center_x"] if r["center_x"] is not None else -999999,reverse=True)
-        for new_id, row in enumerate(results, start=1):
-            row["plant_id"] = new_id
+        plant_records.append({"sort_x": row["center_x"],"csv_row": row})
+
+    plant_records = sorted(plant_records,key=lambda r: r["sort_x"] if r["sort_x"] is not None else -999999,reverse=True)
+    results = []
+    for plant_id, record in enumerate(plant_records, start=1):
+        record["csv_row"]["plant_id"] = plant_id
+        results.append(record["csv_row"])
 
     cv2.imwrite(str(folder_path / "green_mask.png"), mask_clean)
     cv2.imwrite(str(folder_path / "segmented_result.png"), segmented)
@@ -226,7 +254,7 @@ def process_folder(folder_path):
     cv2.imwrite(str(folder_path / "cropped_color.png"), crop)
 
     if results:
-        fieldnames = ["plant_id","area_px","center_x","center_y","center_z","top_x","top_y","top_z","target_x","target_y","target_z",]
+        fieldnames = ["plant_id","area_px","center_x","center_y","center_z","top_x","top_y","top_z","target_x","target_y","target_z","radius_mm"]
         with open(folder_path / "plant_coordinates_camera_frame.csv", "w", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()

@@ -1,6 +1,6 @@
 import cv2
 
-IMAGE_PATH = "/home/thiwa/scan_data_zed/with camera info/b1_r12_20260504_170451/color.png"
+IMAGE_PATH = "/home/thiwa/scan_data_zed/b1_r13_20260506_134428/color.png"
 
 img = cv2.imread(IMAGE_PATH)
 if img is None:
