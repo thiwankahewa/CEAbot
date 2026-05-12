@@ -30,15 +30,6 @@
         <joint name="joint_6" value="1.5708"/>
         <joint name="joint_7" value="-0.0872"/>
     </group_state>
-    <group_state name="scan_start" group="arm">
-        <joint name="joint_1" value="0"/>
-        <joint name="joint_2" value="-1.6212"/>
-        <joint name="joint_3" value="0"/>
-        <joint name="joint_4" value="0.639"/>
-        <joint name="joint_5" value="0"/>
-        <joint name="joint_6" value="0.9584"/>
-        <joint name="joint_7" value="0"/>
-    </group_state>
     <group_state name="vertical" group="arm">
         <joint name="joint_1" value="0"/>
         <joint name="joint_2" value="0"/>
@@ -47,6 +38,15 @@
         <joint name="joint_5" value="0"/>
         <joint name="joint_6" value="0"/>
         <joint name="joint_7" value="0"/>
+    </group_state>
+    <group_state name="rest" group="arm">
+        <joint name="joint_1" value="2.5514"/>
+        <joint name="joint_2" value="-2.24"/>
+        <joint name="joint_3" value="0.0521"/>
+        <joint name="joint_4" value="1.6613"/>
+        <joint name="joint_5" value="3.1415"/>
+        <joint name="joint_6" value="-2.09"/>
+        <joint name="joint_7" value="-0.0868"/>
     </group_state>
     <!--VIRTUAL JOINT: Purpose: this element defines a virtual joint between a robot link and an external frame of reference (considered fixed with respect to the robot)-->
     <virtual_joint name="arm_robot_joint" type="fixed" parent_frame="arm_mount_link" child_link="base_link"/>

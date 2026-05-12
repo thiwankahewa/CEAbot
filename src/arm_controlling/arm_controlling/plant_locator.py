@@ -13,7 +13,9 @@ from geometry_msgs.msg import Pose, Point, Quaternion
 from sensor_msgs.msg import JointState
 from shape_msgs.msg import SolidPrimitive
 from moveit_msgs.action import MoveGroup, ExecuteTrajectory
+from moveit_msgs.msg import JointConstraint
 from moveit_msgs.msg import (MotionPlanRequest,Constraints,PositionConstraint,OrientationConstraint,BoundingVolume,PlanningOptions,MoveItErrorCodes,)
+
 
 class PlantLocatorNode(Node):
     def __init__(self):
@@ -33,7 +35,7 @@ class PlantLocatorNode(Node):
         self.declare_parameter("circle_radius_offset", 0.20)   # distance from top view to side-view circle
         self.declare_parameter("circle_height_offset", 0.1)
         self.declare_parameter("look_at_angle_offset", 0.2)
-        self.declare_parameter("view_count", 10)              
+        self.declare_parameter("view_count", 4)              
 
         self.declare_parameter("velocity_scaling", 0.4)
         self.declare_parameter("acceleration_scaling", 0.05)
@@ -108,6 +110,7 @@ class PlantLocatorNode(Node):
         return targets
     
     #------- helper math functions ---------#
+    
     def normalize_vector(self, v):
         norm = math.sqrt(v[0]**2 + v[1]**2 + v[2]**2)
         if norm < 1e-9:
@@ -184,6 +187,7 @@ class PlantLocatorNode(Node):
 
         return self.rotation_matrix_to_quaternion(m)
     
+    #-------- helper functions -------------#
     def make_safe_z_path_constraint(self):
         if self.max_plant_z is None:
             return None
@@ -219,6 +223,21 @@ class PlantLocatorNode(Node):
 
         return constraints
     
+    def make_joint_goal(self, joint_targets):
+        constraints = Constraints()
+
+        for joint_name, target in joint_targets.items():
+            jc = JointConstraint()
+            jc.joint_name = joint_name
+            jc.position = target
+            jc.tolerance_above = 0.01
+            jc.tolerance_below = 0.01
+            jc.weight = 1.0
+            constraints.joint_constraints.append(jc)
+
+        return constraints
+    
+
     #------- main motion functions ---------#
     def generate_view_poses(self, plant_x, plant_y, plant_z, radius):
         poses = []
@@ -328,6 +347,61 @@ class PlantLocatorNode(Node):
         constraints.orientation_constraints.append(orientation_constraint)
 
         return constraints
+
+    def plan_to_joint_positions(self, joint_targets):
+
+        request = MotionPlanRequest()
+
+        request.group_name = self.planning_group
+        request.num_planning_attempts = 10
+        request.allowed_planning_time = self.planning_time
+        request.max_velocity_scaling_factor = 0.3
+        request.max_acceleration_scaling_factor = 0.05
+
+        request.start_state.is_diff = True
+
+        request.goal_constraints.append(self.make_joint_goal(joint_targets))
+
+        options = PlanningOptions()
+        options.plan_only = True
+        options.replan = True
+        options.replan_attempts = 3
+
+        goal_msg = MoveGroup.Goal()
+        goal_msg.request = request
+        goal_msg.planning_options = options
+
+        self.move_group_client.wait_for_server()
+
+        send_future = self.move_group_client.send_goal_async(goal_msg)
+        rclpy.spin_until_future_complete(self, send_future)
+
+        goal_handle = send_future.result()
+
+        if not goal_handle.accepted:
+            self.get_logger().error("Joint planning goal rejected")
+            return None
+
+        result_future = goal_handle.get_result_async()
+        rclpy.spin_until_future_complete(self, result_future)
+
+        result = result_future.result().result
+
+        if result.error_code.val != MoveItErrorCodes.SUCCESS:
+            self.get_logger().error(
+                f"Joint planning failed: {result.error_code.val}"
+            )
+            return None
+
+        return result.planned_trajectory
+
+    def get_current_joint_map(self):
+        while rclpy.ok() and self.current_joint_state is None:
+            rclpy.spin_once(self, timeout_sec=0.1)
+
+        current = dict(zip(self.current_joint_state.name, self.current_joint_state.position))
+        self.get_logger().info(f"Current joints: {current}")
+        return current
 
     def execute_trajectory(self, trajectory):
         goal_msg = ExecuteTrajectory.Goal()
@@ -465,9 +539,71 @@ class PlantLocatorNode(Node):
                 else:
                     self.get_logger().warn("Robot may not be fully settled")
 
+    def move_arm_to_safe_rest(self):
+        self.get_logger().info("Moving arm to REST pose...")
+
+        rest_joints = {
+            "joint_1": 2.5514,
+            "joint_2": -2.24,
+            "joint_3": 0.0521,
+            "joint_4": 1.6613,
+            "joint_5": 3.1415,
+            "joint_6": -2.09,
+            "joint_7": -0.0868,
+        }
+
+        traj = self.plan_to_joint_positions(rest_joints)
+
+        if traj is None:
+            self.get_logger().error("Failed to plan REST pose")
+            return False
+
+        if not self.execute_trajectory(traj):
+            self.get_logger().error("Failed to execute REST pose")
+            return False
+
+        self.wait_until_trajectory_finished(traj)
+        self.wait_until_robot_stops()
+
+        self.get_logger().info("Aligning arm with holder...")
+
+        current_joints = self.get_current_joint_map()
+
+        holder_angle_rad = math.radians(180.0)
+
+        joint_targets = {
+            "joint_1": holder_angle_rad,
+            "joint_2": current_joints["joint_2"],
+            "joint_3": current_joints["joint_3"],
+            "joint_4": current_joints["joint_4"],
+            "joint_5": current_joints["joint_5"],
+            "joint_6": current_joints["joint_6"],
+            "joint_7": current_joints["joint_7"],
+        }
+
+        traj = self.plan_to_joint_positions(joint_targets)
+
+        if traj is None:
+            self.get_logger().error("Failed holder alignment plan")
+            return False
+
+        success = self.execute_trajectory(traj)
+
+        if not success:
+            self.get_logger().error("Failed holder alignment execute")
+            return False
+
+        self.wait_until_trajectory_finished(traj)
+        self.wait_until_robot_stops()
+
+        self.get_logger().info("Arm parked safely")
+
+        return True
+
 def main(args=None):
     rclpy.init(args=args)
     node = PlantLocatorNode()
+    node.move_arm_to_safe_rest()
 
     try:
         node.run()
