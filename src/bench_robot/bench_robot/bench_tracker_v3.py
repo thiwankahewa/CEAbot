@@ -81,7 +81,7 @@ class BenchTracker(Node):
         self.sub_estop = self.create_subscription(Bool, '/e_stop', self.cb_estop, 10)
         self.sub_aruco_stop = self.create_subscription(Bool, '/aruco_stop_request', self.cb_aruco_stop, 10)
         self.sub_aruco_error = self.create_subscription(Float32MultiArray, '/aruco_target_error', self.cb_aruco_error, 10)
-
+        
         # -------- pubs --------
         self.pub_auto_state_cmd = self.create_publisher(String, '/auto_state_cmd', 10)
         self.pub_rpm_cmd = self.create_publisher(Float32MultiArray, '/wheel_rpm_cmd', 10)
@@ -329,7 +329,7 @@ class BenchTracker(Node):
             left, right = -self.corr_rpm, +self.corr_rpm
         else:
             left, right = +self.corr_rpm, -self.corr_rpm
-        #self.get_logger().info(f"YAW CORR: off={off:.3f} yaw={yaw:.3f} rpm_left={left:.1f} rpm_right={right:.1f}")
+
         self.publish_rpm(left, right)
 
         # exit after stable

@@ -12,13 +12,13 @@ FIRST_BENCH_ID = 1
 LAST_BENCH_ID = 10
 FIRST_ROW_ID = 11
 LAST_ROW_ID = 61
+END_ROWS = [FIRST_ROW_ID, LAST_ROW_ID]
 
 class ArucoManager(Node):
     def __init__(self):
         super().__init__('aruco_detector')
 
         # ---------------- states and variables ----------------
-        self.mode = "manual"
         self.auto_state = "idle"
 
         self.current_bench = None
@@ -38,10 +38,14 @@ class ArucoManager(Node):
         self.goal_bench = 1
         self.goal_row = 11
 
+        self.scan_plan = []
+        self.scan_plan_index = 0
+        self.pending_next_plan_index = None
+        self.routing_to_next_bench = False
+
         self.goal_seen_count = 0
         self.prev_selected_id = None
         self.stop_sent = False
-        self.range_active = False
 
         self.stable_goal_frames = 2
         self.usb_cam_index = 0
@@ -61,7 +65,6 @@ class ArucoManager(Node):
 
 
         # ---------------- subs ----------------
-        self.sub_mode = self.create_subscription(String, '/mode', self.cb_mode, 10)
         self.sub_auto_state = self.create_subscription(String, '/auto_state', self.cb_auto_state, 10)
         self.sub_goal_locations = self.create_subscription(Int16MultiArray, '/goal_locations', self.cb_goal_locations, 10)
         self.sub_current_bench = self.create_subscription(Int16, '/current_bench', self.cb_current_bench, 10)
@@ -79,11 +82,6 @@ class ArucoManager(Node):
         # ---------------- helper functions ----------------
     
     def marker_to_location(self, marker_id: int):
-        # bench start markers
-        if FIRST_BENCH_ID <= marker_id <= LAST_BENCH_ID:
-            return marker_id, FIRST_ROW_ID
-
-        # row markers on current bench
         if FIRST_ROW_ID <= marker_id <= LAST_ROW_ID:
             return self.current_bench, marker_id
 
@@ -165,10 +163,26 @@ class ArucoManager(Node):
         return response
 
     def request_tracking_direction(self):
-        if self.current_bench is None or self.current_row is None or not self.row_known:
-            return
         if self.current_bench != self.goal_bench:
-            # For now, do nothing here. Later we can add bench-to-bench routing.
+            if self.current_row in END_ROWS:
+                desired_state = "bench_change_start"
+            else:
+                # Move toward nearest bench end first
+                dist_to_first = abs(self.current_row - FIRST_ROW_ID)
+                dist_to_last = abs(self.current_row - LAST_ROW_ID)
+
+                if dist_to_last <= dist_to_first:
+                    desired_state = "bench_tracking_f"
+                else:
+                    desired_state = "bench_tracking_b"
+
+            if desired_state != self.auto_state:
+                self.get_logger().info(
+                    f"Multi-bench routing: current=({self.current_bench},{self.current_row}) "
+                    f"goal=({self.goal_bench},{self.goal_row}) -> {desired_state}"
+                )
+                self.pub_auto_state_cmd.publish(String(data=desired_state))
+
             return
 
         if self.current_row < self.goal_row:
@@ -179,105 +193,69 @@ class ArucoManager(Node):
             return
 
         if desired_state != self.auto_state:
-            self.get_logger().info(f"Direction/state change: current=({self.current_bench},{self.current_row}) "f"goal=({self.goal_bench},{self.goal_row}) -> {desired_state}")
             self.pub_auto_state_cmd.publish(String(data=desired_state))
 
-    def choose_range_start_end(self):
-        fb, fr = self.range_from_bench, self.range_from_row
-        tb, tr = self.range_to_bench, self.range_to_row
-
-        if self.current_bench is None or self.current_row is None:
-            self.get_logger().warn("Cannot choose range start/end because current location is incomplete")
-            return
-
-        # same exact point
-        if fb == tb and fr == tr:
-            self.scan_start_bench = fb
-            self.scan_start_row = fr
-            self.scan_end_bench = tb
-            self.scan_end_row = tr
-            return
-
-        # same bench range
-        if fb == tb == self.current_bench:
-            d_from = abs(self.current_row - fr)
-            d_to = abs(self.current_row - tr)
-
-            if d_from <= d_to:
-                self.scan_start_bench = fb
-                self.scan_start_row = fr
-                self.scan_end_bench = tb
-                self.scan_end_row = tr
-            else:
-                self.scan_start_bench = tb
-                self.scan_start_row = tr
-                self.scan_end_bench = fb
-                self.scan_end_row = fr
-            return
-
-        # fallback
-        self.scan_start_bench = fb
-        self.scan_start_row = fr
-        self.scan_end_bench = tb
-        self.scan_end_row = tr
-
     def advance_to_next_goal(self):
-        # only same-bench range for now
-        if self.goal_bench != self.scan_end_bench:
-            self.get_logger().warn("Multi-bench range advance not implemented yet")
-            self.range_active = False
-            return False
+        # Normal scanning inside current scan range
+        if self.goal_row != self.scan_end_row:
+            self.goal_row += 1
+            self.get_logger().info(f"Next goal of current scan range: ({self.goal_bench},{self.goal_row})")
+            self.request_tracking_direction()
+            return 
 
-        if self.goal_row == self.scan_end_row:
-            self.get_logger().info("Range scan complete")
-            self.range_active = False
-            return False
+        # Current scan range finished
+        next_index = self.scan_plan_index + 1
 
-        step = 1 if self.scan_end_row > self.goal_row else -1
-        self.goal_row += step
-        self.goal_bench = self.scan_end_bench
+        if next_index >= len(self.scan_plan):
+            self.pub_auto_state_cmd.publish(String(data="idle"))
+            self.get_logger().info("Full scan range plan complete")
+            return 
 
-        self.get_logger().info(
-            f"Next goal in range: ({self.goal_bench},{self.goal_row})"
-        )
+        next_bench, next_from_row, next_to_row = self.scan_plan[next_index]
 
+        # If next scan range is on same bench, directly start next scan row
+        if next_bench == self.current_bench:
+            self.scan_plan_index = next_index
+            self.goal_row = next_from_row
+            self.scan_start_bench = next_bench
+            self.scan_start_row = next_from_row
+            self.scan_end_bench = next_bench
+            self.scan_end_row = next_to_row
+            self.get_logger().info(f"Next scan range on same bench")
+            self.request_tracking_direction()
+            return 
+
+        # Next scan range is on another bench: route to nearest exit first, then enter next bench, then move to next_from_row.
+        self.routing_to_next_bench = True
+        self.pending_next_plan_index = next_index
+        dist_to_first = abs(self.current_row - FIRST_ROW_ID)
+        dist_to_last = abs(self.current_row - LAST_ROW_ID)
+        exit_row = FIRST_ROW_ID if dist_to_first <= dist_to_last else LAST_ROW_ID
+        self.goal_row = exit_row
+        self.get_logger().info(f"Starting route to current bench end: "f"current=({self.current_bench},{self.current_row}), "f"exit=({self.current_bench},{self.goal_row}), "f"next=({next_bench},{next_from_row})")
         self.request_tracking_direction()
-        return True
+        return 
 
     def is_in_selected_range(self, bench: int, row: int) -> bool:
-        if not self.range_active:
+        if not self.scan_plan:
             return bench == self.goal_bench and row == self.goal_row
-
-        # only same-bench range for now
-        if self.range_from_bench != self.range_to_bench:
+        
+        current_bench, from_row, to_row = self.scan_plan[self.scan_plan_index]
+        if bench != current_bench:
             return False
 
-        if bench != self.range_from_bench:
-            return False
+        low_row = min(from_row, to_row)
+        high_row = max(from_row, to_row)
 
-        low = min(self.range_from_row, self.range_to_row)
-        high = max(self.range_from_row, self.range_to_row)
-
-        return low <= row <= high
+        return low_row <= row <= high_row
     
     def is_active_stop_target(self, bench: int, row: int) -> bool:
-        if bench is None or row is None:
-            return False
-
         if not self.is_in_selected_range(bench, row):
             return False
 
         return bench == self.goal_bench and row == self.goal_row
 
     # ---------------- callbacks ----------------
-
-    def cb_mode(self, msg: String):
-        self.mode = (msg.data or "").strip().lower()
-        if self.mode != "auto":
-            self.goal_seen_count = 0
-            self.stop_sent = False
-            self.publish_stop(False)
-
     def cb_auto_state(self, msg: String):
         self.auto_state = (msg.data or "").strip().lower()
         if self.auto_state not in ("bench_tracking_f", "bench_tracking_b"):
@@ -285,68 +263,49 @@ class ArucoManager(Node):
 
     def cb_current_bench(self, msg: Int16):
         self.current_bench = int(msg.data)
-        self.current_row = None
-        self.row_known = False
-        self.goal_seen_count = 0
-        self.stop_sent = False
-        self.publish_stop(False)
-
-        self.get_logger().info(f"Current bench set to {self.current_bench}, row unknown")
-        if self.auto_state != "bench_tracking_f":
-            self.pub_auto_state_cmd.publish(String(data="bench_tracking_f"))
-
 
     def cb_goal_locations(self, msg: Int16MultiArray):
         data = list(msg.data)
+        if len(data) < 3 or len(data) % 3 != 0:
+            self.get_logger().warn("Goal locations must be [bench, from_row, to_row, bench, from_row, to_row, ...]")
+            return
+        
+        self.scan_plan = []
+        for i in range(0, len(data), 3):
+            bench = int(data[i])
+            from_row = int(data[i + 1])
+            to_row = int(data[i + 2])
+            self.scan_plan.append((bench, from_row, to_row))
 
-        fb, fr, tb, tr = map(int, data[:4])
-
-        self.range_from_bench = fb
-        self.range_from_row = fr
-        self.range_to_bench = tb
-        self.range_to_row = tr
-
-        self.range_active = True
+        self.scan_plan_index = 0
+        self.current_row = None
+        self.row_known = False
         self.stop_sent = False
         self.goal_seen_count = 0
         self.publish_stop(False)
 
-         # If row is not known yet, first localize row by moving
-        if self.current_bench is not None and not self.row_known:
-            self.get_logger().info(f"Range received: ({fb},{fr}) -> ({tb},{tr}), waiting to detect current row on bench {self.current_bench}")
-            if self.auto_state != "bench_tracking_f":
-                self.pub_auto_state_cmd.publish(String(data="bench_tracking_f"))
-            return
+        first_bench, first_from_row, first_to_row = self.scan_plan[0]
+        self.scan_start_bench = first_bench
+        self.scan_start_row = first_from_row
+        self.scan_end_bench = first_bench
+        self.scan_end_row = first_to_row
+        self.get_logger().info(f"New scan plan received. "f"Starting with ({self.goal_bench},{self.goal_row})")
+        self.get_logger().info(f"Waiting to detect current row")
 
-        self.choose_range_start_end()
-
-        self.goal_bench = self.scan_start_bench
-        self.goal_row = self.scan_start_row
-
-        self.get_logger().info(f"New range: ({fb},{fr}) -> ({tb},{tr}), "f"start=({self.goal_bench},{self.goal_row}), "f"end=({self.scan_end_bench},{self.scan_end_row})")
-
-        self.request_tracking_direction()
+        if self.auto_state != "bench_tracking_f":
+            self.pub_auto_state_cmd.publish(String(data="bench_tracking_f"))
 
     def cb_scan_done(self, msg: Bool):
         if bool(msg.data):
             self.stop_sent = False
             self.goal_seen_count = 0
             self.publish_stop(False)
-            if self.range_active:
-                has_next = self.advance_to_next_goal()
-                if not has_next:
-                    self.pub_auto_state_cmd.publish(String(data="idle"))
-            else:
-                self.pub_auto_state_cmd.publish(String(data="idle"))
+            self.advance_to_next_goal()
 
     # ---------------- timer functions ----------------
 
     def detect_tick(self):
-        if self.mode != "auto":
-            self.publish_align_error(False)
-            return
-
-        if self.auto_state not in ("bench_tracking_f", "bench_tracking_b","align_center", "aruco_centering"):
+        if self.auto_state not in ("bench_tracking_f", "bench_tracking_b", "aruco_centering"):
             self.publish_align_error(False)
             return
 
@@ -356,11 +315,11 @@ class ArucoManager(Node):
 
         ok, frame = self.cap.read()
         if not ok or frame is None:
+            self.get_logger().error("Failed to read frame from aruco camera")
             self.goal_seen_count = 0
             self.publish_align_error(False)
             return
         
-
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         corners, ids, _ = self.detector.detectMarkers(gray)
 
@@ -370,7 +329,6 @@ class ArucoManager(Node):
             return
 
         ids = ids.flatten().tolist()
-
         selected_id = None
         selected_corners = None
 
@@ -386,21 +344,15 @@ class ArucoManager(Node):
             selected_id = int(ids[0])
             selected_corners = corners[0]
 
-        # If bench is known but row is not, use the first row marker to initialize row
+        # this block run in first cycle only
         if self.current_bench is not None and not self.row_known:
             if FIRST_ROW_ID <= selected_id <= LAST_ROW_ID:
                 self.current_row = selected_id
                 self.row_known = True
-
                 self.get_logger().info(f"Initial row fixed: current=({self.current_bench},{self.current_row})")
-
-                # If a range is already active, now we can decide nearest endpoint
-                if self.range_active:
-                    self.choose_range_start_end()
-                    self.goal_bench = self.scan_start_bench
-                    self.goal_row = self.scan_start_row
-
-                    self.get_logger().info(f"Range start selected after row detection: "f"start=({self.goal_bench},{self.goal_row}), "f"end=({self.scan_end_bench},{self.scan_end_row})")
+                self.goal_bench = self.scan_start_bench
+                self.goal_row = self.scan_start_row
+                self.get_logger().info(f"Range start selected : "f"start=({self.goal_bench},{self.goal_row}), "f"end=({self.scan_end_bench},{self.scan_end_row})")
 
                 self.request_tracking_direction()
             return
@@ -408,7 +360,6 @@ class ArucoManager(Node):
         new_bench, new_row = self.marker_to_location(selected_id)
         self.current_bench = new_bench
         self.current_row = new_row
-        
         self.request_tracking_direction()
 
         if selected_id != self.prev_selected_id:
@@ -418,30 +369,49 @@ class ArucoManager(Node):
 
         center_error_px = None
         active_goal_visible = False
+
         if selected_corners is not None:
             frame_center_x = frame.shape[0] / 2.0
             marker_center_x = self.marker_center_x(selected_corners)
             center_error_px = marker_center_x - frame_center_x
             active_goal_visible = self.is_active_stop_target(self.current_bench, self.current_row)
 
+        # ---------------- routing mode ----------------
+        if self.routing_to_next_bench:
+            routing_goal_visible = active_goal_visible and center_error_px is not None
+
+            if routing_goal_visible:
+                self.goal_seen_count += 1
+            else:
+                self.goal_seen_count = 0
+
+            if self.goal_seen_count >= self.stable_goal_frames:
+                self.goal_seen_count = 0
+                self.prev_selected_id = None
+
+                next_bench, next_from_row, next_to_row = self.scan_plan[self.pending_next_plan_index]
+
+                # Reached current bench exit row. Now start bench_changer.
+                if self.current_row in END_ROWS:
+                    self.get_logger().info(f"Reached bench exit: current=({self.current_bench},{self.current_row}), "f"next_bench={next_bench}. Starting bench change.")
+                    self.pub_auto_state_cmd.publish(String(data="bench_change_start"))
+                    return
+            return
+
         if active_goal_visible and center_error_px is not None:
+            self.goal_seen_count += 1
             self.publish_align_error(True, center_error_px)
             self.get_logger().debug(f"Goal visible: center_error_px={center_error_px:.1f}")
         else:
-            self.publish_align_error(False, 0.0)
-
-        if active_goal_visible:
-            self.goal_seen_count += 1
-        else:
             self.goal_seen_count = 0
-
+            self.publish_align_error(False, 0.0)
+            
         if self.goal_seen_count >= self.stable_goal_frames and not self.stop_sent:
             self.stop_sent = True
             self.publish_stop(True)
             self.prev_selected_id = None
             logged_center_error_px = center_error_px if center_error_px is not None else 0.0
-
-            self.get_logger().info(f"Goal centered and reached: bench={self.current_bench}, row={self.current_row}, "f"marker={selected_id}, center_error_px={logged_center_error_px:.1f}")
+            self.get_logger().info(f"Goal centered and reached: bench={self.current_bench}, row={self.current_row}, center_error_px={logged_center_error_px:.1f}")
 
     def destroy_node(self):
         try:

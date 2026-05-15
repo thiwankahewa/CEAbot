@@ -13,12 +13,12 @@ import json
 BASE_DIR = Path("/home/thiwa/scan_data_zed")
 
 # Select folders by timestamp in folder name:
-START_DATETIME = "20260504_090000"
-END_DATETIME   = "20260506_180000"
+START_DATETIME = "20260511_090000"
+END_DATETIME   = "20260512_180000"
 
 # Crop region from full color.png
-x1, y1 = 213, 288
-x2, y2 = 1772, 885
+x1, y1 = 336, 316
+x2, y2 = 1940, 883
 
 # HSV range for green plants
 lower_green = np.array([22, 27, 0])
