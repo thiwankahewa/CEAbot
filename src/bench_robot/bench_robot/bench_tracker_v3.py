@@ -14,7 +14,6 @@ class BenchTracker(Node):
 
         # -------- states and variables --------
         self.eStop = False
-        self.mode = "manual"
         self.auto_state = "manual"
         self.bench_track_dir = "bench_tracking_f"
         self.aruco_stop_request = False
@@ -76,7 +75,6 @@ class BenchTracker(Node):
 
         # -------- subs --------
         self.sub_tof = self.create_subscription(Int16MultiArray, '/bench_robot/tof_raw', self.dist_cb, 10)
-        self.sub_mode = self.create_subscription(String, '/mode', self.cb_mode, 10)
         self.sub_auto_state = self.create_subscription(String, '/auto_state', self.cb_auto_state, 10)
         self.sub_estop = self.create_subscription(Bool, '/e_stop', self.cb_estop, 10)
         self.sub_aruco_stop = self.create_subscription(Bool, '/aruco_stop_request', self.cb_aruco_stop, 10)
@@ -148,18 +146,13 @@ class BenchTracker(Node):
     def cb_estop(self, msg: Bool):
         self.eStop = bool(msg.data)
 
-    def cb_mode(self, msg: String):
-        m = (msg.data or "").strip().lower()
-        if m != self.mode:
-            self.mode = m
-            if self.mode != "auto":
-                self.align_phase = 0
-            self.publish_steer(self.steer_track_deg)
-
     def cb_auto_state(self, msg: String):
         st = (msg.data or "").strip().lower()
         if st in ("bench_tracking_f", "bench_tracking_b"):
             self.bench_track_dir = st
+        if st == "manual":
+            self.align_phase = 0
+            self.publish_steer(self.steer_track_deg)
         self.auto_state = st
 
     def cb_aruco_stop(self, msg: Bool):
@@ -216,7 +209,7 @@ class BenchTracker(Node):
 
     # -------- main functions --------
     def control_tick(self):
-        if self.mode != "auto":     
+        if self.auto_state in ("manual", "idle"):     
             return
         
         if self.eStop:

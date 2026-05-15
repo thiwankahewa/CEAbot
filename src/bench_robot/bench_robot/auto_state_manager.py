@@ -23,17 +23,19 @@ class AutoStateManager(Node):
             "scan_start",
             "aruco_centering",
             "manual"
+            "bench_change_start"
         }
         # Allowed transitions 
         self.allowed = {
             "manual": {"idle", "bench_tracking_f", "bench_tracking_b", "scan_start"},
             "idle": {"manual","align_center", "bench_tracking_f", "bench_tracking_b", "yaw_correction","steer_0", "steer_90"},
-            "bench_tracking_f": {"yaw_correction", "idle",  "bench_tracking_b", "align_center"},
-            "bench_tracking_b": {"yaw_correction", "idle", "bench_tracking_f", "align_center"},
-            "yaw_correction": {"align_center", "idle"},
-            "align_center": { "idle", "bench_tracking_f", "bench_tracking_b","aruco_centering"},
+            "bench_tracking_f": {"manual", "yaw_correction", "idle",  "bench_tracking_b", "align_center", "bench_change_start"},
+            "bench_tracking_b": {"manual", "yaw_correction", "idle", "bench_tracking_f", "align_center", "bench_change_start"},
+            "yaw_correction": {"manual", "align_center", "idle"},
+            "align_center": { "manual", "idle", "bench_tracking_f", "bench_tracking_b","aruco_centering"},
             "aruco_centering": {"idle", "scan_start","manual" },
-            "scan_start": {"bench_tracking_f", "bench_tracking_b", "idle", "aruco_centering"},
+            "scan_start": {"manual", "bench_tracking_f", "bench_tracking_b", "idle", "aruco_centering"},
+            "bench_change_start": {"manual", "idle" }
         }
 
         self.mode = "manual"
