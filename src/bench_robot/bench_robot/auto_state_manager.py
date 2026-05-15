@@ -32,7 +32,7 @@ class AutoStateManager(Node):
             "bench_tracking_b": {"yaw_correction", "idle", "bench_tracking_f", "align_center"},
             "yaw_correction": {"align_center", "idle"},
             "align_center": { "idle", "bench_tracking_f", "bench_tracking_b","aruco_centering"},
-            "aruco_centering": {"idle", "scan_start", },
+            "aruco_centering": {"idle", "scan_start","manual" },
             "scan_start": {"bench_tracking_f", "bench_tracking_b", "idle", "aruco_centering"},
         }
 

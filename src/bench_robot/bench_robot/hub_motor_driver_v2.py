@@ -410,11 +410,6 @@ class MotorDriverNode(Node):
                 round(energy_wh, 6)
             ])
 
-        self.get_logger().info(
-            f"Saved power average for state '{state_name}': "
-            f"{avg_total_power_w:.2f} W, energy={energy_wh:.4f} Wh"
-        )
-
         self.power_samples = []
         self.state_start_time = now
 

@@ -400,11 +400,12 @@ class ArucoManager(Node):
 
         if active_goal_visible and center_error_px is not None:
             self.goal_seen_count += 1
-            self.publish_align_error(True, center_error_px)
-            self.get_logger().debug(f"Goal visible: center_error_px={center_error_px:.1f}")
         else:
             self.goal_seen_count = 0
             self.publish_align_error(False, 0.0)
+
+        if active_goal_visible and self.auto_state == "aruco_centering":
+            self.publish_align_error(True, center_error_px)
             
         if self.goal_seen_count >= self.stable_goal_frames and not self.stop_sent:
             self.stop_sent = True
