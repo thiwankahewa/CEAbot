@@ -2,7 +2,7 @@
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Int16MultiArray, Float32
+from std_msgs.msg import Int16MultiArray, Float32, String
 from std_srvs.srv import Trigger
 import serial
 import time
@@ -13,6 +13,8 @@ class ArduinoBridge(Node):
         super().__init__('arduino_bridge')
 
         # -------- States and variables --------
+        self.auto_state = "manual"
+
         self.port = '/dev/controllino'
         self.baud = 115200
         self.ser = None
@@ -29,6 +31,7 @@ class ArduinoBridge(Node):
 
         # -------- subs --------
         self.sub_steer = self.create_subscription( Float32,'/steer_angle_deg',self.steer_cb,10)
+        self.sub_auto_state = self.create_subscription(String, '/auto_state', self.cb_auto_state, 10)
 
         # -------- pubs --------
         self.pub_tof = self.create_publisher(Int16MultiArray,'/bench_robot/tof_raw',10)
@@ -72,6 +75,8 @@ class ArduinoBridge(Node):
             self.get_logger().warning(f"Serial write error: {e}")
 
     # -------- callbacks --------
+    def cb_auto_state(self, msg: String):
+        self.auto_state = (msg.data or "").strip().lower()
 
     def steer_cb(self, msg: Float32):
         angle = float(msg.data)
@@ -115,7 +120,7 @@ class ArduinoBridge(Node):
                 if not raw:
                     return
                 line = raw.decode('utf-8', errors='replace').strip()
-                if line.startswith('VL53'):    #ToF sensor data: VL53,4,mm1,mm2,mm3,mm4
+                if line.startswith('VL53') and self.auto_state in ("bench_tracking_f", "bench_tracking_b"):    #ToF sensor data: VL53,4,mm1,mm2,mm3,mm4
                     parts = line.split(',')
                     vals = []
                     for i in parts[1:5]:
