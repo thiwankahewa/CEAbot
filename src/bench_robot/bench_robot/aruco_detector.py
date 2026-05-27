@@ -393,6 +393,8 @@ class ArucoManager(Node):
 
                 # Reached current bench exit row. Now start bench_changer.
                 if self.current_row in END_ROWS:
+                    self.goal_bench = next_bench
+                    self.publish_location(selected_id, self.current_bench, self.current_row,  self.goal_bench, self.goal_row)
                     self.get_logger().info(f"Reached bench exit: current=({self.current_bench},{self.current_row}), "f"next_bench={next_bench}. Starting bench change.")
                     self.pub_auto_state_cmd.publish(String(data="bench_change_start"))
                     return
