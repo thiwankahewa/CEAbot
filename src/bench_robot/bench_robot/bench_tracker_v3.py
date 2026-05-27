@@ -141,6 +141,14 @@ class BenchTracker(Node):
     def now_s(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9
 
+    def needs_tof(self):
+        return self.auto_state in (
+            "bench_tracking_f",
+            "bench_tracking_b",
+            "yaw_correction",
+            "align_center",
+        )
+
     # -------- callbacks --------
 
     def cb_estop(self, msg: Bool):
