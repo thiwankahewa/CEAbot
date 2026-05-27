@@ -120,7 +120,7 @@ class ArduinoBridge(Node):
                 if not raw:
                     return
                 line = raw.decode('utf-8', errors='replace').strip()
-                if line.startswith('VL53') and self.auto_state in ("bench_tracking_f", "bench_tracking_b""yaw_correction","align_center",):    #ToF sensor data: VL53,4,mm1,mm2,mm3,mm4
+                if line.startswith('VL53') and self.auto_state in ("bench_tracking_f", "bench_tracking_b","yaw_correction","align_center"):    #ToF sensor data: VL53,4,mm1,mm2,mm3,mm4
                     parts = line.split(',')
                     vals = []
                     for i in parts[1:5]:

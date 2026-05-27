@@ -96,10 +96,13 @@ def generate_launch_description():
             package="bench_robot",
             executable="aruco_detector",
             output="screen",),
-   
         Node(
             package="bench_robot",
             executable="zed_test_scan",
+            output="screen",),
+        Node(
+            package="bench_robot",
+            executable="bench_changer",
             output="screen",)
         
     ])

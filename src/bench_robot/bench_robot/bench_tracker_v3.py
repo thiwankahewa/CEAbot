@@ -18,6 +18,7 @@ class BenchTracker(Node):
         self.bench_track_dir = "bench_tracking_f"
         self.aruco_stop_request = False
         self.aruco_stop_handled = False
+        #self.bench_change_start = False
 
         self.last_tof_stamp = None
         self.invalid_data_warned = False
@@ -232,18 +233,28 @@ class BenchTracker(Node):
                 self._yaw_ok = 0
                 return
 
-        if self.last_tof_stamp is None:
-            self.publish_rpm(0.0, 0.0)
-            return
+        if self.needs_tof():
+            if self.last_tof_stamp is None:
+                self.publish_rpm(0.0, 0.0)
+                return
 
-        age_s = (self.get_clock().now() - self.last_tof_stamp).nanoseconds * 1e-9
-        if age_s > 0.3 or self.invalid_data_warned:
-            self.publish_rpm(0.0, 0.0)
-            self.get_logger().info("no tof data")
-            return
+            age_s = (self.get_clock().now() - self.last_tof_stamp).nanoseconds * 1e-9
+            if age_s > 0.3 or self.invalid_data_warned:
+                self.publish_rpm(0.0, 0.0)
+                self.get_logger().info("no tof data")
+                return
 
         off = float(self.offset_err_m)
         yaw = float(self.yaw_err_m)
+
+        '''if self.auto_state == "bench_change_start":
+            self.get_logger().info("Bench change started")
+            self.publish_rpm(0.0, 0.0)
+            self.publish_steer(self.steer_track_deg)
+            self.set_state("yaw_correction")
+            self._yaw_ok = 0
+            self.bench_change_start = True
+            return'''
 
         if self.auto_state == "align_center":
             self._run_align_center(off)

@@ -9,6 +9,7 @@ class BenchChanger(Node):
     def __init__(self):
         super().__init__("bench_changer")
 
+        # -------- states and variables --------
         self.auto_state = "idle"
         self.phase = "idle"
 
@@ -24,9 +25,10 @@ class BenchChanger(Node):
         self.tof = None
         self.phase_start_time = None
 
-        self.declare_parameter("exit_time_s", 2.0)
-        self.declare_parameter("exit_rpm", 6.0)
-        self.declare_parameter("side_rpm", 5.0)
+        # -------- params --------
+        self.declare_parameter("exit_time_s", 10.0)
+        self.declare_parameter("exit_rpm", 4.0)
+        self.declare_parameter("side_rpm", 4.0)
         self.declare_parameter("enter_rpm", 5.0)
         self.declare_parameter("center_err_px", 8.0)
         self.declare_parameter("steer_straight_deg", 0.0)
@@ -44,17 +46,21 @@ class BenchChanger(Node):
         self.min_tof = int(self.get_parameter("min_tof").value)
         self.max_tof = int(self.get_parameter("max_tof").value)
 
+        # -------- subs --------
         self.create_subscription(String, "/auto_state", self.cb_auto_state, 10)
         self.create_subscription(Int16MultiArray, "/robot_location", self.cb_robot_location, 10)
         self.create_subscription(Int16MultiArray, "/bench_side_marker", self.cb_side_marker, 10)
         self.create_subscription(Int16MultiArray, "/bench_robot/tof_raw", self.cb_tof, 10)
 
+        # -------- pubs --------
         self.pub_auto_state_cmd = self.create_publisher(String, "/auto_state_cmd", 10)
         self.pub_rpm_cmd = self.create_publisher(Float32MultiArray, "/wheel_rpm_cmd", 10)
         self.pub_steer = self.create_publisher(Float32, "/steer_angle_deg", 10)
 
+        # -------- timer --------
         self.timer = self.create_timer(0.05, self.control_tick)
 
+    # -------- helper functions --------
     def now_s(self):
         return self.get_clock().now().nanoseconds * 1e-9
 
@@ -72,10 +78,11 @@ class BenchChanger(Node):
     def stop(self):
         self.publish_rpm(0.0, 0.0)
 
+    # -------- callbacks --------
     def cb_auto_state(self, msg):
         self.auto_state = (msg.data or "").strip().lower()
         if self.auto_state == "bench_change_start" and self.phase == "idle":
-            self.get_logger().info("Bench change started")
+            self.get_logger().info("Moving out of the bench")
             self.phase = "exit_current_bench"
             self.phase_start_time = self.now_s()
 
@@ -136,11 +143,11 @@ class BenchChanger(Node):
 
     def run_exit_current_bench(self):
         self.publish_steer(self.steer_straight_deg)
-        self.publish_rpm(self.exit_rpm, self.exit_rpm)
+        self.publish_rpm(-self.exit_rpm, -self.exit_rpm)
 
         if self.now_s() - self.phase_start_time >= self.exit_time_s:
             self.stop()
-            self.phase = "find_target_direction"
+            #self.phase = "find_target_direction"
             self.get_logger().info("Cleared current bench. Finding target direction.")
 
     def run_find_target_direction(self):
