@@ -25,6 +25,8 @@ setup(
     entry_points={
     'console_scripts': [
         'plant_locator = arm_controlling.plant_locator:main',
+        'plant_view_scanner = arm_controlling.plant_view_scanner:main',
+        'arm_manager = arm_controlling.arm_manager:main',
     ],
 },
 )

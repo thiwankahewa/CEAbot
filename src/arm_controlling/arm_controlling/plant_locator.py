@@ -22,7 +22,7 @@ class PlantLocatorNode(Node):
         super().__init__("plant_locator")
 
         #--------- States and variables ---------#
-        self.csv_path = "/home/thiwa/scan_data_zed/b1_r14_20260504_170403/plant_coordinates_camera_frame.csv"
+        self.csv_path = "/home/thiwa/scan_data_zed/b1_r12_20260504_170451/plant_coordinates_camera_frame.csv"
         self.planning_group = "arm"
         self.base_frame = "zed2i_left_camera_frame_optical"
         self.ee_link = "end_effector_link"
@@ -35,10 +35,10 @@ class PlantLocatorNode(Node):
         self.declare_parameter("circle_radius_offset", 0.20)   # distance from top view to side-view circle
         self.declare_parameter("circle_height_offset", 0.1)
         self.declare_parameter("look_at_angle_offset", 0.2)
-        self.declare_parameter("view_count", 4)              
+        self.declare_parameter("view_count", 3)              
 
-        self.declare_parameter("velocity_scaling", 0.4)
-        self.declare_parameter("acceleration_scaling", 0.05)
+        self.declare_parameter("velocity_scaling", 0.3)
+        self.declare_parameter("acceleration_scaling", 0.1)
         self.declare_parameter("planning_time", 5.0)
 
         # Fixed tool orientation.
@@ -188,41 +188,7 @@ class PlantLocatorNode(Node):
         return self.rotation_matrix_to_quaternion(m)
     
     #-------- helper functions -------------#
-    def make_safe_z_path_constraint(self):
-        if self.max_plant_z is None:
-            return None
-        # Large allowed box.
-        # Tune these based on your robot workspace.
-        box = SolidPrimitive()
-        box.type = SolidPrimitive.BOX
-        box.dimensions = [
-            5.0,   # allowed X width
-            5.0,   # allowed Y width
-            5.0,   # allowed Z height
-        ]
 
-        box_pose = Pose()
-        box_pose.orientation.w = 1.0
-
-        # If larger Z means lower in your camera frame:
-        # allowed region is ABOVE plant, so center is safe_z - box_height/2
-        box_height = box.dimensions[2]
-        box_pose.position.x = 0.0
-        box_pose.position.y = 0.0
-        box_pose.position.z = self.max_plant_z - box_height / 2.0
-
-        position_constraint = PositionConstraint()
-        position_constraint.header.frame_id = self.base_frame
-        position_constraint.link_name = self.ee_link
-        position_constraint.constraint_region.primitives.append(box)
-        position_constraint.constraint_region.primitive_poses.append(box_pose)
-        position_constraint.weight = 1.0
-
-        constraints = Constraints()
-        constraints.position_constraints.append(position_constraint)
-
-        return constraints
-    
     def make_joint_goal(self, joint_targets):
         constraints = Constraints()
 
@@ -544,7 +510,7 @@ class PlantLocatorNode(Node):
 
         rest_joints = {
             "joint_1": 2.5514,
-            "joint_2": -2.24,
+            "joint_2": -2.04,
             "joint_3": 0.0521,
             "joint_4": 1.6613,
             "joint_5": 3.1415,
