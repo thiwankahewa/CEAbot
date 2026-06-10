@@ -11,6 +11,8 @@ from controller_manager_msgs.srv import SwitchController
 from rclpy.callback_groups import ReentrantCallbackGroup
 from arm_controlling.moveit_arm_helper import MoveItArmHelper
 
+from arm_interfaces.srv import MoveToPose
+
 
 REST_APPROACH = {"joint_1": 2.5514,"joint_2": -2.04,"joint_3": 0.0521,"joint_4": 1.6613,"joint_5": 3.1415,"joint_6": -2.09,"joint_7": -0.0868,}
 REST_FINAL = {"joint_1": math.radians(180.0),"joint_2": -2.04,"joint_3": 0.0521,"joint_4": 1.6613,"joint_5": 3.1415,"joint_6": -2.09,"joint_7": -0.0868,}
@@ -32,6 +34,7 @@ class ArmManager(MoveItArmHelper):
         #--------- Services ---------#
 
         self.switch_controller_client = self.create_client(SwitchController,"/controller_manager/switch_controller",callback_group=self.cb_group,)
+        self.srv_move_to_pose = self.create_service(MoveToPose,"/arm/move_to_pose",self.cb_move_to_pose,callback_group=self.cb_group,)
         self.srv_go_rest = self.create_service(Trigger, "/arm/go_rest", self.cb_go_rest,callback_group=self.cb_group,)
         self.srv_pose_1 = self.create_service(Trigger, "/arm/pose_1", self.cb_pose_1,callback_group=self.cb_group,)
         self.srv_reset = self.create_service(Trigger, "/arm/reset_moveit_control", self.cb_reset_moveit_control,callback_group=self.cb_group,)
@@ -60,6 +63,48 @@ class ArmManager(MoveItArmHelper):
         response.success = ok
         response.message = "STOP sent. Controller deactivated."
         return response
+
+    def cb_move_to_pose(self, request, response):
+        with self.command_lock:
+            if self.command_busy:
+                response.success = False
+                response.message = "Arm is busy. Wait until current command finishes."
+                return response
+
+            self.command_busy = True
+            self.stop_requested = False
+
+        target = {
+            "x": request.x,
+            "y": request.y,
+            "z": request.z,
+            "qx": request.qx,
+            "qy": request.qy,
+            "qz": request.qz,
+            "qw": request.qw,
+            "label": request.label,
+        }
+
+        try:
+            self.get_logger().info(f"Starting blocking move_to_pose: {request.label}")
+
+            ok, msg = self.move_to_cartesian_pose(target)
+
+            response.success = ok
+            response.message = msg
+            return response
+
+        except Exception as e:
+            self.get_logger().error(f"move_to_pose crashed: {e}")
+            response.success = False
+            response.message = str(e)
+            return response
+
+        finally:
+            with self.command_lock:
+                self.command_busy = False
+
+            self.get_logger().info(f"Finished blocking move_to_pose: {request.label}")
     
     #--------- Helper Methods ---------#
 
@@ -115,6 +160,35 @@ class ArmManager(MoveItArmHelper):
         return True
 
     #--------- Arm movement functions ---------#
+
+    def move_to_cartesian_pose(self, target):
+        if self.check_stop_requested():
+            return False, "Stopped by user"
+
+        traj = self.plan_to_target(target["x"],target["y"],target["z"],target["qx"],target["qy"],target["qz"],target["qw"],)
+
+        if traj is None:
+            return False, f"Planning failed for {target['label']}"
+
+        if self.check_stop_requested():
+            return False, "Stopped by user"
+
+        if not self.execute_trajectory(traj):
+            return False, f"Execution failed for {target['label']}"
+
+        if self.check_stop_requested():
+            return False, "Stopped by user"
+
+        finished = self.wait_until_trajectory_finished(traj,tolerance=0.008,timeout=25.0,)
+        stopped = self.wait_until_robot_stops(timeout=10.0)
+
+        if self.check_stop_requested():
+            return False, "Stopped by user"
+
+        if finished and stopped:
+            return True, f"Moved to {target['label']}"
+
+        return False, f"Robot may not be fully settled at {target['label']}"
 
     def move_to_joint_pose(self, name, target):
         if self.check_stop_requested():
