@@ -9,6 +9,7 @@ from launch.substitutions import (Command,FindExecutable,LaunchConfiguration,Pat
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from launch.substitutions import PythonExpression, NotSubstitution
+from launch.actions import SetEnvironmentVariable
 
 from ament_index_python.packages import get_package_share_directory
 from moveit_configs_utils import MoveItConfigsBuilder
@@ -22,18 +23,18 @@ def launch_setup(context, *args, **kwargs):
     port = LaunchConfiguration("port")
     use_fake_hardware_arg = LaunchConfiguration("use_fake_hardware")
     launch_arm_controller = LaunchConfiguration("launch_arm_controller")
+    use_rviz = LaunchConfiguration("use_rviz")
 
     # --- Internal Logic for Hardware Selection ---
     # Detect if we are connecting to a real robot (IP is not empty/default)
     ip_val = context.perform_substitution(robot_ip)
-    is_real_robot = ip_val != "xxx.xxx.xxx.xxx" and ip_val != ""
+    is_real_robot =  ip_val != ""
     
     is_fake_hw_str = context.perform_substitution(use_fake_hardware_arg).lower()
     is_fake_hw = is_fake_hw_str == 'true' and not is_real_robot
 
-    # Determine simulation status
     # If it's a real robot OR fake hardware, sim_ignition MUST be false
-    is_sim = not is_real_robot and not is_fake_hw
+    is_sim = not is_fake_hw and not is_real_robot
     sim_ignition_val = "true" if is_sim else "false"
     
     # Final check for the URDF xacro arguments 
@@ -72,16 +73,19 @@ def launch_setup(context, *args, **kwargs):
         executable="robot_state_publisher",
         arguments=["--ros-args", "--log-level", "warn"],
         parameters=[robot_description, {"use_sim_time": actual_sim_time}],
+
     )
+
+    
 
     # Standalone Controller Manager (Required for Real Robot and Fake Hardware)
     ros2_controllers_path = os.path.join(get_package_share_directory(moveit_package_str), "config", "ros2_controllers.yaml")
     ros2_control_node = Node(
         package="controller_manager",
         executable="ros2_control_node",
-        parameters=[robot_description, ros2_controllers_path, {"use_sim_time": actual_sim_time}],
-        arguments=["--ros-args", "--log-level", "warn"],
-        condition=UnlessCondition(sim_ignition_val), # Run if NOT in simulation
+        parameters=[ robot_description,ros2_controllers_path, {"use_sim_time": actual_sim_time}],
+        #arguments=["--ros-args", "--log-level", "warn",],
+        output="screen",
     )
 
     joint_state_broadcaster_spawner = Node(
@@ -125,9 +129,10 @@ def launch_setup(context, *args, **kwargs):
         arguments=["-d", os.path.join(get_package_share_directory(moveit_package_str), "config", "moveit.rviz"), 
                    "--ros-args", "--log-level", "warn"],
         parameters=[moveit_config.to_dict(), {"use_sim_time": actual_sim_time}],
+        condition=IfCondition(use_rviz),
     )
 
-    marker_422_left = Node(
+    '''marker_422_left = Node(
         package='tf2_ros',
         executable='static_transform_publisher',
         arguments=[
@@ -158,11 +163,11 @@ def launch_setup(context, *args, **kwargs):
             '--child-frame-id', 'marker_bench_center',
             "--ros-args", "--log-level", "warn"
         ],
-    )
+    )'''
 
-    arm_controller_node = Node(
-        package="bench_robot_cpp",
-        executable="arm_controller",
+    arm_manager_node = Node(
+        package="arm_controlling",
+        executable="arm_manager",
         output="screen",
         parameters=[
             moveit_config.to_dict(),
@@ -171,32 +176,19 @@ def launch_setup(context, *args, **kwargs):
         condition=IfCondition(launch_arm_controller),
     )
 
-    '''zed_wrapper_dir = get_package_share_directory("zed_wrapper")
-    zed_launch = os.path.join(zed_wrapper_dir, "launch", "zed_camera.launch.py")
-    my_pkg_dir = get_package_share_directory("bench_robot")
-    zed_params = os.path.join(my_pkg_dir, "config", "zed_mini.yaml")
-
-    zed_camera = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(zed_launch),
-        launch_arguments={
-            "camera_model": "zed2i",
-            "ros_params_override_path": zed_params,
-            "serial_number": "0",
-            "publish_urdf": "false",
-            "publish_tf": "false",
-            "enable_ipc": "false",
-        }.items()
+    plant_view_scanner_node = Node(
+        package="arm_controlling",
+        executable="plant_view_scanner",
+        output="screen",
+        parameters=[
+            moveit_config.to_dict(),
+            {"use_sim_time": actual_sim_time},
+        ],
+        condition=IfCondition(launch_arm_controller),
     )
 
-    zed_local_mapper_node = Node(
-        package="bench_robot",
-        executable="zed_local_mapper",
-        output="screen",
-        condition=IfCondition(launch_arm_controller),
-    )'''
-
     # --- Execution Logic ---
-    nodes_to_start = [robot_state_publisher_node, ros2_control_node, marker_422_left, marker_722_left, marker_bench_center,]
+    nodes_to_start = [robot_state_publisher_node]
 
     if is_sim:
 
@@ -223,17 +215,6 @@ def launch_setup(context, *args, **kwargs):
 
         delayed_spawn = TimerAction(period=5.0,actions=[ignition_spawn_entity])
 
-        '''camera_bridge = Node(
-            package="ros_gz_bridge",
-            executable="parameter_bridge",
-            arguments=[
-                "/zed_sim/image@sensor_msgs/msg/Image@ignition.msgs.Image",
-                "/zed_sim/depth_image@sensor_msgs/msg/Image@ignition.msgs.Image",
-                "/zed_sim/camera_info@sensor_msgs/msg/CameraInfo@ignition.msgs.CameraInfo",
-            ],
-            output="screen",
-        )'''
-
         nodes_to_start += [
             gz_resource_path,
             gz_sim,
@@ -241,11 +222,11 @@ def launch_setup(context, *args, **kwargs):
             RegisterEventHandler(OnProcessExit(target_action=ignition_spawn_entity, on_exit=[joint_state_broadcaster_spawner])),
         ]
     else:               
-        nodes_to_start += [joint_state_broadcaster_spawner]     # REAL ROBOT or FAKE MODE
+        nodes_to_start += [ros2_control_node, joint_state_broadcaster_spawner]     # REAL ROBOT or FAKE MODE
 
     nodes_to_start += [
         RegisterEventHandler(OnProcessExit(target_action=joint_state_broadcaster_spawner, on_exit=[robot_traj_controller_spawner])),
-        RegisterEventHandler(OnProcessExit(target_action=robot_traj_controller_spawner, on_exit=[move_group_node, rviz_node, arm_controller_node])), 
+        RegisterEventHandler(OnProcessExit(target_action=robot_traj_controller_spawner, on_exit=[move_group_node, rviz_node, arm_manager_node, plant_view_scanner_node])), 
     ]
 
     return nodes_to_start
@@ -254,7 +235,7 @@ def launch_setup(context, *args, **kwargs):
 def generate_launch_description():
     return LaunchDescription([
         # Robot Connection Arguments
-        DeclareLaunchArgument("robot_ip", default_value="xxx.xxx.xxx.xxx"),
+        DeclareLaunchArgument("robot_ip", default_value=""),
         DeclareLaunchArgument("username", default_value="admin"),
         DeclareLaunchArgument("password", default_value="admin"),
         DeclareLaunchArgument("port", default_value="10000"),
@@ -262,6 +243,7 @@ def generate_launch_description():
         # Mode Arguments
         DeclareLaunchArgument("use_fake_hardware", default_value="false"),
         DeclareLaunchArgument("launch_arm_controller", default_value="false"),
-        
+        DeclareLaunchArgument("use_rviz", default_value="true"),
+
         OpaqueFunction(function=launch_setup)
     ])

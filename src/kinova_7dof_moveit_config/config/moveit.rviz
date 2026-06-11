@@ -7,7 +7,7 @@ Panels:
         - /MotionPlanning1
         - /TF1/Frames1
       Splitter Ratio: 0.5
-    Tree Height: 497
+    Tree Height: 191
   - Class: rviz_common/Help
     Name: Help
   - Class: rviz_common/Views
@@ -252,7 +252,7 @@ Visualization Manager:
         Interactive Marker Size: 0
         Joint Violation Color: 255; 0; 255
         Planning Group: arm
-        Query Goal State: false
+        Query Goal State: true
         Query Start State: false
         Show Workspace: false
         Start State Alpha: 1
@@ -485,12 +485,6 @@ Visualization Manager:
           Value: false
         half_arm_2_link:
           Value: false
-        marker_422_left:
-          Value: false
-        marker_722_left:
-          Value: false
-        marker_bench_center:
-          Value: true
         plate_left_link:
           Value: false
         plate_right_link:
@@ -571,12 +565,6 @@ Visualization Manager:
                   zed2i_right_camera_frame:
                     zed2i_right_camera_frame_optical:
                       {}
-            marker_422_left:
-              {}
-            marker_722_left:
-              {}
-            marker_bench_center:
-              {}
       Update Interval: 0
       Value: true
   Enabled: true
@@ -612,15 +600,15 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.7853981852531433
+      Pitch: 0.8553982377052307
       Target Frame: world
       Value: Orbit (rviz_default_plugins)
-      Yaw: 0.7853981852531433
+      Yaw: 5.65858268737793
     Saved: ~
 Window Geometry:
   Displays:
     collapsed: false
-  Height: 1107
+  Height: 1016
   Help:
     collapsed: false
   Hide Left Dock: false
@@ -629,9 +617,9 @@ Window Geometry:
     collapsed: false
   MotionPlanning - Trajectory Slider:
     collapsed: false
-  QMainWindow State: 000000ff00000000fd0000000100000000000002b4000003fdfc0200000005fb00000044004d006f00740069006f006e0050006c0061006e006e0069006e00670020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff0000003f00fffffffb000000100044006900730070006c006100790073010000003b00000272000000c700fffffffb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e00670000000191000001d00000016900fffffffb0000000800480065006c0070000000029a0000006e0000006e00fffffffb0000000a0056006900650077007301000002b300000185000000a000ffffff000004ba000003fd00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  QMainWindow State: 000000ff00000000fd0000000100000000000002b40000039efc0200000005fb00000044004d006f00740069006f006e0050006c0061006e006e0069006e00670020002d0020005400720061006a006500630074006f0072007900200053006c00690064006500720000000000ffffffff0000001600000016fb000000100044006900730070006c006100790073010000003d00000142000000c900fffffffb0000001c004d006f00740069006f006e0050006c0061006e006e0069006e00670100000185000001880000017d00fffffffb0000000800480065006c0070000000029a0000006e0000006e00fffffffb0000000a005600690065007700730100000313000000c8000000a400ffffff000004800000039e00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
   Views:
     collapsed: false
-  Width: 1908
-  X: 0
-  Y: 0
+  Width: 1850
+  X: 70
+  Y: 27

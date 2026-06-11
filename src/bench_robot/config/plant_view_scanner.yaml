@@ -1,0 +1,15 @@
+/plant_view_scanner:
+  ros__parameters:
+    acceleration_scaling: 0.05
+    bench_height: 0.75
+    circle_height_offset: 0.1
+    circle_radius_offset: 0.2
+    look_at_angle_offset: 0.2
+    orientation_tolerance: 0.2
+    planning_time: 5.0
+    position_tolerance: 0.02
+    pot_height: 0.15
+    use_sim_time: false
+    velocity_scaling: 0.3
+    view_count: 3
+    z_offset: 0.2
