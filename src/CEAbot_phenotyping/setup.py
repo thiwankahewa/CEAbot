@@ -24,6 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'plant_row_coordinates = CEAbot_phenotyping.plant_row_coordinates:main',
         ],
     },
 )

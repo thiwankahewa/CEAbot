@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
-from time import time
-
+import time
 import cv2
 import numpy as np
 from pathlib import Path
@@ -70,6 +69,8 @@ class PlantCoordinateNode(Node):
 
         if state != "plant_row_coordinates":
             return
+        
+        self.get_logger().info("Starting plant row coordinate calculation")
 
         if self.latest_color_msg is None or self.latest_depth_msg is None or self.latest_camera_info_msg is None:
             self.get_logger().warn("Missing color/depth/camera_info. Cannot calculate plant coordinates.")
@@ -303,6 +304,7 @@ class PlantCoordinateNode(Node):
             target_msg.targets.append(t)
 
         self.target_pub.publish(target_msg)
+        self.get_logger().info(f"{output_dir.name}: detected {len(results)} plants")
         time.sleep(0.5)
         self.pub_auto_state_cmd.publish(String(data="individual_plant_scan"))
 
@@ -331,8 +333,6 @@ class PlantCoordinateNode(Node):
                 writer = csv.DictWriter(f, fieldnames=fieldnames)
                 writer.writeheader()
                 writer.writerows(results)
-
-        self.get_logger().info(f"[OK] {output_dir.name}: detected {len(results)} plants")
 
 
 def main(args=None):

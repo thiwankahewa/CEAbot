@@ -43,5 +43,7 @@ git pull --rebase origin main
  sudo chown -R thiwa:thiwa /home/thiwa/scan_data_zed
 
 
+python3 ~/CEAbot/src/bench_robot/Test/publish_zed_top_scan_folder.py /home/thiwa/scan_data_zed/b1_r16_20260608_133538 --trigger
+
 
 
