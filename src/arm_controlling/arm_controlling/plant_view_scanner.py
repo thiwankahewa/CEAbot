@@ -3,6 +3,7 @@
 import threading
 import csv
 import math
+import os
 import time
 import rclpy
 import tf2_ros
@@ -320,6 +321,37 @@ class PlantViewScanner(MoveItArmHelper):
 
             time.sleep(0.05)
 
+    def wait_for_capture_meta(self, run_dir, plant_id, view_label, started_at, timeout=30.0):
+        meta_path = os.path.join(run_dir, f"plant_{int(plant_id):02d}", str(view_label), "meta.txt")
+        start = time.time()
+
+        while rclpy.ok():
+            if os.path.exists(meta_path) and os.path.getmtime(meta_path) >= started_at:
+                return meta_path
+
+            if time.time() - start > timeout:
+                self.get_logger().warn(f"Timed out waiting for Orbbec metadata: {meta_path}")
+                return None
+
+            time.sleep(0.1)
+
+    def append_actual_pose_to_meta(self, meta_path, plant_id, view_label, transform):
+        t = transform.transform.translation
+        r = transform.transform.rotation
+
+        with open(meta_path, "a") as f:
+            f.write(f"actual_pose_frame: {self.base_frame}\n")
+            f.write(f"actual_pose_child_frame: {self.ee_link}\n")
+            f.write(f"plant_id: {int(plant_id)}\n")
+            f.write(f"view_label: {view_label}\n")
+            f.write(f"actual_x: {t.x:.6f}\n")
+            f.write(f"actual_y: {t.y:.6f}\n")
+            f.write(f"actual_z: {t.z:.6f}\n")
+            f.write(f"actual_qx: {r.x:.6f}\n")
+            f.write(f"actual_qy: {r.y:.6f}\n")
+            f.write(f"actual_qz: {r.z:.6f}\n")
+            f.write(f"actual_qw: {r.w:.6f}\n")
+
     #------- main execution loop ---------#
     def run(self):
         targets = self.latest_targets
@@ -371,6 +403,7 @@ class PlantViewScanner(MoveItArmHelper):
 
                 self.get_logger().info(message)
 
+                capture_started_at = time.time()
                 capture_success = self.call_orbbec_capture(run_dir=self.latest_run_dir,plant_id=plant_id,view_label=pose["label"])
                 if not capture_success:
                     self.get_logger().warn(f"Orbbec capture failed for plant {plant_id}, view {pose['label']}")
@@ -385,6 +418,11 @@ class PlantViewScanner(MoveItArmHelper):
                         f"x={t.x:.4f}, y={t.y:.4f}, z={t.z:.4f}, "
                         f"q=({r.x:.4f}, {r.y:.4f}, {r.z:.4f}, {r.w:.4f})"
                     )
+
+                    if capture_success:
+                        meta_path = self.wait_for_capture_meta(self.latest_run_dir, plant_id, pose["label"], capture_started_at)
+                        if meta_path is not None:
+                            self.append_actual_pose_to_meta(meta_path, plant_id, pose["label"], transform)
 
                 except Exception as e:
                     self.get_logger().warn(f"TF lookup failed: {e}")
