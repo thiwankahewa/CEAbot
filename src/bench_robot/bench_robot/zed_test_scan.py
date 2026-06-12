@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
 
 import os
-import struct
 from datetime import datetime
 import cv2
-import numpy as np
 import yaml
 from rcl_interfaces.msg import SetParametersResult
 import rclpy
 from rclpy.node import Node
 from rclpy.time import Time
 from std_msgs.msg import Bool, Int16MultiArray, String
-from sensor_msgs.msg import Image, PointCloud2, CameraInfo
+from sensor_msgs.msg import Image, CameraInfo
 from cv_bridge import CvBridge
 from message_filters import Subscriber, ApproximateTimeSynchronizer
 
@@ -34,7 +32,6 @@ class ZedTestScanNode(Node):
 
         self.latest_color_msg = None
         self.latest_depth_msg = None
-        self.latest_cloud_msg = None
         self.latest_color = None
         self.latest_depth = None
         self.latest_rgb_info_msg = None
@@ -56,8 +53,7 @@ class ZedTestScanNode(Node):
         self.rgb_info_sub = self.create_subscription(CameraInfo,"/zed/zed_node/rgb/color/rect/camera_info",self.cb_rgb_camera_info,10,)
         self.color_sub = Subscriber(self, Image, "/zed/zed_node/rgb/color/rect/image")
         self.depth_sub = Subscriber(self, Image, "/zed/zed_node/depth/depth_registered")
-        self.cloud_sub = Subscriber(self, PointCloud2, "/zed/zed_node/point_cloud/cloud_registered")
-        self.sync = ApproximateTimeSynchronizer([self.color_sub, self.depth_sub, self.cloud_sub],queue_size=20,slop=0.5,)
+        self.sync = ApproximateTimeSynchronizer([self.color_sub, self.depth_sub],queue_size=20,slop=0.5,)
         self.sync.registerCallback(self.synced_callback)
 
         # -------- pubs --------
@@ -108,10 +104,9 @@ class ZedTestScanNode(Node):
 
         self.capture_timer = self.create_timer(0.2, self.try_capture)
 
-    def synced_callback(self, color_msg: Image, depth_msg: Image, cloud_msg: PointCloud2):
+    def synced_callback(self, color_msg: Image, depth_msg: Image):
         self.latest_color_msg = color_msg
         self.latest_depth_msg = depth_msg
-        self.latest_cloud_msg = cloud_msg
 
         self.synced_count += 1
 
@@ -131,7 +126,7 @@ class ZedTestScanNode(Node):
             self.finish_scan(success=False)
             return
 
-        if self.latest_color_msg is None or self.latest_depth_msg is None or self.latest_cloud_msg is None:
+        if self.latest_color_msg is None or self.latest_depth_msg is None:
             return
 
         latest_stamp = Time.from_msg(self.latest_color_msg.header.stamp)
@@ -194,18 +189,10 @@ class ZedTestScanNode(Node):
 
         color_path = os.path.join(run_dir, "color.png")
         depth_npy_path = os.path.join(run_dir, "depth.npy")
-        cloud_xyzrgb_npy_path = os.path.join(run_dir, "cloud_xyzrgb.npy")
-        cloud_ply_path = os.path.join(run_dir, "cloud.ply")
         meta_path = os.path.join(run_dir, "metadata.yaml")
 
         cv2.imwrite(color_path, self.latest_color)
         np.save(depth_npy_path, self.latest_depth)
-
-        xyzrgb_points, has_rgb = self.extract_pointcloud_arrays(self.latest_cloud_msg)
-
-        if has_rgb and xyzrgb_points is not None:
-            np.save(cloud_xyzrgb_npy_path, xyzrgb_points)
-            self.save_ply_xyzrgb(xyzrgb_points, cloud_ply_path)
 
         metadata = {
             "camera": "ZED 2i",
@@ -215,14 +202,6 @@ class ZedTestScanNode(Node):
             "frames": {
                 "color_frame_id": self.latest_color_msg.header.frame_id,
                 "depth_frame_id": self.latest_depth_msg.header.frame_id,
-                "cloud_frame_id": self.latest_cloud_msg.header.frame_id,
-            },
-
-            "point_cloud": {
-                "width": self.latest_cloud_msg.width,
-                "height": self.latest_cloud_msg.height,
-                "point_step": self.latest_cloud_msg.point_step,
-                "point_count": int(self.latest_cloud_msg.width * self.latest_cloud_msg.height),
             },
 
             "camera_info": {
@@ -233,75 +212,6 @@ class ZedTestScanNode(Node):
         with open(meta_path, "w") as f:
             yaml.safe_dump(metadata, f, sort_keys=False)
 
-    def extract_pointcloud_arrays(self, cloud_msg):
-        field_map = {field.name: field for field in cloud_msg.fields}
-
-        for name in ["x", "y", "z"]:
-            if name not in field_map:
-                self.get_logger().error(f"PointCloud2 missing field: {name}")
-                return None, None, False
-
-        has_rgb = "rgb" in field_map or "rgba" in field_map
-        rgb_name = "rgb" if "rgb" in field_map else ("rgba" if "rgba" in field_map else None)
-
-        x_off = field_map["x"].offset
-        y_off = field_map["y"].offset
-        z_off = field_map["z"].offset
-        rgb_off = field_map[rgb_name].offset if has_rgb else None
-
-        point_step = cloud_msg.point_step
-        data = cloud_msg.data
-        n_points = cloud_msg.width * cloud_msg.height
-        endian = ">" if cloud_msg.is_bigendian else "<"
-
-        xyzrgb_points = []
-
-        for i in range(n_points):
-            base = i * point_step
-
-            x = struct.unpack_from(endian + "f", data, base + x_off)[0]
-            y = struct.unpack_from(endian + "f", data, base + y_off)[0]
-            z = struct.unpack_from(endian + "f", data, base + z_off)[0]
-
-            if not np.isfinite(x) or not np.isfinite(y) or not np.isfinite(z):
-                continue
-
-            if has_rgb:
-                rgb_field = field_map[rgb_name]
-
-                if rgb_field.datatype == 7:
-                    rgb_float = struct.unpack_from(endian + "f", data, base + rgb_off)[0]
-                    rgb_int = struct.unpack(endian + "I", struct.pack(endian + "f", rgb_float))[0]
-                else:
-                    rgb_int = struct.unpack_from(endian + "I", data, base + rgb_off)[0]
-
-                r = (rgb_int >> 16) & 0xFF
-                g = (rgb_int >> 8) & 0xFF
-                b = rgb_int & 0xFF
-
-                xyzrgb_points.append([x, y, z, r, g, b])
-
-        xyzrgb_np = np.array(xyzrgb_points, dtype=np.float32) if xyzrgb_points else None
-
-        return xyzrgb_np, has_rgb
-
-    def save_ply_xyzrgb(self, xyzrgb_points: np.ndarray, filepath: str):
-        with open(filepath, "w") as f:
-            f.write("ply\n")
-            f.write("format ascii 1.0\n")
-            f.write(f"element vertex {len(xyzrgb_points)}\n")
-            f.write("property float x\n")
-            f.write("property float y\n")
-            f.write("property float z\n")
-            f.write("property uchar red\n")
-            f.write("property uchar green\n")
-            f.write("property uchar blue\n")
-            f.write("end_header\n")
-
-            for pt in xyzrgb_points:
-                x, y, z, r, g, b = pt
-                f.write(f"{x:.6f} {y:.6f} {z:.6f} {int(r)} {int(g)} {int(b)}\n")
-                
     def build_camera_info_dict(self, msg):
         if msg is None:
             return None
