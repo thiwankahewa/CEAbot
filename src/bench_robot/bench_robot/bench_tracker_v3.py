@@ -440,7 +440,7 @@ class BenchTracker(Node):
             self.publish_rpm(0.0, 0.0)
             self.aruco_stop_handled = True
             self._aruco_center_ok = 0
-            self.set_state("scan_start")
+            self.set_state("top_view_scan")
 
 
 def main(args=None):

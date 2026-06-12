@@ -14,6 +14,7 @@ from std_srvs.srv import SetBool
 from sensor_msgs.msg import Image, PointCloud2
 from cv_bridge import CvBridge
 from message_filters import Subscriber, ApproximateTimeSynchronizer
+from arm_interfaces.srv import CaptureView
 
 class OrbbecTestScanNode(Node):
     def __init__(self):
@@ -21,6 +22,9 @@ class OrbbecTestScanNode(Node):
 
         # ---------------- states and variables ----------------
         self.bridge = CvBridge()
+
+        self.pending_capture = None
+        self.pending_future_response = None
 
         self.capture_requested = False
         self.capture_timer = None
@@ -34,7 +38,7 @@ class OrbbecTestScanNode(Node):
 
         self.current_location = None
 
-        self.save_dir = os.path.expanduser('~/scan_data')
+        self.save_dir = os.path.expanduser('~/scan_data_orbbec')
         os.makedirs(self.save_dir, exist_ok=True)
 
         # ---------------- services ----------------
@@ -42,6 +46,8 @@ class OrbbecTestScanNode(Node):
         self.get_logger().info('Waiting for /camera/set_streams_enable service...')
         self.streams_cli.wait_for_service()
         self.get_logger().info('Service available.')
+
+        self.create_service(CaptureView,"/orbbec_test_scan/capture_view",self.cb_capture_view)
 
         # ---------------- subs ----------------
         self.location_sub = self.create_subscription(Int16MultiArray, '/robot_location', self.cb_location, 10)
@@ -117,6 +123,29 @@ class OrbbecTestScanNode(Node):
         future = self.streams_cli.call_async(req)
         future.add_done_callback(self.on_streams_enabled)
 
+    def cb_capture_view(self, request, response):
+        if self.capture_requested:
+            response.success = False
+            response.message = "Orbbec capture already running"
+            return response
+
+        self.pending_capture = {"run_dir": request.run_dir,"plant_id": request.plant_id,"view_label": request.view_label,}
+
+        self.capture_requested = True
+
+        self.get_logger().info(f"Capture requested: plant {request.plant_id}, view {request.view_label}")
+
+        req = SetBool.Request()
+        req.data = True
+        future = self.streams_cli.call_async(req)
+        future.add_done_callback(self.on_streams_enabled)
+
+        # This simple service returns after request accepted.
+        # If you want true blocking until saved, use an action instead.
+        response.success = True
+        response.message = "Orbbec capture request accepted"
+        return response
+
     def synced_callback(self, color_msg: Image, depth_msg: Image, cloud_msg: PointCloud2):
         if not self.capture_requested:
             return
@@ -141,6 +170,7 @@ class OrbbecTestScanNode(Node):
 
         self.get_logger().info('Synchronized color, depth, and point cloud received. Saving capture...')
         self.save_capture()
+        self.pending_capture = None
         self.get_logger().info('Capture saved successfully.')
         self.capture_requested = False
 
@@ -159,15 +189,21 @@ class OrbbecTestScanNode(Node):
             self.get_logger().warn('Missing synchronized data. Capture not saved.')
             return
 
-        stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        bench, row = self.current_location
-        location_str = f"b{bench}_r{row}"
-        run_dir = os.path.join(self.save_dir, f"{location_str}_{stamp}")
+        if self.pending_capture is not None:
+            base_run_dir = self.pending_capture["run_dir"]
+            plant_id = self.pending_capture["plant_id"]
+            view_label = self.pending_capture["view_label"]
+            run_dir = os.path.join(base_run_dir,f"plant_{plant_id:02d}",view_label)
+        else:
+            stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            bench, row = self.current_location if self.current_location else (0, 0)
+            location_str = f"b{bench}_r{row}"
+            run_dir = os.path.join(self.save_dir, f"{location_str}_{stamp}")
+
         os.makedirs(run_dir, exist_ok=True)
 
         color_path = os.path.join(run_dir, 'color.png')
         depth_npy_path = os.path.join(run_dir, 'depth.npy')
-        cloud_xyz_npy_path = os.path.join(run_dir, 'cloud_xyz.npy')
         cloud_xyzrgb_npy_path = os.path.join(run_dir, 'cloud_xyzrgb.npy')
         cloud_ply_path = os.path.join(run_dir, 'cloud.ply')
         meta_path = os.path.join(run_dir, 'meta.txt')
@@ -176,18 +212,11 @@ class OrbbecTestScanNode(Node):
         np.save(depth_npy_path, self.latest_depth)      # Save depth raw
         xyz_points, xyzrgb_points, has_rgb = self.extract_pointcloud_arrays(self.latest_cloud_msg)      # Save point cloud
 
-        if xyz_points is not None and len(xyz_points) > 0:
-            np.save(cloud_xyz_npy_path, xyz_points)
-        else:
-            self.get_logger().warn('No XYZ points extracted from point cloud.')
-
         if has_rgb and xyzrgb_points is not None and len(xyzrgb_points) > 0:
             np.save(cloud_xyzrgb_npy_path, xyzrgb_points)
             self.save_ply_xyzrgb(xyzrgb_points, cloud_ply_path)
         else:
             self.get_logger().warn('Point cloud does not contain RGB fields. Saved XYZ only.')
-
-        print(xyzrgb_points[:10, 3:6])
 
         with open(meta_path, 'w') as f:
             f.write(f'color_shape: {self.latest_color.shape}\n')

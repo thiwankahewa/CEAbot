@@ -68,7 +68,7 @@ class ArucoManager(Node):
         self.sub_auto_state = self.create_subscription(String, '/auto_state', self.cb_auto_state, 10)
         self.sub_goal_locations = self.create_subscription(Int16MultiArray, '/goal_locations', self.cb_goal_locations, 10)
         self.sub_current_bench = self.create_subscription(Int16, '/current_bench', self.cb_current_bench, 10)
-        self.sub_scan_done = self.create_subscription(Bool, '/scan_done', self.cb_scan_done, 10)
+        self.sub_scan_done = self.create_subscription(Bool, '/zed_top_scan/scan_done', self.cb_scan_done, 10)
 
         # ---------------- pubs ----------------
         self.pub_stop = self.create_publisher(Bool, '/aruco_stop_request', 10)

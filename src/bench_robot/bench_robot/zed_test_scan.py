@@ -52,16 +52,20 @@ class ZedTestScanNode(Node):
         # -------- subs --------
         self.location_sub = self.create_subscription(Int16MultiArray,"/robot_location",self.cb_location,10,)
         self.state_sub = self.create_subscription(String,"/auto_state",self.cb_auto_state,10,)
-        self.rgb_info_sub = self.create_subscription(CameraInfo,"/zed/zed_node/rgb/color/rect/camera_info",self.cb_rgb_camera_info,10,)
 
+        self.rgb_info_sub = self.create_subscription(CameraInfo,"/zed/zed_node/rgb/color/rect/camera_info",self.cb_rgb_camera_info,10,)
         self.color_sub = Subscriber(self, Image, "/zed/zed_node/rgb/color/rect/image")
         self.depth_sub = Subscriber(self, Image, "/zed/zed_node/depth/depth_registered")
         self.cloud_sub = Subscriber(self, PointCloud2, "/zed/zed_node/point_cloud/cloud_registered")
-        self.sync = ApproximateTimeSynchronizer([self.color_sub, self.depth_sub, self.cloud_sub],queue_size=50,slop=0.5,)
+        self.sync = ApproximateTimeSynchronizer([self.color_sub, self.depth_sub, self.cloud_sub],queue_size=20,slop=0.5,)
         self.sync.registerCallback(self.synced_callback)
 
         # -------- pubs --------
-        self.scan_done_pub = self.create_publisher(Bool, "/scan_done", 10)
+        self.pub_auto_state_cmd = self.create_publisher(String, '/auto_state_cmd', 10)
+        self.pub_scan_color = self.create_publisher(Image, "/zed_top_scan/color", 10)
+        self.pub_scan_depth = self.create_publisher(Image, "/zed_top_scan/depth", 10)
+        self.pub_scan_camera_info = self.create_publisher(CameraInfo, "/zed_top_scan/camera_info", 10)
+        self.pub_scan_run_dir = self.create_publisher(String, "/zed_top_scan/run_dir", 10)
 
         self.get_logger().info("ZED scan node started.")
 
@@ -84,7 +88,7 @@ class ZedTestScanNode(Node):
     def cb_auto_state(self, msg: String):
         state = msg.data.strip().lower()
 
-        if state != "scan_start":
+        if state != "top_view_scan":
             return
 
         if self.scan_active:
@@ -147,6 +151,16 @@ class ZedTestScanNode(Node):
             self.finish_scan(success=False)
             return
 
+        self.pub_scan_color.publish(self.latest_color_msg)
+        self.pub_scan_depth.publish(self.latest_depth_msg)
+
+        if self.latest_rgb_info_msg is not None:
+            self.pub_scan_camera_info.publish(self.latest_rgb_info_msg)
+
+        run_msg = String()
+        run_msg.data = self.latest_run_dir
+        self.pub_scan_run_dir.publish(run_msg)
+
         self.get_logger().info("Fresh synchronized ZED frame captured. Saving...")
         self.save_capture()
         self.get_logger().info("ZED capture saved successfully.")
@@ -161,9 +175,9 @@ class ZedTestScanNode(Node):
             self.capture_timer.cancel()
             self.capture_timer = None
 
-        done_msg = Bool()
-        done_msg.data = success
-        self.scan_done_pub.publish(done_msg)
+        msg = String()
+        msg.data = "plant_row_coordinates" if success else "idle"
+        self.pub_auto_state_cmd.publish(msg)
 
     def save_capture(self):
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -176,6 +190,7 @@ class ZedTestScanNode(Node):
 
         run_dir = os.path.join(self.save_dir, f"{location_str}_{stamp}")
         os.makedirs(run_dir, exist_ok=True)
+        self.latest_run_dir = run_dir
 
         color_path = os.path.join(run_dir, "color.png")
         color_npy_path = os.path.join(run_dir, "color.npy")

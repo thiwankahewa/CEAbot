@@ -9,9 +9,11 @@ import tf2_ros
 from rclpy.time import Time
 from rcl_interfaces.msg import SetParametersResult
 from arm_controlling.moveit_arm_helper import MoveItArmHelper
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 from arm_interfaces.srv import MoveToPose
 from std_srvs.srv import Trigger
+from arm_interfaces.msg import PlantTargetArray
+from arm_interfaces.srv import CaptureView
 
 
 class PlantViewScanner(MoveItArmHelper):
@@ -19,7 +21,8 @@ class PlantViewScanner(MoveItArmHelper):
         super().__init__("plant_view_scanner")
 
         #--------- States and variables ---------#
-        self.csv_path = "/home/thiwa/scan_data_zed/b1_r12_20260504_170451/plant_coordinates_camera_frame.csv"
+        self.latest_targets = []
+        self.latest_run_dir = None
         self.base_frame = "zed2i_left_camera_frame_optical"
         self.ee_link = "end_effector_link"
 
@@ -48,13 +51,18 @@ class PlantViewScanner(MoveItArmHelper):
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
+        #-------- Services and clients ---------#
+
         self.move_pose_client = self.create_client(MoveToPose, "/arm/move_to_pose")
+        self.orbbec_capture_client = self.create_client(CaptureView,"/orbbec_test_scan/capture_view")
 
         self.create_service(Trigger, "/plant_view_scanner/pause", self.cb_pause_scan)
         self.create_service(Trigger, "/plant_view_scanner/resume", self.cb_resume_scan)
         self.create_service(Trigger, "/plant_view_scanner/stop", self.cb_stop_scan)
 
-        self.scan_sub = self.create_subscription(Bool,"/plant_view_scanner/start",self.cb_start_scan,10,)
+        #-------- Subscriptions and publishers ---------#
+        self.state_sub = self.create_subscription(String,"/auto_state",self.cb_auto_state,10)
+        self.target_sub = self.create_subscription(PlantTargetArray,"/plant_row/targets",self.cb_targets,10)
 
     #-------- Callbacks functions ---------#
     def _load_scanner_params(self):
@@ -67,14 +75,32 @@ class PlantViewScanner(MoveItArmHelper):
     def on_params_1(self, params):
         self._load_scanner_params()
         return SetParametersResult(successful=True)
+    
+    def cb_targets(self, msg):
+        self.latest_run_dir = msg.run_dir
+        self.latest_targets = []
 
-    def cb_start_scan(self, msg):
-        if not msg.data:
+        for t in msg.targets:
+            self.latest_targets.append((int(t.plant_id),float(t.target_x),float(t.target_y),float(t.target_z),float(t.radius_m)))
+
+        self.latest_targets.sort(key=lambda p: p[1], reverse=True)
+        self.get_logger().info(f"Received {len(self.latest_targets)} plant targets ")
+
+    def cb_auto_state(self, msg):
+        state = msg.data.strip().lower()
+
+        if state != "individual_plant_scan":
             return
 
         if self.scan_busy:
             self.get_logger().warn("Scanner already running")
             return
+        
+        if len(self.latest_targets) == 0:
+            self.get_logger().warn("No targets received yet")
+            return
+
+        self.get_logger().info(f"Starting plant scan with {len(self.latest_targets)} targets")
 
         self.scan_busy = True
         self.stop_scan = False
@@ -113,32 +139,6 @@ class PlantViewScanner(MoveItArmHelper):
         response.success = True
         response.message = "Plant scanner stopped"
         return response
-
-    #-------- csv reading functions ---------#
-    def read_targets_from_csv(self):
-        targets = []
-
-        with open(self.csv_path, "r") as f:
-            reader = csv.DictReader(f)
-
-            for i, row in enumerate(reader):
-                try:
-                    x = float(row["target_x"]) / 1000.0
-                    y = float(row["target_y"]) / 1000.0
-                    z = float(row["target_z"]) / 1000.0
-                    r = float(row["radius_mm"]) / 1000.0
-                except Exception as e:
-                    self.get_logger().warn(f"Skipping row {i}: {e}")
-                    continue
-
-                if not all(math.isfinite(v) for v in [x, y, z]):
-                    self.get_logger().warn(f"Skipping row {i}: non-finite value")
-                    continue
-
-                targets.append((x, y, z, r))
-
-        targets.sort(key=lambda p: p[0], reverse=True)      # sort by X, largest first
-        return targets
     
     #------- helper math functions ---------#
     
@@ -289,9 +289,48 @@ class PlantViewScanner(MoveItArmHelper):
 
             time.sleep(0.05)
 
+    
+    #------- Plant capture function ---------#
+
+    def call_orbbec_capture(self, run_dir, plant_id, view_label, timeout=20.0):
+        if not self.orbbec_capture_client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().error("/orbbec_test_scan/capture_view service not available")
+            return False
+
+        req = CaptureView.Request()
+        req.run_dir = run_dir
+        req.plant_id = int(plant_id)
+        req.view_label = str(view_label)
+
+        future = self.orbbec_capture_client.call_async(req)
+
+        start = time.time()
+        while rclpy.ok():
+            if future.done():
+                res = future.result()
+                if res is None:
+                    return False
+
+                self.get_logger().info(res.message)
+                return res.success
+
+            if time.time() - start > timeout:
+                self.get_logger().error("Timeout waiting for Orbbec capture")
+                return False
+
+            time.sleep(0.05)
+
     #------- main execution loop ---------#
     def run(self):
-        targets = self.read_targets_from_csv()
+        targets = self.latest_targets
+        if self.latest_run_dir is None:
+            self.get_logger().error("No directory received")
+            return
+
+        if len(targets) == 0:
+            self.get_logger().error("No plant targets received")
+            return
+        
         self.max_plant_z = max(p[2] for p in targets)
         self.get_logger().info(f"Max plant Z: {self.max_plant_z:.4f} m")
 
@@ -299,12 +338,12 @@ class PlantViewScanner(MoveItArmHelper):
             self.get_logger().error("No valid targets found in CSV")
             return
 
-        for i, (x, y, z, r) in enumerate(targets, start=1):
+        for plant_id, x, y, z, r in targets:
             view_poses = self.generate_view_poses(x, y, z, r)
 
             for j, pose in enumerate(view_poses, start=1):
                 self.get_logger().info(
-                    f"Plant {i} - planned pose {j}/{len(view_poses)} [{pose['label']}]: "
+                    f"Plant {plant_id} - planned pose {j}/{len(view_poses)} [{pose['label']}]: "
                     f"x={pose['x']:.4f}, y={pose['y']:.4f}, z={pose['z']:.4f}, "
                     f"q=({pose['qx']:.3f}, {pose['qy']:.3f}, {pose['qz']:.3f}, {pose['qw']:.3f})"
                 )
@@ -317,7 +356,7 @@ class PlantViewScanner(MoveItArmHelper):
                 success, message = self.call_arm_move_to_pose(pose)
 
                 if not success:
-                    self.get_logger().warn(f"Arm move failed for plant {i}, pose {pose['label']}: {message}")
+                    self.get_logger().warn(f"Arm move failed for plant {plant_id}, pose {pose['label']}: {message}")
                     if ("Stopped by user" in message or "STOP" in message or "stop" in message or "Controller deactivated" in message):
                         with self.scan_lock:
                             self.scan_paused = True
@@ -332,13 +371,17 @@ class PlantViewScanner(MoveItArmHelper):
 
                 self.get_logger().info(message)
 
+                capture_success = self.call_orbbec_capture(run_dir=self.latest_run_dir,plant_id=plant_id,view_label=pose["label"])
+                if not capture_success:
+                    self.get_logger().warn(f"Orbbec capture failed for plant {plant_id}, view {pose['label']}")
+
                 try:
                     transform = self.tf_buffer.lookup_transform(self.base_frame,self.ee_link,Time())
                     t = transform.transform.translation
                     r = transform.transform.rotation
 
                     self.get_logger().info(
-                        f"Plant {i} - actual pose {j}/{len(view_poses)} [{pose['label']}]: "
+                        f"Plant {plant_id} - actual pose {j}/{len(view_poses)} [{pose['label']}]: "
                         f"x={t.x:.4f}, y={t.y:.4f}, z={t.z:.4f}, "
                         f"q=({r.x:.4f}, {r.y:.4f}, {r.z:.4f}, {r.w:.4f})"
                     )

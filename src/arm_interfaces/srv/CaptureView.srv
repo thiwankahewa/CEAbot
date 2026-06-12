@@ -1,0 +1,6 @@
+string run_dir
+int32 plant_id
+string view_label
+---
+bool success
+string message
