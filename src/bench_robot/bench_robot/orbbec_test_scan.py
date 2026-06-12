@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
 
 import os
-import struct
-import math
-from datetime import datetime
 import cv2
 import numpy as np
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Bool, Int16MultiArray, String
+from std_msgs.msg import Bool
 from std_srvs.srv import SetBool
 from sensor_msgs.msg import Image, PointCloud2
 from cv_bridge import CvBridge
@@ -24,8 +21,6 @@ class OrbbecTestScanNode(Node):
         self.bridge = CvBridge()
 
         self.pending_capture = None
-        self.pending_future_response = None
-
         self.capture_requested = False
         self.capture_timer = None
         self.scan_done = False
@@ -36,11 +31,6 @@ class OrbbecTestScanNode(Node):
         self.latest_color_msg = None
         self.latest_depth_msg = None
 
-        self.current_location = None
-
-        self.save_dir = os.path.expanduser('~/scan_data_orbbec')
-        os.makedirs(self.save_dir, exist_ok=True)
-
         # ---------------- services ----------------
         self.streams_cli = self.create_client(SetBool, '/camera/set_streams_enable')
         self.get_logger().info('Waiting for /camera/set_streams_enable service...')
@@ -50,9 +40,7 @@ class OrbbecTestScanNode(Node):
         self.create_service(CaptureView,"/orbbec_test_scan/capture_view",self.cb_capture_view)
 
         # ---------------- subs ----------------
-        self.location_sub = self.create_subscription(Int16MultiArray, '/robot_location', self.cb_location, 10)
-        self.cmd_sub = self.create_subscription(String,'/auto_state',self.cb_auto_state,10)
-        
+
         # Time-synchronized color + depth + point cloud
         self.color_sub = Subscriber(self, Image, '/camera/color/image_raw')
         self.depth_sub = Subscriber(self, Image, '/camera/depth/image_raw')
@@ -108,30 +96,13 @@ class OrbbecTestScanNode(Node):
     
     # ---------------- callbacks functions ----------------
 
-    def cb_location(self, msg: Int16MultiArray):
-        self.current_location = msg.data[1], msg.data[2]
-
-    def cb_auto_state(self, msg: String):
-        state = msg.data.strip().lower()
-
-        if state != 'scan_start':
-            return
-        
-        self.get_logger().info('Received scan_start. Enabling all streams...')  # send command to enable all streams
-        req = SetBool.Request()
-        req.data = True
-        future = self.streams_cli.call_async(req)
-        future.add_done_callback(self.on_streams_enabled)
-
     def cb_capture_view(self, request, response):
-        if self.capture_requested:
+        if self.capture_requested or self.pending_capture is not None or self.capture_timer is not None:
             response.success = False
             response.message = "Orbbec capture already running"
             return response
 
         self.pending_capture = {"run_dir": request.run_dir,"plant_id": request.plant_id,"view_label": request.view_label,}
-
-        self.capture_requested = True
 
         self.get_logger().info(f"Capture requested: plant {request.plant_id}, view {request.view_label}")
 
@@ -189,16 +160,14 @@ class OrbbecTestScanNode(Node):
             self.get_logger().warn('Missing synchronized data. Capture not saved.')
             return
 
-        if self.pending_capture is not None:
-            base_run_dir = self.pending_capture["run_dir"]
-            plant_id = self.pending_capture["plant_id"]
-            view_label = self.pending_capture["view_label"]
-            run_dir = os.path.join(base_run_dir,f"plant_{plant_id:02d}",view_label)
-        else:
-            stamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            bench, row = self.current_location if self.current_location else (0, 0)
-            location_str = f"b{bench}_r{row}"
-            run_dir = os.path.join(self.save_dir, f"{location_str}_{stamp}")
+        if self.pending_capture is None:
+            self.get_logger().warn('No pending capture metadata. Capture not saved.')
+            return
+
+        base_run_dir = self.pending_capture["run_dir"]
+        plant_id = self.pending_capture["plant_id"]
+        view_label = self.pending_capture["view_label"]
+        run_dir = os.path.join(base_run_dir,f"plant_{plant_id:02d}",view_label)
 
         os.makedirs(run_dir, exist_ok=True)
 
@@ -231,65 +200,83 @@ class OrbbecTestScanNode(Node):
     def extract_pointcloud_arrays(self, cloud_msg):
         field_map = {f.name: f for f in cloud_msg.fields}
 
+        for name in ('x', 'y', 'z'):
+            if name not in field_map:
+                self.get_logger().error(f'Point cloud missing field: {name}')
+                return None, None, False
+
         has_rgb = 'rgb' in field_map or 'rgba' in field_map
         rgb_name = 'rgb' if 'rgb' in field_map else ('rgba' if 'rgba' in field_map else None)
 
-        x_off = field_map['x'].offset
-        y_off = field_map['y'].offset
-        z_off = field_map['z'].offset
-        rgb_off = field_map[rgb_name].offset if has_rgb else None
+        endian = '>' if cloud_msg.is_bigendian else '<'
+        dtype_fields = {
+            'x': (endian + 'f4', field_map['x'].offset),
+            'y': (endian + 'f4', field_map['y'].offset),
+            'z': (endian + 'f4', field_map['z'].offset),
+        }
 
-        point_step = cloud_msg.point_step
-        data = cloud_msg.data
+        if has_rgb:
+            dtype_fields[rgb_name] = (endian + 'u4', field_map[rgb_name].offset)
+
+        dtype = np.dtype({
+            'names': list(dtype_fields.keys()),
+            'formats': [value[0] for value in dtype_fields.values()],
+            'offsets': [value[1] for value in dtype_fields.values()],
+            'itemsize': cloud_msg.point_step,
+        })
+
         n_points = cloud_msg.width * cloud_msg.height
+        points = np.frombuffer(cloud_msg.data, dtype=dtype, count=n_points)
 
-        xyz_points = []
-        xyzrgb_points = []
+        valid = np.isfinite(points['x']) & np.isfinite(points['y']) & np.isfinite(points['z'])
+        points = points[valid]
 
-        for i in range(n_points):
-            base = i * point_step
+        if len(points) == 0:
+            return None, None, has_rgb
 
-            x = struct.unpack_from('<f', data, base + x_off)[0]
-            y = struct.unpack_from('<f', data, base + y_off)[0]
-            z = struct.unpack_from('<f', data, base + z_off)[0]
+        xyz_np = np.column_stack((points['x'], points['y'], points['z'])).astype(np.float32, copy=False)
 
-            if math.isnan(x) or math.isnan(y) or math.isnan(z):
-                continue
+        if not has_rgb:
+            return xyz_np, None, False
 
-            xyz_points.append([x, y, z])
+        rgb = points[rgb_name]
+        r = ((rgb >> 16) & 0xFF).astype(np.float32)
+        g = ((rgb >> 8) & 0xFF).astype(np.float32)
+        b = (rgb & 0xFF).astype(np.float32)
 
-            if has_rgb:
-                rgb_float = struct.unpack_from('<f', data, base + rgb_off)[0]
-                rgb_int = struct.unpack('<I', struct.pack('<f', rgb_float))[0]
-
-                r = (rgb_int >> 16) & 0xFF
-                g = (rgb_int >> 8) & 0xFF
-                b = rgb_int & 0xFF
-
-                xyzrgb_points.append([x, y, z, r, g, b])
-
-        xyz_np = np.array(xyz_points, dtype=np.float32) if xyz_points else None
-        xyzrgb_np = np.array(xyzrgb_points, dtype=np.float32) if xyzrgb_points else None
+        xyzrgb_np = np.column_stack((xyz_np, r, g, b)).astype(np.float32, copy=False)
 
         return xyz_np, xyzrgb_np, has_rgb
 
 
     def save_ply_xyzrgb(self, xyzrgb_points: np.ndarray, filepath: str):
-        with open(filepath, 'w') as f:
-            f.write('ply\n')
-            f.write('format ascii 1.0\n')
-            f.write(f'element vertex {len(xyzrgb_points)}\n')
-            f.write('property float x\n')
-            f.write('property float y\n')
-            f.write('property float z\n')
-            f.write('property uchar red\n')
-            f.write('property uchar green\n')
-            f.write('property uchar blue\n')
-            f.write('end_header\n')
+        ply_points = np.empty(
+            len(xyzrgb_points),
+            dtype=[('x', '<f4'), ('y', '<f4'), ('z', '<f4'), ('red', 'u1'), ('green', 'u1'), ('blue', 'u1')],
+        )
+        ply_points['x'] = xyzrgb_points[:, 0]
+        ply_points['y'] = xyzrgb_points[:, 1]
+        ply_points['z'] = xyzrgb_points[:, 2]
+        ply_points['red'] = xyzrgb_points[:, 3].astype(np.uint8)
+        ply_points['green'] = xyzrgb_points[:, 4].astype(np.uint8)
+        ply_points['blue'] = xyzrgb_points[:, 5].astype(np.uint8)
 
-            for pt in xyzrgb_points:
-                x, y, z, r, g, b = pt
-                f.write(f'{x:.6f} {y:.6f} {z:.6f} {int(r)} {int(g)} {int(b)}\n')
+        header = (
+            'ply\n'
+            'format binary_little_endian 1.0\n'
+            f'element vertex {len(ply_points)}\n'
+            'property float x\n'
+            'property float y\n'
+            'property float z\n'
+            'property uchar red\n'
+            'property uchar green\n'
+            'property uchar blue\n'
+            'end_header\n'
+        )
+
+        with open(filepath, 'wb') as f:
+            f.write(header.encode('ascii'))
+            ply_points.tofile(f)
 
     def msg_stamp_to_float(self, stamp):
         return float(stamp.sec) + float(stamp.nanosec) * 1e-9
