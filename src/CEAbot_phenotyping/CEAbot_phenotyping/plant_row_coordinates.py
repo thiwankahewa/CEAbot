@@ -4,7 +4,7 @@ import time
 import cv2
 import numpy as np
 from pathlib import Path
-import csv
+import yaml
 
 import rclpy
 from rclpy.node import Node
@@ -181,6 +181,46 @@ class PlantCoordinateNode(Node):
         radius_mm = np.sqrt(area_mm2 / np.pi)
 
         return int(radius_mm)
+
+    def save_plant_results_to_metadata(self, output_dir, results):
+        if output_dir is None:
+            self.get_logger().warn("No run directory received. Plant metadata not saved.")
+            return
+
+        metadata_path = output_dir / "metadata.yaml"
+
+        if metadata_path.exists():
+            with open(metadata_path, "r") as f:
+                metadata = yaml.safe_load(f) or {}
+        else:
+            metadata = {}
+
+        metadata["plants"] = []
+
+        for row in results:
+            metadata["plants"].append({
+                "plant_id": int(row["plant_id"]),
+                "area_px": float(row["area_px"]) if row["area_px"] is not None else None,
+                "center": {
+                    "x_mm": row["center_x"],
+                    "y_mm": row["center_y"],
+                    "z_mm": row["center_z"],
+                },
+                "top": {
+                    "x_mm": row["top_x"],
+                    "y_mm": row["top_y"],
+                    "z_mm": row["top_z"],
+                },
+                "target": {
+                    "x_mm": row["target_x"],
+                    "y_mm": row["target_y"],
+                    "z_mm": row["target_z"],
+                },
+                "radius_mm": row["radius_mm"],
+            })
+
+        with open(metadata_path, "w") as f:
+            yaml.safe_dump(metadata, f, sort_keys=False)
     
     # -------- Main functions --------
 
@@ -308,31 +348,10 @@ class PlantCoordinateNode(Node):
         time.sleep(0.5)
         self.pub_auto_state_cmd.publish(String(data="individual_plant_scan"))
 
-        cv2.imwrite(str(output_dir / "green_mask.png"), mask_clean)
         cv2.imwrite(str(output_dir / "segmented_result.png"), segmented)
         cv2.imwrite(str(output_dir / "detection.png"), detection)
-        cv2.imwrite(str(output_dir / "cropped_color.png"), crop)
 
-        if results:
-            fieldnames = [
-                "plant_id",
-                "area_px",
-                "center_x",
-                "center_y",
-                "center_z",
-                "top_x",
-                "top_y",
-                "top_z",
-                "target_x",
-                "target_y",
-                "target_z",
-                "radius_mm"
-            ]
-
-            with open(output_dir / "plant_coordinates_camera_frame.csv", "w", newline="") as f:
-                writer = csv.DictWriter(f, fieldnames=fieldnames)
-                writer.writeheader()
-                writer.writerows(results)
+        self.save_plant_results_to_metadata(output_dir, results)
 
 
 def main(args=None):

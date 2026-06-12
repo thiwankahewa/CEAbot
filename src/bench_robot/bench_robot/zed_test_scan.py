@@ -193,14 +193,12 @@ class ZedTestScanNode(Node):
         self.latest_run_dir = run_dir
 
         color_path = os.path.join(run_dir, "color.png")
-        color_npy_path = os.path.join(run_dir, "color.npy")
         depth_npy_path = os.path.join(run_dir, "depth.npy")
         cloud_xyzrgb_npy_path = os.path.join(run_dir, "cloud_xyzrgb.npy")
         cloud_ply_path = os.path.join(run_dir, "cloud.ply")
         meta_path = os.path.join(run_dir, "metadata.yaml")
 
         cv2.imwrite(color_path, self.latest_color)
-        np.save(color_npy_path, self.latest_color)
         np.save(depth_npy_path, self.latest_depth)
 
         xyzrgb_points, has_rgb = self.extract_pointcloud_arrays(self.latest_cloud_msg)
