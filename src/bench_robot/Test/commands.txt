@@ -43,7 +43,16 @@ git pull --rebase origin main
  sudo chown -R thiwa:thiwa /home/thiwa/scan_data_zed
 
 
-python3 ~/CEAbot/src/bench_robot/Test/publish_zed_top_scan_folder.py /home/thiwa/scan_data_zed/b1_r16_20260608_133538 --trigger
+python3 ~/CEAbot/src/bench_robot/Test/publish_zed_top_scan_folder.py /home/thiwa/scan_data_zed/b1_r15_20260608_133520 --trigger
+ros2 topic pub /auto_state std_msgs/msg/String "{data: individual_plant_scan}" --once
+
+python3 ~/CEAbot/src/CEAbot_phenotyping/test/reconstruct_plant_views.py \
+  /home/thiwa/scan_data_zed/b1_r15_20260608_133520
+  --plant plant_01 \
+  --save-debug-views \
+    --color-by-view \
+
+
 
 
 

@@ -39,8 +39,8 @@ class MoveItArmHelper(Node):
         self.declare_parameter("pot_height", 0.15)
         self.declare_parameter("position_tolerance", 0.02)
         self.declare_parameter("orientation_tolerance", 0.20)
-        self.declare_parameter("velocity_scaling", 0.3)
-        self.declare_parameter("acceleration_scaling", 0.05)
+        self.declare_parameter("velocity_scaling", 0.6)
+        self.declare_parameter("acceleration_scaling", 0.18)
         self.declare_parameter("planning_time", 5.0)
 
         self.joint_state_sub = self.create_subscription(
