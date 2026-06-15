@@ -25,7 +25,7 @@ class PlantViewScanner(MoveItArmHelper):
         self.latest_targets = []
         self.latest_run_dir = None
         self.base_frame = "zed2i_left_camera_frame_optical"
-        self.ee_link = "end_effector_link"
+        self.ee_link = "camera_color_optical_frame"
 
         self.declare_parameter("z_offset", 0.2)              # meters above target
         self.declare_parameter("circle_radius_offset", 0.20)   # distance from top view to side-view circle

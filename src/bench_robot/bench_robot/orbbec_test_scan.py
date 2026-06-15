@@ -192,8 +192,6 @@ class OrbbecTestScanNode(Node):
             f.write(f'depth_shape: {self.latest_depth.shape}\n')
             f.write(f'depth_dtype: {self.latest_depth.dtype}\n')
             f.write(f'frame_id: {self.latest_color_msg.header.frame_id}\n')
-            if xyz_points is not None:
-                f.write(f'cloud_xyz_point_count: {len(xyz_points)}\n')
             if xyzrgb_points is not None:
                 f.write(f'cloud_xyzrgb_point_count: {len(xyzrgb_points)}\n')
 
