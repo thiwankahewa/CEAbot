@@ -3,6 +3,7 @@
 import os
 from datetime import datetime
 import cv2
+import numpy as np
 import yaml
 from rcl_interfaces.msg import SetParametersResult
 import rclpy
@@ -152,12 +153,13 @@ class ZedTestScanNode(Node):
         if self.latest_rgb_info_msg is not None:
             self.pub_scan_camera_info.publish(self.latest_rgb_info_msg)
 
+        self.get_logger().info("Fresh synchronized ZED frame captured. Saving...")
+        self.save_capture()
+
         run_msg = String()
         run_msg.data = self.latest_run_dir
         self.pub_scan_run_dir.publish(run_msg)
 
-        self.get_logger().info("Fresh synchronized ZED frame captured. Saving...")
-        self.save_capture()
         self.get_logger().info("ZED capture saved successfully.")
 
         self.finish_scan(success=True)

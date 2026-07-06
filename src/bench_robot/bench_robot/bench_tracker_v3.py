@@ -22,6 +22,7 @@ class BenchTracker(Node):
 
         self.last_tof_stamp = None
         self.invalid_data_warned = False
+        self.last_invalid_tof_log_time = 0.0
 
         self.offset_err_m = 0.0
         self.yaw_err_m = 0.0
@@ -192,6 +193,7 @@ class BenchTracker(Node):
         data = msg.data
         if data is None or len(data) < 4:
             self.invalid_data_warned = True
+            self.get_logger().info(f"Invalid tof data: received {list(data) if data is not None else data}")
             return
 
         rl, fl, rr, fr = data
@@ -201,7 +203,10 @@ class BenchTracker(Node):
 
         if not all(valid(x) for x in (fl, fr, rl, rr)):
             self.invalid_data_warned = True
-            self.get_logger().info("Invalid tof data")
+            now = self.now_s()
+            if now - self.last_invalid_tof_log_time >= 1:
+                self.get_logger().info(f"Invalid tof data: rl={rl} fl={fl} rr={rr} fr={fr} valid_range={self.min_tof}-{self.max_tof} mm")
+                self.last_invalid_tof_log_time = now
             self.last_tof_stamp = self.get_clock().now()
             return
 

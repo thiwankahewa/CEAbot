@@ -57,7 +57,7 @@ class ArucoManager(Node):
         self.srv_reconnect = self.create_service(Trigger,"/aruco_detector/aruco_camera_reconnect",self.on_camera_reconnect)
 
         # ---------------- camera, aruco setup ----------------
-        self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_100)
+        self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_ARUCO_ORIGINAL)
         self.aruco_params = cv2.aruco.DetectorParameters()
         self.detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.aruco_params)
         self.cap = None

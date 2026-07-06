@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 
-IMAGE_PATH = "/home/thiwa/scan_data_zed/b1_r17_20260504_170257/color.png"
+IMAGE_PATH = "b1_r17_20260706_153034/color.png"
 
 img = cv2.imread(IMAGE_PATH)
 if img is None:
