@@ -20,12 +20,14 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(PathJoinSubstitution([FindPackageShare("zed_wrapper"),"launch","zed_camera.launch.py"])),
         launch_arguments={
             "camera_model": "zed2i",
+            "camera_name": "zed",
+            "namespace": "",
             "ros_params_override_path": zed_params,
             "serial_number": "0",
             "publish_urdf": "false",
             "publish_tf": "false",
             "enable_ipc": "false",
-            #"node_log_type": "log",
+            "node_log_type": "log",
         }.items()
     )
 
@@ -45,7 +47,7 @@ def generate_launch_description():
 
 
     return LaunchDescription([
-        #orbbec_launch,
+        orbbec_launch,
         zed_launch,
 
         Node(
@@ -99,6 +101,14 @@ def generate_launch_description():
         Node(
             package="bench_robot",
             executable="zed_test_scan",
+            output="screen",),
+        Node(
+            package="bench_robot",
+            executable="orbbec_test_scan",
+            output="screen",),
+        Node(
+            package="CEAbot_phenotyping",
+            executable="plant_row_coordinates",
             output="screen",),
         Node(
             package="bench_robot",
