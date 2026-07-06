@@ -20,6 +20,7 @@ class ArduinoBridge(Node):
         self.ser = None
         self.connected = False
         self.serial_error_reported = False
+        self.last_tof_log_time = 0.0
 
         self.send_period = 10.0  # Hz
         self.send_delta = 1
@@ -125,6 +126,11 @@ class ArduinoBridge(Node):
                     vals = []
                     for i in parts[1:5]:
                         vals.append(int(i))
+
+                    now = time.time()
+                    if now - self.last_tof_log_time >= 1:
+                        #self.get_logger().info(f"ToF raw mm: rl={vals[0]} fl={vals[1]} rr={vals[2]} fr={vals[3]} line='{line}'")
+                        self.last_tof_log_time = now
 
                     msg = Int16MultiArray()
                     msg.data = vals
