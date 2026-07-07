@@ -138,6 +138,31 @@ class MoveItArmHelper(Node):
 
         return constraints
 
+    def make_min_z_path_constraints(self):
+        box = SolidPrimitive()
+        box.type = SolidPrimitive.BOX
+        box.dimensions = [5.0, 5.0, 5.0]
+
+        # With z increasing downward in this setup, place the box so its
+        # allowed range ends at the bench height rather than extending below it.
+        box_pose = Pose()
+        box_pose.position = Point(x=0.0, y=0.0, z=self.bench_height - 2.5)
+        box_pose.orientation = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
+
+        region = BoundingVolume()
+        region.primitives.append(box)
+        region.primitive_poses.append(box_pose)
+
+        position_constraint = PositionConstraint()
+        position_constraint.header.frame_id = self.base_frame
+        position_constraint.link_name = self.ee_link
+        position_constraint.constraint_region = region
+        position_constraint.weight = 1.0
+
+        constraints = Constraints()
+        constraints.position_constraints.append(position_constraint)
+        return constraints
+
     def plan_to_joint_positions(self, joint_targets):
         if not self.move_group_client.wait_for_server(timeout_sec=10.0):
             self.get_logger().error("/move_action server not ready")
@@ -151,6 +176,7 @@ class MoveItArmHelper(Node):
         request.max_acceleration_scaling_factor = self.acceleration_scaling
         request.start_state.is_diff = True
         request.goal_constraints.append(self.make_joint_goal(joint_targets))
+        #request.path_constraints = self.make_min_z_path_constraints()
 
         options = PlanningOptions()
         options.plan_only = True
@@ -198,6 +224,7 @@ class MoveItArmHelper(Node):
         request.max_acceleration_scaling_factor = self.acceleration_scaling
         request.start_state.is_diff = True
         request.goal_constraints.append(self.make_pose_goal(x, y, z, qx, qy, qz, qw))
+        #request.path_constraints = self.make_min_z_path_constraints()
 
         options = PlanningOptions()
         options.plan_only = True
@@ -407,18 +434,25 @@ class MoveItArmHelper(Node):
             current = dict(zip(self.current_joint_state.name, self.current_joint_state.position))
 
             all_close = True
+            max_error = 0.0
             for joint_name, target_pos in target.items():
                 if joint_name not in current:
                     all_close = False
                     break
 
                 error = abs(self.angle_error(target_pos, current[joint_name]))
+                max_error = max(max_error, error)
                 if error > tolerance:
                     all_close = False
-                    break
 
             if all_close:
                 self.get_logger().info("Reached final trajectory point")
                 return True
+
+            if len(self.current_joint_state.velocity) > 0:
+                max_vel = max(abs(v) for v in self.current_joint_state.velocity)
+                if max_vel < 0.005 and max_error < max(tolerance * 3.0, 0.05):
+                    self.get_logger().info("Robot stopped near final trajectory point")
+                    return True
 
             time.sleep(0.05)
