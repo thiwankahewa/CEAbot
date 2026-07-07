@@ -170,6 +170,10 @@ class ArmManager(MoveItArmHelper):
         if traj is None:
             return False, f"Planning failed for {target['label']}"
 
+        ok, limit_msg = self.trajectory_respects_one_turn_limits(traj)
+        if not ok:
+            return False, f"Rejected trajectory for {target['label']}: {limit_msg}"
+
         if self.check_stop_requested():
             return False, "Stopped by user"
 
@@ -201,6 +205,10 @@ class ArmManager(MoveItArmHelper):
 
         if traj is None:
             return False, f"Planning failed for {name}"
+
+        ok, limit_msg = self.trajectory_respects_one_turn_limits(traj)
+        if not ok:
+            return False, f"Rejected trajectory for {name}: {limit_msg}"
 
         if self.check_stop_requested():
             return False, "Stopped by user"
