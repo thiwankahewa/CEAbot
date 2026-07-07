@@ -93,7 +93,7 @@
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="package://bench_robot_description/meshes/zed_2i_bracket.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="package://bench_robot_description/meshes/zed_2i_bracket_long.stl" scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="white">
         <color rgba="1 1 1 1"/>
@@ -103,7 +103,7 @@
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="package://bench_robot_description/meshes/zed_2i_bracket.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="package://bench_robot_description/meshes/zed_2i_bracket_long.stl" scale="0.001 0.001 0.001"/>
       </geometry>
     </collision>
 
@@ -118,7 +118,7 @@
   <joint name="camera_bracket_joint" type="fixed">
     <parent link="top_beam_link"/>
     <child link="camera_bracket_link"/>
-    <origin xyz="0 0 -0.0445" rpy="1.5708 0 0"/>
+    <origin xyz="0 0 -0.13" rpy="1.5708 0 0"/>
   </joint>
 
   <xacro:include filename="$(find zed_wrapper)/urdf/zed_macro.urdf.xacro" />
@@ -138,7 +138,7 @@
   <joint name="chassis_to_arm_mount" type="fixed">
     <parent link="world"/>
     <child link="arm_mount_link"/>
-    <origin xyz="0 -0.09 ${col_h }" rpy="3.14159 0 0"/>
+    <origin xyz="0 -0.08 ${col_h }" rpy="3.14159 0 3.14159"/>
   </joint>
 
   <xacro:arg name="robot_ip" default="yyy.yyy.yyy.yyy"/>

@@ -14,9 +14,9 @@ from arm_controlling.moveit_arm_helper import MoveItArmHelper
 from arm_interfaces.srv import MoveToPose
 
 
-REST_APPROACH = {"joint_1": 2.5514,"joint_2": -2.04,"joint_3": 0.0521,"joint_4": 1.6613,"joint_5": 3.1415,"joint_6": -2.09,"joint_7": -0.0868,}
-REST_FINAL = {"joint_1": math.radians(180.0),"joint_2": -2.04,"joint_3": 0.0521,"joint_4": 1.6613,"joint_5": 3.1415,"joint_6": -2.09,"joint_7": -0.0868,}
-POSE_1 = {"joint_1": 2.8514,"joint_2": -2.04,"joint_3": 0.0521,"joint_4": 1.6613,"joint_5": 3.1415,"joint_6": -2.09,"joint_7": -0.0868,}
+REST_APPROACH = {"joint_1": -0.628,"joint_2": -2.23,"joint_3": 0.0521,"joint_4": 1.6613,"joint_5": 3.1415,"joint_6": -2.09,"joint_7": -0.0868,}
+REST_FINAL = {"joint_1": -0.5,"joint_2": -2.04,"joint_3": 0.0521,"joint_4": 1.6613,"joint_5": 3.1415,"joint_6": -2.09,"joint_7": -0.0868,}
+POSE_1 = {"joint_1": -0.764,"joint_2": -2.04,"joint_3": 0.0521,"joint_4": 1.6613,"joint_5": 3.1415,"joint_6": -2.09,"joint_7": -0.0868,}
 
 
 class ArmManager(MoveItArmHelper):
@@ -141,6 +141,21 @@ class ArmManager(MoveItArmHelper):
     def check_stop_requested(self):
         with self.command_lock:
             return self.stop_requested
+
+    def wait_for_arm_ready(self, timeout=10.0):
+        start = time.time()
+
+        while rclpy.ok():
+            if self.move_group_client.wait_for_server(timeout_sec=0.2):
+                if self.current_joint_state is not None and len(self.current_joint_state.name) > 0:
+                    return True
+
+            if time.time() - start > timeout:
+                return False
+
+            time.sleep(0.2)
+
+        return False
 
     def is_near_joint_pose(self, target, tolerance=0.06):
         current = self.get_current_joint_map(timeout=5.0)
@@ -316,7 +331,17 @@ def main(args=None):
     executor = rclpy.executors.MultiThreadedExecutor(num_threads=4)
     executor.add_node(node)
 
+    startup_attempts = 0
+
     def startup():
+        nonlocal startup_attempts
+        startup_attempts += 1
+
+        if not node.wait_for_arm_ready(timeout=2.0):
+            if startup_attempts <= 20:
+                node.get_logger().info(f"Waiting for arm startup readiness (attempt {startup_attempts}/20)")
+            return
+
         node.startup_timer.cancel()
         node.get_logger().info("Startup: moving arm to rest")
         node.start_command("go_rest", node.move_to_rest)
