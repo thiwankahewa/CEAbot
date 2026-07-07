@@ -8,9 +8,13 @@
   <xacro:property name="col_d" value="0.06"/>          <!-- 60 mm -->
   <xacro:property name="col_h" value="1.8288"/>        <!-- 6 ft -->
 
-  <xacro:property name="beam_len" value="1.524"/>      <!-- 5 ft -->
+  <xacro:property name="beam_len" value="1.0"/>        <!-- 1 m top beam -->
   <xacro:property name="beam_w" value="0.06"/>
   <xacro:property name="beam_d" value="0.06"/>
+  <xacro:property name="bench_support_len" value="1.0"/>   <!-- short support beam -->
+  <xacro:property name="bench_support_w" value="1.0"/>
+  <xacro:property name="bench_support_d" value="0.12"/>
+  <xacro:property name="bench_gap_z" value="1.0"/>        <!-- 1 m below the top beam -->
 
   <xacro:property name="plate_x" value="0.43"/>
   <xacro:property name="plate_y" value="0.06"/>
@@ -68,6 +72,15 @@
     <parent link="world"/>
     <child link="top_beam_link"/>
     <origin xyz="0 0 ${col_h - beam_d/2.0}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ===== Bench support beam under the top beam ===== -->
+  <xacro:box_link name="bench_support_beam_link" sx="${bench_support_len}" sy="${bench_support_w}" sz="${bench_support_d}"/>
+
+  <joint name="base_link_to_bench_support_beam" type="fixed">
+    <parent link="world"/>
+    <child link="bench_support_beam_link"/>
+    <origin xyz="0 0 ${col_h - beam_d/2.0 - bench_gap_z}" rpy="0 0 0"/>
   </joint>
 
   <!-- ===== Support plates (one per column at the beam connection) ===== -->
