@@ -38,6 +38,7 @@ setup(
             'aruco_detector = bench_robot.aruco_detector:main',
             'zed_local_mapper = bench_robot.zed_local_mapper:main',
             'orbbec_test_scan = bench_robot.orbbec_test_scan:main',
+            'astra_top_scan = bench_robot.astra_top_scan:main',
             'zed_test_scan = bench_robot.zed_test_scan:main',
             'bench_changer = bench_robot.bench_changer:main',
         ],

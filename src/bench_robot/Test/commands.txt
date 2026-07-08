@@ -25,6 +25,24 @@ ros2 launch bench_robot zed.launch.py
 
 ros2 run orbbec_camera list_devices_node
 
+# Astra 2 top scan test
+ros2 launch bench_robot astra_top_scan.launch.py
+
+ros2 topic list | grep -E "/astra2/(color|depth)|/zed_top_scan"
+ros2 topic hz /astra2/color/image_raw
+ros2 topic hz /astra2/depth/image_raw
+ros2 topic echo /astra2/color/camera_info --once
+ros2 topic echo /astra2/depth/camera_info --once
+
+ros2 topic echo /zed_top_scan/run_dir
+ros2 topic echo /auto_state_cmd
+
+ros2 topic pub /robot_location std_msgs/msg/Int16MultiArray "{data: [0, 1, 15, 1, 15]}" --once
+ros2 topic pub /auto_state std_msgs/msg/String "{data: top_view_scan}" --once
+
+ls -td ~/scan_data_astra2/* | head -1
+python3 ~/CEAbot/src/bench_robot/Test/validate_top_scan_folder.py "$(ls -td ~/scan_data_astra2/* | head -1)"
+
 
 
 ros2 topic pub /auto_state std_msgs/msg/String "{data: scan_start}" --once

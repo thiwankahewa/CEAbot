@@ -45,10 +45,29 @@ def generate_launch_description():
     }.items()
     )
 
+    astra2_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([
+                FindPackageShare("orbbec_camera"),
+                "launch",
+                "astra2.launch.py"
+            ])
+        ),
+        launch_arguments={
+            "camera_name": "astra2",
+            "enable_colored_point_cloud": "false",
+            "enable_point_cloud": "false",
+            "depth_registration": "true",
+            "enable_ir": "false",
+            "publish_tf": "false",
+        }.items()
+    )
+
 
     return LaunchDescription([
         orbbec_launch,
-        zed_launch,
+        astra2_launch,
+        #zed_launch,
 
         Node(
             package='rosbridge_server',
@@ -98,9 +117,13 @@ def generate_launch_description():
             package="bench_robot",
             executable="aruco_detector",
             output="screen",),
+        #Node(
+            #package="bench_robot",
+            #executable="zed_test_scan",
+            #output="screen",),
         Node(
             package="bench_robot",
-            executable="zed_test_scan",
+            executable="astra_top_scan",
             output="screen",),
         Node(
             package="bench_robot",
