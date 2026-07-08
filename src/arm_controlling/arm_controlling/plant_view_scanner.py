@@ -55,6 +55,7 @@ class PlantViewScanner(MoveItArmHelper):
         #-------- Services and clients ---------#
 
         self.move_pose_client = self.create_client(MoveToPose, "/arm/move_to_pose")
+        self.go_rest_client = self.create_client(Trigger, "/arm/go_rest")
         self.orbbec_capture_client = self.create_client(CaptureView,"/orbbec_test_scan/capture_view")
 
         self.create_service(Trigger, "/plant_view_scanner/pause", self.cb_pause_scan)
@@ -293,6 +294,26 @@ class PlantViewScanner(MoveItArmHelper):
     
     #------- Plant capture function ---------#
 
+    def call_arm_go_rest(self, timeout=30.0):
+        if not self.go_rest_client.wait_for_service(timeout_sec=5.0):
+            return False, "/arm/go_rest service not available"
+
+        req = Trigger.Request()
+        future = self.go_rest_client.call_async(req)
+
+        start = time.time()
+        while rclpy.ok():
+            if future.done():
+                res = future.result()
+                if res is None:
+                    return False, "No response from arm_manager"
+                return res.success, res.message
+
+            if time.time() - start > timeout:
+                return False, "Timeout waiting for arm to go rest"
+
+            time.sleep(0.05)
+
     def call_orbbec_capture(self, run_dir, plant_id, view_label, timeout=20.0):
         if not self.orbbec_capture_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().error("/orbbec_test_scan/capture_view service not available")
@@ -426,6 +447,13 @@ class PlantViewScanner(MoveItArmHelper):
 
                 except Exception as e:
                     self.get_logger().warn(f"TF lookup failed: {e}")
+
+        self.get_logger().info("All targets processed. Sending arm to rest.")
+        success, message = self.call_arm_go_rest()
+        if success:
+            self.get_logger().info(message)
+        else:
+            self.get_logger().warn(message)
 
 def main(args=None):
     rclpy.init(args=args)

@@ -46,6 +46,10 @@ class ArucoManager(Node):
         self.goal_seen_count = 0
         self.prev_selected_id = None
         self.stop_sent = False
+        self.rest_client = None
+        self.rest_pending = False
+        self.rest_pending_action = None
+        self.rest_future = None
 
         self.stable_goal_frames = 2
         self.usb_cam_index = 0
@@ -102,6 +106,55 @@ class ArucoManager(Node):
         msg = Float32MultiArray()
         msg.data = [1.0 if visible else 0.0, float(center_error_px)]
         self.pub_align_error.publish(msg)
+
+    def _ensure_rest_client(self):
+        if self.rest_client is None:
+            self.rest_client = self.create_client(Trigger, "/arm/go_rest")
+        return self.rest_client
+
+    def request_arm_rest(self, action: str) -> bool:
+        if self.rest_pending:
+            return False
+
+        client = self._ensure_rest_client()
+        if not client.service_is_ready():
+            self.get_logger().warn("Arm rest service is not available yet")
+            return False
+
+        req = Trigger.Request()
+        self.rest_pending = True
+        self.rest_pending_action = action
+        self.rest_future = client.call_async(req)
+        self.get_logger().info(f"Requested arm to go to rest before {action}")
+        return True
+
+    def process_pending_rest(self):
+        if not self.rest_pending or self.rest_future is None:
+            return False
+
+        if not self.rest_future.done():
+            return False
+
+        action = self.rest_pending_action
+        self.rest_pending = False
+        self.rest_pending_action = None
+        self.rest_future = None
+
+        try:
+            result = self.rest_future.result()
+            if result is not None and getattr(result, "success", False):
+                self.get_logger().info(f"Arm rest completed: {getattr(result, 'message', '')}")
+            else:
+                self.get_logger().warn(f"Arm rest request failed: {getattr(result, 'message', '') if result is not None else 'no response'}")
+        except Exception as e:
+            self.get_logger().error(f"Arm rest request error: {e}")
+
+        if action == "advance":
+            self.advance_to_next_goal()
+        elif action == "finish":
+            self.pub_auto_state_cmd.publish(String(data="idle"))
+            self.get_logger().info("Full scan range plan complete; arm moved to rest")
+        return True
 
     @staticmethod
     def marker_center_x(marker_corners) -> float:
@@ -207,6 +260,8 @@ class ArucoManager(Node):
         next_index = self.scan_plan_index + 1
 
         if next_index >= len(self.scan_plan):
+            if self.request_arm_rest("finish"):
+                return
             self.pub_auto_state_cmd.publish(String(data="idle"))
             self.get_logger().info("Full scan range plan complete")
             return 
@@ -300,11 +355,16 @@ class ArucoManager(Node):
             self.stop_sent = False
             self.goal_seen_count = 0
             self.publish_stop(False)
-            self.advance_to_next_goal()
+            if not self.request_arm_rest("advance"):
+                self.advance_to_next_goal()
 
     # ---------------- timer functions ----------------
 
     def detect_tick(self):
+        if self.rest_pending:
+            self.process_pending_rest()
+            return
+
         if self.auto_state not in ("bench_tracking_f", "bench_tracking_b", "aruco_centering"):
             self.publish_align_error(False)
             return
