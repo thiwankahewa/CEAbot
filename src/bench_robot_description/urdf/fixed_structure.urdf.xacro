@@ -146,6 +146,14 @@
     <origin xyz="-0.0095 -0.0373 -0.019" rpy="0 0 -1.5708"/>
   </joint>
 
+  <xacro:include filename="$(find orbbec_description)/urdf/astra2.urdf.xacro" />
+
+  <joint name="astra2_joint" type="fixed">
+      <parent link="top_beam_link"/>
+      <child link="astra2_camera_link"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
   <link name="arm_mount_link"/>
 
   <joint name="chassis_to_arm_mount" type="fixed">
