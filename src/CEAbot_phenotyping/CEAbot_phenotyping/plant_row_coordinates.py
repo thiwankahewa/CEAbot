@@ -26,6 +26,7 @@ class PlantCoordinateNode(Node):
         self.latest_depth_msg = None
         self.latest_camera_info_msg = None
         self.latest_run_dir = None
+        self.pending_process = False
 
         self.x1 = 100
         self.y1 = 121
@@ -41,7 +42,7 @@ class PlantCoordinateNode(Node):
         self.center_window_size = 9
         self.min_depth_mm = 200.0
         self.max_depth_mm = 800.0
-        self.dilate_itr = 5
+        self.dilate_itr = 10
 
          # -------- Subscriptions and publishers --------
         self.state_sub = self.create_subscription(String,"/auto_state",self.cb_auto_state,10,)
@@ -57,31 +58,36 @@ class PlantCoordinateNode(Node):
         
     def cb_color(self, msg):
         self.latest_color_msg = msg
+        self.try_process_pending_scan()
 
     def cb_depth(self, msg):
         self.latest_depth_msg = msg
+        self.try_process_pending_scan()
 
     def cb_camera_info(self, msg):
         self.latest_camera_info_msg = msg
+        self.try_process_pending_scan()
 
     def cb_run_dir(self, msg):
         self.latest_run_dir = Path(msg.data)
+        self.try_process_pending_scan()
 
-    def cb_auto_state(self, msg: String):
-        state = msg.data.strip().lower()
-
-        if state != "plant_row_coordinates":
+    def try_process_pending_scan(self):
+        if not self.pending_process:
             return
-        
-        self.get_logger().info("Starting plant row coordinate calculation")
 
         if self.latest_color_msg is None or self.latest_depth_msg is None or self.latest_camera_info_msg is None:
-            self.get_logger().warn("Missing color/depth/camera_info. Cannot calculate plant coordinates.")
             return
 
+        self.pending_process = False
+        self.process_latest_scan()
+
+    def process_latest_scan(self):
+        self.get_logger().info("Starting plant row coordinate calculation")
+
         try:
-            color = self.bridge.imgmsg_to_cv2(self.latest_color_msg,desired_encoding="bgr8")
-            depth = self.bridge.imgmsg_to_cv2(self.latest_depth_msg,desired_encoding="passthrough").astype(np.float32)
+            color = self.bridge.imgmsg_to_cv2(self.latest_color_msg, desired_encoding="bgr8")
+            depth = self.bridge.imgmsg_to_cv2(self.latest_depth_msg, desired_encoding="passthrough").astype(np.float32)
 
         except Exception as e:
             self.get_logger().error(f"Image conversion failed: {e}")
@@ -102,7 +108,17 @@ class PlantCoordinateNode(Node):
         else:
             output_dir = self.latest_run_dir
 
-        self.process_live_frame(color,depth,fx,fy,cx_intr,cy_intr,frame_id,output_dir)
+        self.process_live_frame(color, depth, fx, fy, cx_intr, cy_intr, frame_id, output_dir)
+
+    def cb_auto_state(self, msg: String):
+        state = msg.data.strip().lower()
+
+        if state != "plant_row_coordinates":
+            return
+
+        self.pending_process = True
+        self.get_logger().info("Waiting for latest color/depth/camera_info before processing")
+        self.try_process_pending_scan()
 
    # -------- Helper functions --------
 
