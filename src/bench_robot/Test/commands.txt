@@ -42,6 +42,9 @@ git pull --rebase origin main
 
  sudo chown -R thiwa:thiwa /home/thiwa/scan_data_zed
 
+ #plant_segmentation tuner
+python3 plant_segmentation_tuner.py /path/to/scan_folder
+
 
 python3 ~/CEAbot/src/bench_robot/Test/publish_zed_top_scan_folder.py /home/thiwa/scan_data_zed/b1_r15_20260608_133520 --trigger
 ros2 topic pub /auto_state std_msgs/msg/String "{data: individual_plant_scan}" --once
@@ -55,3 +58,4 @@ python3 ~/CEAbot/src/CEAbot_phenotyping/test/reconstruct_plant_views.py \
 
 
 
+sudo ip addr add 192.168.1.2/24 dev enP1p1s0
