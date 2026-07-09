@@ -45,17 +45,17 @@ def generate_launch_description():
     }.items()
     )
 
-    astra2_launch = IncludeLaunchDescription(
+    gemini335_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([
                 FindPackageShare("orbbec_camera"),
                 "launch",
-                "astra2.launch.py"
+                "gemini_330_series.launch.py"
             ])
         ),
         launch_arguments={
-            "camera_name": "astra2",
-            "serial_number": "AARK7530058",
+            "camera_name": "gemini335",
+            #"serial_number": "AARK7530058",
             "enable_colored_point_cloud": "false",
             "enable_point_cloud": "false",
             "depth_registration": "true",
@@ -67,7 +67,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         #orbbec_launch,
-        astra2_launch,
+        gemini335_launch,
         #zed_launch,
 
         Node(
@@ -124,12 +124,12 @@ def generate_launch_description():
             #output="screen",),
         Node(
             package="bench_robot",
-            executable="astra_top_scan",
+            executable="top_scan",
             output="screen",),
-        Node(
-            package="bench_robot",
-            executable="orbbec_test_scan",
-            output="screen",),
+        # Node(
+        #     package="bench_robot",
+        #     executable="orbbec_test_scan",
+        #     output="screen",),
         Node(
             package="CEAbot_phenotyping",
             executable="plant_row_coordinates",

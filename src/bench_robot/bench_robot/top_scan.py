@@ -17,9 +17,9 @@ from std_msgs.msg import Int16MultiArray, String
 from std_srvs.srv import SetBool
 
 
-class AstraTopScanNode(Node):
+class TopScanNode(Node):
     def __init__(self):
-        super().__init__("astra_top_scan")
+        super().__init__("top_scan")
 
         self.bridge = CvBridge()
 
@@ -28,11 +28,11 @@ class AstraTopScanNode(Node):
         self.capture_timeout = 5.0
         self.fresh_wait_time = 2.0
 
-        self.color_topic = "/astra2/color/image_raw"
-        self.depth_topic = "/astra2/depth/image_raw"
-        self.rgb_camera_info_topic = "/astra2/color/camera_info"
-        self.depth_camera_info_topic = "/astra2/depth/camera_info"
-        self.streams_enable_service = "/astra2/set_streams_enable"
+        self.color_topic = "/gemini335/color/image_raw"
+        self.depth_topic = "/gemini335/depth/image_raw"
+        self.rgb_camera_info_topic = "/gemini335/color/camera_info"
+        self.depth_camera_info_topic = "/gemini335/depth/camera_info"
+        self.streams_enable_service = "/gemini335/set_streams_enable"
 
         self.top_scan_color_topic = "/top_scan/color"
         self.top_scan_depth_topic = "/top_scan/depth"
@@ -105,7 +105,7 @@ class AstraTopScanNode(Node):
         self.scan_active = True
         self.clear_latest_capture_data()
 
-        self.get_logger().info("top_view_scan accepted. Enabling Astra 2 streams...")
+        self.get_logger().info("top_view_scan accepted. Enabling Gemini 335 streams...")
 
         if not self.streams_cli.service_is_ready():
             self.get_logger().info(f"Waiting for {self.streams_enable_service} service...")
@@ -138,7 +138,7 @@ class AstraTopScanNode(Node):
         self.camera_ready = False
         self.zero_depth_warned = False
 
-        self.get_logger().info("Astra 2 streams enabled. Waiting for synchronized color/depth and camera_info...")
+        self.get_logger().info("Gemini 335 streams enabled. Waiting for synchronized color/depth and camera_info...")
 
         if self.capture_timer is not None:
             self.capture_timer.cancel()
@@ -157,7 +157,7 @@ class AstraTopScanNode(Node):
             return
 
         self.streams_enabled = False
-        self.get_logger().info(f"Astra 2 streams disabled: {resp.message}")
+        self.get_logger().info(f"Gemini 335 streams disabled: {resp.message}")
 
     def clear_latest_capture_data(self):
         self.latest_color_msg = None
@@ -179,14 +179,14 @@ class AstraTopScanNode(Node):
         ready_frames = 3
         if not self.camera_ready and self.synced_count >= ready_frames:
             self.camera_ready = True
-            self.get_logger().info("Astra 2 is ready. Synchronized frames and camera_info are available.")
+            self.get_logger().info("Gemini 335 is ready. Synchronized frames and camera_info are available.")
 
     def try_capture(self):
         now = self.get_clock().now()
         elapsed = (now - self.scan_request_time).nanoseconds / 1e9
 
         if elapsed > self.capture_timeout:
-            self.get_logger().error("Capture timeout. Missing fresh synchronized Astra 2 images or camera_info.")
+            self.get_logger().error("Capture timeout. Missing fresh synchronized Gemini 335 images or camera_info.")
             self.finish_scan(success=False)
             return
 
@@ -229,13 +229,13 @@ class AstraTopScanNode(Node):
         self.pub_scan_color.publish(self.latest_color_msg)
         self.pub_scan_depth.publish(self.latest_depth_msg)
         self.pub_scan_camera_info.publish(self.latest_rgb_info_msg)
-        self.get_logger().info("Fresh synchronized Astra 2 frame and camera_info captured. Saving...")
+        self.get_logger().info("Fresh synchronized Gemini 335 frame and camera_info captured. Saving...")
         self.save_capture()
 
         run_msg = String()
         run_msg.data = self.latest_run_dir
         self.pub_scan_run_dir.publish(run_msg)
-        self.get_logger().info("Astra 2 capture saved successfully.")
+        self.get_logger().info("Gemini 335 capture saved successfully.")
         self.finish_scan(success=True)
 
     def finish_scan(self, success: bool):
@@ -276,7 +276,7 @@ class AstraTopScanNode(Node):
         np.save(depth_npy_path, self.latest_depth)
 
         metadata = {
-            "camera": "Orbbec Astra 2",
+            "camera": "Orbbec Gemini 335",
             "timestamp": stamp,
             "location": location_str,
             "frames": {
@@ -347,7 +347,7 @@ class AstraTopScanNode(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = AstraTopScanNode()
+    node = TopScanNode()
 
     try:
         rclpy.spin(node)

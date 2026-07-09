@@ -24,7 +24,7 @@ class PlantViewScanner(MoveItArmHelper):
         #--------- States and variables ---------#
         self.latest_targets = []
         self.latest_run_dir = None
-        self.base_frame = "zed2i_left_camera_frame_optical"
+        self.base_frame = "gemini335_color_optical_frame"
         self.ee_link = "camera_color_optical_frame"
 
         self.declare_parameter("z_offset", 0.3)              # meters above target

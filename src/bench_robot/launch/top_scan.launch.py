@@ -7,16 +7,16 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
-    astra2_launch = IncludeLaunchDescription(
+    gemini335_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             PathJoinSubstitution([
                 FindPackageShare("orbbec_camera"),
                 "launch",
-                "astra2.launch.py",
+                "gemini_330_series.launch.py",
             ])
         ),
         launch_arguments={
-            "camera_name": "astra2",
+            "camera_name": "gemini335",
             "enable_point_cloud": "false",
             "enable_colored_point_cloud": "false",
             "depth_registration": "true",
@@ -25,13 +25,13 @@ def generate_launch_description():
         }.items(),
     )
 
-    astra_top_scan_node = Node(
+    top_scan_node = Node(
         package="bench_robot",
-        executable="astra_top_scan",
+        executable="top_scan",
         output="screen",
     )
 
     return LaunchDescription([
-        astra2_launch,
-        astra_top_scan_node,
+        gemini335_launch,
+        top_scan_node,
     ])
