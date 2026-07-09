@@ -28,21 +28,20 @@ class PlantCoordinateNode(Node):
         self.latest_run_dir = None
         self.pending_process = False
 
-        self.x1 = 100
-        self.y1 = 121
-        self.x2 = 2000
-        self.y2 = 723
+        self.x1 = 110
+        self.y1 = 66
+        self.x2 = 1260
+        self.y2 = 335
 
         self.lower_green = np.array([22, 27, 0])
         self.upper_green = np.array([95, 255, 255])
-        self.min_area = 7500
-        self.kernel_size = 2
-        self.depth_scale = 1000
+        self.min_area = 3000
+        self.kernel_size = 6
         self.top_percentile = 5.0
         self.center_window_size = 9
-        self.min_depth_mm = 200.0
-        self.max_depth_mm = 800.0
-        self.dilate_itr = 10
+        self.min_depth_mm = 0.0
+        self.max_depth_mm = 1500.0
+        self.dilate_itr = 0
 
          # -------- Subscriptions and publishers --------
         self.state_sub = self.create_subscription(String,"/auto_state",self.cb_auto_state,10,)
@@ -87,7 +86,7 @@ class PlantCoordinateNode(Node):
 
         try:
             color = self.bridge.imgmsg_to_cv2(self.latest_color_msg, desired_encoding="bgr8")
-            depth = self.bridge.imgmsg_to_cv2(self.latest_depth_msg, desired_encoding="passthrough").astype(np.float32)
+            depth = self.bridge.imgmsg_to_cv2(self.latest_depth_msg, desired_encoding="passthrough")
 
         except Exception as e:
             self.get_logger().error(f"Image conversion failed: {e}")
@@ -207,6 +206,11 @@ class PlantCoordinateNode(Node):
 
         return int(radius_mm)
 
+    def depth_to_mm(self, depth):
+        if np.issubdtype(depth.dtype, np.integer):
+            return depth.astype(np.float32)
+        return depth.astype(np.float32) * 1000.0
+
     def save_plant_results_to_metadata(self, output_dir, results):
         if output_dir is None:
             self.get_logger().warn("No run directory received. Plant metadata not saved.")
@@ -262,8 +266,7 @@ class PlantCoordinateNode(Node):
             return
 
         crop = img[y1_clamped:y2_clamped, x1_clamped:x2_clamped]
-        depth = depth.astype(np.float32)
-        depth = depth * self.depth_scale
+        depth = self.depth_to_mm(depth)
         depth_crop = depth[y1_clamped:y2_clamped, x1_clamped:x2_clamped]
 
         hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)

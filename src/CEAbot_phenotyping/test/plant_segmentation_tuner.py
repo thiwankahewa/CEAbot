@@ -55,6 +55,12 @@ def build_depth_mask(depth_crop: np.ndarray, min_depth_mm: float, max_depth_mm: 
     return depth_mask.astype(np.uint8) * 255
 
 
+def depth_to_mm(depth: np.ndarray):
+    if np.issubdtype(depth.dtype, np.integer):
+        return depth.astype(np.float32)
+    return depth.astype(np.float32) * 1000.0
+
+
 # Global dictionary holding our custom slider configurations and current values
 PARAMS = {
     "Lower H":    {"val": 20,   "min": 0, "max": 179},
@@ -118,9 +124,7 @@ def main():
     color, depth, metadata = load_scan_folder(folder)
     img_h, img_w = color.shape[:2]
 
-    if depth.dtype != np.float32 and depth.dtype != np.float64:
-        depth = depth.astype(np.float32)
-    depth_mm = depth * 1000.0
+    depth_mm = depth_to_mm(depth)
 
     # Initialize two clean Windows
     control_win = "Control Panel (Click & Drag)"
