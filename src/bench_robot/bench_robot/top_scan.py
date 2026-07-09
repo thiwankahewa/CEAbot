@@ -44,7 +44,6 @@ class TopScanNode(Node):
         self.latest_color = None
         self.latest_depth = None
         self.latest_rgb_info_msg = None
-        self.latest_depth_stats = None
 
         self.synced_count = 0
         self.camera_ready = False
@@ -52,7 +51,6 @@ class TopScanNode(Node):
         self.streams_enabled = False
         self.scan_request_time = None
         self.capture_timer = None
-        self.zero_depth_warned = False
 
         self.declare_parameter("bench_height", 0.75)
         self.declare_parameter("pot_height", 0.15)
@@ -165,7 +163,6 @@ class TopScanNode(Node):
         self.latest_color = None
         self.latest_depth = None
         self.latest_rgb_info_msg = None
-        self.latest_depth_stats = None
         self.synced_count = 0
         self.camera_ready = False
 
@@ -179,7 +176,7 @@ class TopScanNode(Node):
         ready_frames = 3
         if not self.camera_ready and self.synced_count >= ready_frames:
             self.camera_ready = True
-            self.get_logger().info("Gemini 335 is ready. Synchronized frames and camera_info are available.")
+
 
     def try_capture(self):
         now = self.get_clock().now()
@@ -207,29 +204,9 @@ class TopScanNode(Node):
             self.finish_scan(success=False)
             return
 
-        self.latest_depth_stats = self.build_depth_stats(self.latest_depth)
-        self.get_logger().info(
-            "Depth frame stats: "
-            f"encoding={self.latest_depth_msg.encoding}, "
-            f"dtype={self.latest_depth.dtype}, "
-            f"shape={self.latest_depth.shape}, "
-            f"nonzero={self.latest_depth_stats['nonzero_pixels']}/{self.latest_depth_stats['total_pixels']}, "
-            f"min={self.latest_depth_stats['min']}, "
-            f"max={self.latest_depth_stats['max']}"
-        )
-
-        if self.latest_depth_stats["positive_pixels"] == 0:
-            if not self.zero_depth_warned:
-                self.get_logger().warn(
-                    "Depth frame has no positive depth values yet. Waiting for a valid depth frame..."
-                )
-                self.zero_depth_warned = True
-            return
-
         self.pub_scan_color.publish(self.latest_color_msg)
         self.pub_scan_depth.publish(self.latest_depth_msg)
         self.pub_scan_camera_info.publish(self.latest_rgb_info_msg)
-        self.get_logger().info("Fresh synchronized Gemini 335 frame and camera_info captured. Saving...")
         self.save_capture()
 
         run_msg = String()
@@ -283,11 +260,6 @@ class TopScanNode(Node):
                 "color_frame_id": self.latest_color_msg.header.frame_id,
                 "depth_frame_id": self.latest_depth_msg.header.frame_id,
             },
-            "images": {
-                "color_encoding": self.latest_color_msg.encoding,
-                "depth_encoding": self.latest_depth_msg.encoding,
-                "depth_stats": self.latest_depth_stats,
-            },
             "camera_info": {"rgb": self.build_camera_info_dict(self.latest_rgb_info_msg),},
         }
 
@@ -320,28 +292,6 @@ class TopScanNode(Node):
                 "width": int(msg.roi.width),
                 "do_rectify": bool(msg.roi.do_rectify),
             },
-        }
-
-    def build_depth_stats(self, depth):
-        finite = depth[np.isfinite(depth)]
-
-        if finite.size == 0:
-            return {
-                "total_pixels": int(depth.size),
-                "finite_pixels": 0,
-                "nonzero_pixels": 0,
-                "positive_pixels": 0,
-                "min": None,
-                "max": None,
-            }
-
-        return {
-            "total_pixels": int(depth.size),
-            "finite_pixels": int(finite.size),
-            "nonzero_pixels": int(np.count_nonzero(finite)),
-            "positive_pixels": int(np.count_nonzero(finite > 0)),
-            "min": float(np.min(finite)),
-            "max": float(np.max(finite)),
         }
 
 

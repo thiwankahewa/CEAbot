@@ -27,7 +27,7 @@ class PlantViewScanner(MoveItArmHelper):
         self.base_frame = "gemini335_color_optical_frame"
         self.ee_link = "camera_color_optical_frame"
 
-        self.declare_parameter("z_offset", 0.3)              # meters above target
+        self.declare_parameter("z_offset", 0.2)              # meters above target
         self.declare_parameter("circle_radius_offset", 0.20)   # distance from top view to side-view circle
         self.declare_parameter("circle_height_offset", 0.1)
         self.declare_parameter("look_at_angle_offset", 0.2)
@@ -39,7 +39,6 @@ class PlantViewScanner(MoveItArmHelper):
         self.qz = 0.0
         self.qw = 1.0
 
-        self.max_plant_z = None
         self.scan_busy = False
         self.stop_scan = False
         self.scan_paused = False
@@ -383,9 +382,6 @@ class PlantViewScanner(MoveItArmHelper):
         if len(targets) == 0:
             self.get_logger().error("No plant targets received")
             return
-        
-        self.max_plant_z = max(p[2] for p in targets)
-        self.get_logger().info(f"Max plant Z: {self.max_plant_z:.4f} m")
 
         if len(targets) == 0:
             self.get_logger().error("No valid targets found in CSV")

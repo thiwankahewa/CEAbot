@@ -135,8 +135,6 @@ class ArmManager(MoveItArmHelper):
         finally:
             with self.command_lock:
                 self.command_busy = False
-            self.get_logger().info(f"Finished command: {name}")
-
 
     def check_stop_requested(self):
         with self.command_lock:

@@ -429,7 +429,6 @@ class BenchTracker(Node):
             return
 
         err = self.aruco_err
-        self.get_logger().info(f"ARUCO CENTERING: err={err:.3f}")
 
         if abs(err) <= self.aruco_center_done_norm:
             self._aruco_center_ok += 1

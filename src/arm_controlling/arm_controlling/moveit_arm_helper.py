@@ -29,7 +29,7 @@ class MoveItArmHelper(Node):
         self.moveit_cb_group = ReentrantCallbackGroup()
 
         self.planning_group = "arm"
-        self.base_frame = "zed2i_left_camera_frame_optical"
+        self.base_frame = "gemini335_color_optical_frame"
         self.ee_link = "end_effector_link"
 
         self.current_joint_state = None
@@ -39,10 +39,10 @@ class MoveItArmHelper(Node):
 
         self.declare_parameter("bench_height", 0.75)
         self.declare_parameter("pot_height", 0.15)
-        self.declare_parameter("position_tolerance", 0.02)
-        self.declare_parameter("orientation_tolerance", 0.05)
-        self.declare_parameter("velocity_scaling", 0.6)
-        self.declare_parameter("acceleration_scaling", 0.18)
+        self.declare_parameter("position_tolerance", 0.01)
+        self.declare_parameter("orientation_tolerance", 0.01)
+        self.declare_parameter("velocity_scaling", 0.3)
+        self.declare_parameter("acceleration_scaling", 0.1)
         self.declare_parameter("planning_time", 5.0)
 
         self.joint_state_sub = self.create_subscription(
