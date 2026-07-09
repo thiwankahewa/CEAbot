@@ -146,61 +146,61 @@
     <origin xyz="-0.0095 -0.0373 -0.019" rpy="0 0 -1.5708"/>
   </joint>
 
-  <joint name="astra2_joint" type="fixed">
+  <joint name="gemini335_joint" type="fixed">
       <parent link="top_beam_link"/>
-      <child link="astra2_camera_link"/>
+      <child link="gemini335_camera_link"/>
       <origin xyz="0.03 0.06 -0.09" rpy="0 1.5708 -1.5708"/>
   </joint>
 
-  <link name="astra2_camera_link">
+  <link name="gemini335_camera_link">
     <visual>
-      <origin xyz="-0.012323995999904 -0.0374999999985815 -0.0281503197112" rpy="0 0 0"/>
+      <origin xyz="-0.01587 -0.025 -0.0125" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="package://orbbec_description/meshes/astra2/base_link.STL"/>
+        <mesh filename="package://orbbec_description/meshes/gemini335_336/camera_link.STL"/>
       </geometry>
-      <material name="astra2_body">
-        <color rgba="0.82745 0.69804 0.4902 1"/>
+      <material name="gemini335_body">
+        <color rgba="1 1 1 1"/>
       </material>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
-        <mesh filename="package://orbbec_description/meshes/astra2/base_link.STL"/>
+        <mesh filename="package://orbbec_description/meshes/gemini335_336/camera_link.STL"/>
       </geometry>
     </collision>
     <inertial>
-      <origin xyz="-0.0160938085585399 -0.00100885505248632 0.0279919581775268" rpy="0 0 0"/>
-      <mass value="0.0101524380243699"/>
-      <inertia ixx="1.69184979927567E-05" ixy="-8.18066547859061E-09" ixz="-1.27426373196599E-09"
-               iyy="7.7096717121366E-07" iyz="1.08838945581987E-08" izz="1.61801971464778E-05"/>
+      <origin xyz="0.00277269933215555 -0.0000106084680351007 0.012801025085723" rpy="0 0 0"/>
+      <mass value="0.0186143499064346"/>
+      <inertia ixx="1.38922229644605E-05" ixy="-4.74617876641156E-09" ixz="1.99175628166615E-08"
+               iyy="1.70686808598814E-06" iyz="-7.18717290327325E-09" izz="1.31766831843134E-05"/>
     </inertial>
   </link>
 
-  <link name="astra2_depth_frame"/>
-  <joint name="astra2_depth_joint" type="fixed">
-    <parent link="astra2_camera_link"/>
-    <child link="astra2_depth_frame"/>
+  <link name="gemini335_depth_frame"/>
+  <joint name="gemini335_depth_joint" type="fixed">
+    <parent link="gemini335_camera_link"/>
+    <child link="gemini335_depth_frame"/>
     <origin xyz="0 0 0" rpy="0 0 0"/>
   </joint>
 
-  <link name="astra2_depth_optical_frame"/>
-  <joint name="astra2_depth_optical_joint" type="fixed">
-    <parent link="astra2_depth_frame"/>
-    <child link="astra2_depth_optical_frame"/>
+  <link name="gemini335_depth_optical_frame"/>
+  <joint name="gemini335_depth_optical_joint" type="fixed">
+    <parent link="gemini335_depth_frame"/>
+    <child link="gemini335_depth_optical_frame"/>
     <origin xyz="0 0 0" rpy="-1.5707963267949 0 -1.5707963267949"/>
   </joint>
 
-  <link name="astra2_color_frame"/>
-  <joint name="astra2_color_joint" type="fixed">
-    <parent link="astra2_depth_frame"/>
-    <child link="astra2_color_frame"/>
-    <origin xyz="0.0025420000310987234 -0.01850000023841858 0" rpy="0 0 0"/>
+  <link name="gemini335_color_frame"/>
+  <joint name="gemini335_color_joint" type="fixed">
+    <parent link="gemini335_depth_frame"/>
+    <child link="gemini335_color_frame"/>
+    <origin xyz="0.001663 -0.014005 0.000005" rpy="0 0 0"/>
   </joint>
 
-  <link name="astra2_color_optical_frame"/>
-  <joint name="astra2_color_optical_joint" type="fixed">
-    <parent link="astra2_color_frame"/>
-    <child link="astra2_color_optical_frame"/>
+  <link name="gemini335_color_optical_frame"/>
+  <joint name="gemini335_color_optical_joint" type="fixed">
+    <parent link="gemini335_color_frame"/>
+    <child link="gemini335_color_optical_frame"/>
     <origin xyz="0 0 0" rpy="-1.5707963267949 0 -1.5707963267949"/>
   </joint>
 
