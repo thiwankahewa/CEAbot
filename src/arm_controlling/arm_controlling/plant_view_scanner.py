@@ -17,6 +17,17 @@ from arm_interfaces.msg import PlantTargetArray
 from arm_interfaces.srv import CaptureView
 
 
+REST_SETTLED_JOINTS = {
+    "joint_1": -0.5,
+    "joint_2": -2.23,
+    "joint_3": 0.0521,
+    "joint_4": 1.6613,
+    "joint_5": 3.1415,
+    "joint_6": -2.09,
+    "joint_7": -0.0868,
+}
+
+
 class PlantViewScanner(MoveItArmHelper):
     def __init__(self):
         super().__init__("plant_view_scanner")
@@ -28,7 +39,7 @@ class PlantViewScanner(MoveItArmHelper):
         self.ee_link = "camera_color_optical_frame"
 
         self.declare_parameter("z_offset", 0.2)              # meters above target
-        self.declare_parameter("circle_radius_offset", 0.20)   # distance from top view to side-view circle
+        self.declare_parameter("circle_radius_offset", 0.05)   # distance from top view to side-view circle
         self.declare_parameter("circle_height_offset", 0.1)
         self.declare_parameter("look_at_angle_offset", 0.2)
         self.declare_parameter("view_count", 3)              
@@ -64,6 +75,8 @@ class PlantViewScanner(MoveItArmHelper):
         #-------- Subscriptions and publishers ---------#
         self.state_sub = self.create_subscription(String,"/auto_state",self.cb_auto_state,10)
         self.target_sub = self.create_subscription(PlantTargetArray,"/plant_row/targets",self.cb_targets,10)
+        self.pub_auto_state_cmd = self.create_publisher(String, "/auto_state_cmd", 10)
+        self.pub_top_scan_done = self.create_publisher(Bool, "/top_scan/scan_done", 10)
 
     #-------- Callbacks functions ---------#
     def _load_scanner_params(self):
@@ -313,6 +326,29 @@ class PlantViewScanner(MoveItArmHelper):
 
             time.sleep(0.05)
 
+    def wait_until_arm_rest(self, timeout=90.0, joint_tolerance=0.08):
+        start = time.time()
+
+        while rclpy.ok():
+            current = self.get_current_joint_map(timeout=1.0)
+
+            if current is not None:
+                joint_errors = [
+                    abs(self.angle_error(target, current[name]))
+                    for name, target in REST_SETTLED_JOINTS.items()
+                    if name in current
+                ]
+
+                if len(joint_errors) == len(REST_SETTLED_JOINTS) and max(joint_errors) <= joint_tolerance:
+                    self.get_logger().info("Arm reached rest joint target. Waiting for it to settle.")
+                    return self.wait_until_robot_stops(timeout=10.0)
+
+            if time.time() - start > timeout:
+                self.get_logger().warn("Timeout waiting for arm to reach rest before finishing scan")
+                return False
+
+            time.sleep(0.2)
+
     def call_orbbec_capture(self, run_dir, plant_id, view_label, timeout=20.0):
         if not self.orbbec_capture_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().error("/orbbec_test_scan/capture_view service not available")
@@ -448,6 +484,13 @@ class PlantViewScanner(MoveItArmHelper):
         success, message = self.call_arm_go_rest()
         if success:
             self.get_logger().info(message)
+            if not self.wait_until_arm_rest():
+                self.get_logger().warn("Arm did not confirm rest. Not publishing /top_scan/scan_done.")
+                return
+
+            self.pub_auto_state_cmd.publish(String(data="idle"))
+            self.pub_top_scan_done.publish(Bool(data=True))
+            self.get_logger().info("Plant row scan complete.")
         else:
             self.get_logger().warn(message)
 
