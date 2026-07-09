@@ -14,6 +14,7 @@ from rclpy.node import Node
 from rclpy.time import Time
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import Int16MultiArray, String
+from std_srvs.srv import SetBool
 
 
 class AstraTopScanNode(Node):
@@ -24,92 +25,61 @@ class AstraTopScanNode(Node):
 
         self.current_location = None
         self.latest_run_dir = None
+        self.capture_timeout = 5.0
+        self.fresh_wait_time = 2.0
 
-        self.declare_parameter("camera_model", "Orbbec Astra 2")
-        self.declare_parameter("save_dir", os.path.expanduser("~/scan_data_astra2"))
-        self.declare_parameter("fresh_wait_time", 2.0)
-        self.declare_parameter("capture_timeout", 5.0)
-        self.declare_parameter("bench_height", 0.75)
-        self.declare_parameter("pot_height", 0.15)
+        self.color_topic = "/astra2/color/image_raw"
+        self.depth_topic = "/astra2/depth/image_raw"
+        self.rgb_camera_info_topic = "/astra2/color/camera_info"
+        self.depth_camera_info_topic = "/astra2/depth/camera_info"
+        self.streams_enable_service = "/astra2/set_streams_enable"
 
-        self.declare_parameter("color_topic", "/astra2/color/image_raw")
-        self.declare_parameter("depth_topic", "/astra2/depth/image_raw")
-        self.declare_parameter("rgb_camera_info_topic", "/astra2/color/camera_info")
-        self.declare_parameter("depth_camera_info_topic", "/astra2/depth/camera_info")
-
-        # Keep the old top-scan contract so plant_row_coordinates does not change.
-        self.declare_parameter("scan_color_topic", "/zed_top_scan/color")
-        self.declare_parameter("scan_depth_topic", "/zed_top_scan/depth")
-        self.declare_parameter("scan_camera_info_topic", "/zed_top_scan/camera_info")
-        self.declare_parameter("scan_run_dir_topic", "/zed_top_scan/run_dir")
+        self.top_scan_color_topic = "/top_scan/color"
+        self.top_scan_depth_topic = "/top_scan/depth"
+        self.top_scan_camera_info_topic = "/top_scan/camera_info"
+        self.top_scan_run_dir_topic = "/top_scan/run_dir"
 
         self.latest_color_msg = None
         self.latest_depth_msg = None
         self.latest_color = None
         self.latest_depth = None
         self.latest_rgb_info_msg = None
-        self.latest_depth_info_msg = None
 
         self.synced_count = 0
         self.camera_ready = False
-
         self.scan_active = False
+        self.streams_enabled = False
         self.scan_request_time = None
         self.capture_timer = None
 
+        self.declare_parameter("bench_height", 0.75)
+        self.declare_parameter("pot_height", 0.15)
+
         self._load_params()
         self.add_on_set_parameters_callback(self.on_params)
+        self.save_dir = os.path.expanduser("~/scan_data")
         os.makedirs(self.save_dir, exist_ok=True)
 
-        self.location_sub = self.create_subscription(
-            Int16MultiArray, "/robot_location", self.cb_location, 10
-        )
-        self.state_sub = self.create_subscription(
-            String, "/auto_state", self.cb_auto_state, 10
-        )
-        self.rgb_info_sub = self.create_subscription(
-            CameraInfo, self.rgb_camera_info_topic, self.cb_rgb_camera_info, 10
-        )
-        self.depth_info_sub = self.create_subscription(
-            CameraInfo, self.depth_camera_info_topic, self.cb_depth_camera_info, 10
-        )
+        self.streams_cli = self.create_client(SetBool, self.streams_enable_service)
+
+        self.location_sub = self.create_subscription(Int16MultiArray, "/robot_location", self.cb_location, 10)
+        self.state_sub = self.create_subscription(String, "/auto_state", self.cb_auto_state, 10)
 
         self.color_sub = Subscriber(self, Image, self.color_topic)
         self.depth_sub = Subscriber(self, Image, self.depth_topic)
-        self.sync = ApproximateTimeSynchronizer(
-            [self.color_sub, self.depth_sub], queue_size=20, slop=0.5
-        )
+        self.rgb_info_sub = Subscriber(self, CameraInfo, self.rgb_camera_info_topic)
+        self.sync = ApproximateTimeSynchronizer([self.color_sub, self.depth_sub, self.rgb_info_sub], queue_size=20, slop=0.5)
         self.sync.registerCallback(self.synced_callback)
 
         self.pub_auto_state_cmd = self.create_publisher(String, "/auto_state_cmd", 10)
-        self.pub_scan_color = self.create_publisher(Image, self.scan_color_topic, 10)
-        self.pub_scan_depth = self.create_publisher(Image, self.scan_depth_topic, 10)
-        self.pub_scan_camera_info = self.create_publisher(
-            CameraInfo, self.scan_camera_info_topic, 10
-        )
-        self.pub_scan_run_dir = self.create_publisher(String, self.scan_run_dir_topic, 10)
-
-        self.get_logger().info(
-            "Astra 2 top scan node started. "
-            f"color={self.color_topic}, depth={self.depth_topic}, "
-            f"camera_info={self.rgb_camera_info_topic}"
-        )
+        self.pub_scan_color = self.create_publisher(Image, self.top_scan_color_topic, 10)
+        self.pub_scan_depth = self.create_publisher(Image, self.top_scan_depth_topic, 10)
+        self.pub_scan_camera_info = self.create_publisher(CameraInfo, self.top_scan_camera_info_topic, 10)
+        self.pub_scan_run_dir = self.create_publisher(String, self.top_scan_run_dir_topic, 10)
 
     def _load_params(self):
-        self.camera_model = self.get_parameter("camera_model").value
-        self.save_dir = os.path.expanduser(self.get_parameter("save_dir").value)
         self.bench_height = self.get_parameter("bench_height").value
         self.pot_height = self.get_parameter("pot_height").value
-
-        self.color_topic = self.get_parameter("color_topic").value
-        self.depth_topic = self.get_parameter("depth_topic").value
-        self.rgb_camera_info_topic = self.get_parameter("rgb_camera_info_topic").value
-        self.depth_camera_info_topic = self.get_parameter("depth_camera_info_topic").value
-
-        self.scan_color_topic = self.get_parameter("scan_color_topic").value
-        self.scan_depth_topic = self.get_parameter("scan_depth_topic").value
-        self.scan_camera_info_topic = self.get_parameter("scan_camera_info_topic").value
-        self.scan_run_dir_topic = self.get_parameter("scan_run_dir_topic").value
 
     def on_params(self, params):
         self._load_params()
@@ -119,12 +89,6 @@ class AstraTopScanNode(Node):
     def cb_location(self, msg: Int16MultiArray):
         if len(msg.data) >= 5:
             self.current_location = msg.data[1], msg.data[2]
-
-    def cb_rgb_camera_info(self, msg: CameraInfo):
-        self.latest_rgb_info_msg = msg
-
-    def cb_depth_camera_info(self, msg: CameraInfo):
-        self.latest_depth_info_msg = msg
 
     def cb_auto_state(self, msg: String):
         state = msg.data.strip().lower()
@@ -136,67 +100,104 @@ class AstraTopScanNode(Node):
             self.get_logger().warn("Scan already active. Ignoring duplicate scan_start.")
             return
 
-        if not self.camera_ready:
-            self.get_logger().warn(
-                "top_view_scan received, but Astra 2 is not ready yet. Waiting for frames..."
-            )
-
         self.scan_active = True
-        self.scan_request_time = self.get_clock().now()
+        self.clear_latest_capture_data()
 
-        self.get_logger().info(
-            "top_view_scan accepted. Waiting for fresh synchronized Astra 2 frame..."
-        )
+        self.get_logger().info("top_view_scan accepted. Enabling Astra 2 streams...")
+
+        if not self.streams_cli.service_is_ready():
+            self.get_logger().info(f"Waiting for {self.streams_enable_service} service...")
+            if not self.streams_cli.wait_for_service(timeout_sec=2.0):
+                self.get_logger().error(f"{self.streams_enable_service} service is not available.")
+                self.finish_scan(success=False)
+                return
+
+        req = SetBool.Request()
+        req.data = True
+        future = self.streams_cli.call_async(req)
+        future.add_done_callback(self.on_streams_enabled)
+
+    def on_streams_enabled(self, future):
+        try:
+            resp = future.result()
+        except Exception as e:
+            self.get_logger().error(f"set_streams_enable on failed: {e}")
+            self.finish_scan(success=False)
+            return
+
+        if not resp.success:
+            self.get_logger().error(f"set_streams_enable on failed: {resp.message}")
+            self.finish_scan(success=False)
+            return
+
+        self.streams_enabled = True
+        self.scan_request_time = self.get_clock().now()
+        self.synced_count = 0
+        self.camera_ready = False
+
+        self.get_logger().info("Astra 2 streams enabled. Waiting for synchronized color/depth and camera_info...")
 
         if self.capture_timer is not None:
             self.capture_timer.cancel()
 
         self.capture_timer = self.create_timer(0.2, self.try_capture)
 
-    def synced_callback(self, color_msg: Image, depth_msg: Image):
+    def on_streams_disabled(self, future):
+        try:
+            resp = future.result()
+        except Exception as e:
+            self.get_logger().error(f"set_streams_enable off failed: {e}")
+            return
+
+        if not resp.success:
+            self.get_logger().error(f"set_streams_enable off failed: {resp.message}")
+            return
+
+        self.streams_enabled = False
+        self.get_logger().info(f"Astra 2 streams disabled: {resp.message}")
+
+    def clear_latest_capture_data(self):
+        self.latest_color_msg = None
+        self.latest_depth_msg = None
+        self.latest_color = None
+        self.latest_depth = None
+        self.latest_rgb_info_msg = None
+        self.synced_count = 0
+        self.camera_ready = False
+
+    def synced_callback(self, color_msg: Image, depth_msg: Image, rgb_info_msg: CameraInfo):
         self.latest_color_msg = color_msg
         self.latest_depth_msg = depth_msg
+        self.latest_rgb_info_msg = rgb_info_msg
 
         self.synced_count += 1
 
         ready_frames = 3
         if not self.camera_ready and self.synced_count >= ready_frames:
             self.camera_ready = True
-            self.get_logger().info(
-                "Astra 2 is ready. Synchronized frames are available."
-            )
+            self.get_logger().info("Astra 2 is ready. Synchronized frames and camera_info are available.")
 
     def try_capture(self):
         now = self.get_clock().now()
-
-        timeout = float(self.get_parameter("capture_timeout").value)
         elapsed = (now - self.scan_request_time).nanoseconds / 1e9
 
-        if elapsed > timeout:
-            self.get_logger().error(
-                "Capture timeout. No fresh synchronized Astra 2 frame received."
-            )
+        if elapsed > self.capture_timeout:
+            self.get_logger().error("Capture timeout. Missing fresh synchronized Astra 2 images or camera_info.")
             self.finish_scan(success=False)
             return
 
-        if self.latest_color_msg is None or self.latest_depth_msg is None:
+        if self.latest_color_msg is None or self.latest_depth_msg is None or self.latest_rgb_info_msg is None:
             return
 
         latest_stamp = Time.from_msg(self.latest_color_msg.header.stamp)
         request_age = (latest_stamp - self.scan_request_time).nanoseconds / 1e9
 
-        fresh_wait_time = float(self.get_parameter("fresh_wait_time").value)
-
-        if request_age < fresh_wait_time:
+        if request_age < self.fresh_wait_time:
             return
 
         try:
-            self.latest_color = self.bridge.imgmsg_to_cv2(
-                self.latest_color_msg, desired_encoding="bgr8"
-            )
-            self.latest_depth = self.bridge.imgmsg_to_cv2(
-                self.latest_depth_msg, desired_encoding="passthrough"
-            )
+            self.latest_color = self.bridge.imgmsg_to_cv2(self.latest_color_msg, desired_encoding="bgr8")
+            self.latest_depth = self.bridge.imgmsg_to_cv2(self.latest_depth_msg, desired_encoding="passthrough")
         except Exception as e:
             self.get_logger().error(f"Image conversion failed: {e}")
             self.finish_scan(success=False)
@@ -204,19 +205,13 @@ class AstraTopScanNode(Node):
 
         self.pub_scan_color.publish(self.latest_color_msg)
         self.pub_scan_depth.publish(self.latest_depth_msg)
-
-        if self.latest_rgb_info_msg is not None:
-            self.pub_scan_camera_info.publish(self.latest_rgb_info_msg)
-        else:
-            self.get_logger().warn("No RGB camera_info received yet; publishing images only.")
-
-        self.get_logger().info("Fresh synchronized Astra 2 frame captured. Saving...")
+        self.pub_scan_camera_info.publish(self.latest_rgb_info_msg)
+        self.get_logger().info("Fresh synchronized Astra 2 frame and camera_info captured. Saving...")
         self.save_capture()
 
         run_msg = String()
         run_msg.data = self.latest_run_dir
         self.pub_scan_run_dir.publish(run_msg)
-
         self.get_logger().info("Astra 2 capture saved successfully.")
         self.finish_scan(success=True)
 
@@ -227,6 +222,12 @@ class AstraTopScanNode(Node):
         if self.capture_timer is not None:
             self.capture_timer.cancel()
             self.capture_timer = None
+
+        if self.streams_enabled:
+            req = SetBool.Request()
+            req.data = False
+            future = self.streams_cli.call_async(req)
+            future.add_done_callback(self.on_streams_disabled)
 
         msg = String()
         msg.data = "plant_row_coordinates" if success else "idle"
@@ -248,34 +249,18 @@ class AstraTopScanNode(Node):
         color_path = os.path.join(run_dir, "color.png")
         depth_npy_path = os.path.join(run_dir, "depth.npy")
         meta_path = os.path.join(run_dir, "metadata.yaml")
-
         cv2.imwrite(color_path, self.latest_color)
         np.save(depth_npy_path, self.latest_depth)
 
         metadata = {
-            "camera": self.camera_model,
+            "camera": "Orbbec Astra 2",
             "timestamp": stamp,
             "location": location_str,
-            "topics": {
-                "color": self.color_topic,
-                "depth": self.depth_topic,
-                "rgb_camera_info": self.rgb_camera_info_topic,
-                "depth_camera_info": self.depth_camera_info_topic,
-            },
             "frames": {
                 "color_frame_id": self.latest_color_msg.header.frame_id,
                 "depth_frame_id": self.latest_depth_msg.header.frame_id,
             },
-            "images": {
-                "color_encoding": self.latest_color_msg.encoding,
-                "depth_encoding": self.latest_depth_msg.encoding,
-                "depth_dtype": str(self.latest_depth.dtype),
-                "depth_shape": [int(v) for v in self.latest_depth.shape],
-            },
-            "camera_info": {
-                "rgb": self.build_camera_info_dict(self.latest_rgb_info_msg),
-                "depth": self.build_camera_info_dict(self.latest_depth_info_msg),
-            },
+            "camera_info": {"rgb": self.build_camera_info_dict(self.latest_rgb_info_msg),},
         }
 
         with open(meta_path, "w") as f:

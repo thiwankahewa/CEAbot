@@ -46,10 +46,10 @@ class PlantCoordinateNode(Node):
 
          # -------- Subscriptions and publishers --------
         self.state_sub = self.create_subscription(String,"/auto_state",self.cb_auto_state,10,)
-        self.color_sub = self.create_subscription(Image,"/zed_top_scan/color",self.cb_color,10)
-        self.depth_sub = self.create_subscription(Image,"/zed_top_scan/depth",self.cb_depth,10)
-        self.camera_info_sub = self.create_subscription(CameraInfo,"/zed_top_scan/camera_info",self.cb_camera_info,10)
-        self.run_dir_sub = self.create_subscription(String,"/zed_top_scan/run_dir",self.cb_run_dir,10)
+        self.color_sub = self.create_subscription(Image,"/top_scan/color",self.cb_color,10)
+        self.depth_sub = self.create_subscription(Image,"/top_scan/depth",self.cb_depth,10)
+        self.camera_info_sub = self.create_subscription(CameraInfo,"/top_scan/camera_info",self.cb_camera_info,10)
+        self.run_dir_sub = self.create_subscription(String,"/top_scan/run_dir",self.cb_run_dir,10)
 
         self.pub_auto_state_cmd = self.create_publisher(String, '/auto_state_cmd', 10)
         self.target_pub = self.create_publisher(PlantTargetArray,"/plant_row/targets",10)
