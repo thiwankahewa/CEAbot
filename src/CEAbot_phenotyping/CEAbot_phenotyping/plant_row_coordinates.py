@@ -28,20 +28,20 @@ class PlantCoordinateNode(Node):
         self.latest_run_dir = None
         self.pending_process = False
 
-        self.x1 = 110
-        self.y1 = 66
-        self.x2 = 1260
-        self.y2 = 335
+        self.x1 = 176
+        self.y1 = 379
+        self.x2 = 1124
+        self.y2 = 631
 
         self.lower_green = np.array([22, 27, 0])
         self.upper_green = np.array([95, 255, 255])
         self.min_area = 3000
-        self.kernel_size = 6
+        self.kernel_size = 4
         self.top_percentile = 5.0
         self.center_window_size = 9
-        self.min_depth_mm = 0.0
-        self.max_depth_mm = 1500.0
-        self.dilate_itr = 0
+        self.min_depth_mm = 150.0
+        self.max_depth_mm = 900.0
+        self.dilate_itr = 2
 
          # -------- Subscriptions and publishers --------
         self.state_sub = self.create_subscription(String,"/auto_state",self.cb_auto_state,10,)
