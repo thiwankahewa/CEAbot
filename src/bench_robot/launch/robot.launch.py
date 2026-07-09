@@ -55,6 +55,7 @@ def generate_launch_description():
         ),
         launch_arguments={
             "camera_name": "astra2",
+            "serial_number": "AARK7530058",
             "enable_colored_point_cloud": "false",
             "enable_point_cloud": "false",
             "depth_registration": "true",
@@ -65,7 +66,7 @@ def generate_launch_description():
 
 
     return LaunchDescription([
-        orbbec_launch,
+        #orbbec_launch,
         astra2_launch,
         #zed_launch,
 
@@ -136,6 +137,15 @@ def generate_launch_description():
         Node(
             package="bench_robot",
             executable="bench_changer",
+            output="screen",),
+        Node(
+            package="bench_robot",
+            executable="system_stats_publisher",
+            name="system_stats_publisher",
+            parameters=[{
+                "topic": "/system_stats",
+                "interval_ms": 2000,
+            }],
             output="screen",)
         
     ])

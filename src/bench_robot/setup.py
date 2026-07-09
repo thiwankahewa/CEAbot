@@ -41,6 +41,7 @@ setup(
             'astra_top_scan = bench_robot.astra_top_scan:main',
             'zed_test_scan = bench_robot.zed_test_scan:main',
             'bench_changer = bench_robot.bench_changer:main',
+            'system_stats_publisher = bench_robot.system_stats_publisher:main',
         ],
     },
 )
