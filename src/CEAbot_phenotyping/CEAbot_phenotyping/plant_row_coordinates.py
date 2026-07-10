@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 
-import time
+from pathlib import Path
+
 import cv2
 import numpy as np
-from pathlib import Path
 import yaml
 
 import rclpy
@@ -11,7 +11,6 @@ from rclpy.node import Node
 from std_msgs.msg import String
 from sensor_msgs.msg import Image, CameraInfo
 from cv_bridge import CvBridge
-
 from arm_interfaces.msg import PlantTarget, PlantTargetArray
 
 
@@ -19,7 +18,6 @@ class PlantCoordinateNode(Node):
     def __init__(self):
         super().__init__("plant_row_coordinate_node")
 
-         # -------- States and variables --------
         self.bridge = CvBridge()
 
         self.latest_color_msg = None
@@ -75,7 +73,12 @@ class PlantCoordinateNode(Node):
         if not self.pending_process:
             return
 
-        if self.latest_color_msg is None or self.latest_depth_msg is None or self.latest_camera_info_msg is None:
+        required_messages = (
+            self.latest_color_msg,
+            self.latest_depth_msg,
+            self.latest_camera_info_msg,
+        )
+        if any(message is None for message in required_messages):
             return
 
         self.pending_process = False
@@ -94,20 +97,17 @@ class PlantCoordinateNode(Node):
 
         camera_info = self.latest_camera_info_msg
 
-        K = camera_info.k
-        fx = float(K[0])
-        fy = float(K[4])
-        cx_intr = float(K[2])
-        cy_intr = float(K[5])
-        frame_id = camera_info.header.frame_id
+        intrinsics = camera_info.k
+        fx = float(intrinsics[0])
+        fy = float(intrinsics[4])
+        cx_intr = float(intrinsics[2])
+        cy_intr = float(intrinsics[5])
 
-        if self.latest_run_dir is None:
+        output_dir = self.latest_run_dir
+        if output_dir is None:
             self.get_logger().warn("No run directory received. Saving outputs disabled.")
-            output_dir = None
-        else:
-            output_dir = self.latest_run_dir
 
-        self.process_live_frame(color, depth, fx, fy, cx_intr, cy_intr, frame_id, output_dir)
+        self.process_live_frame(color, depth, fx, fy, cx_intr, cy_intr, output_dir)
 
     def cb_auto_state(self, msg: String):
         state = msg.data.strip().lower()
@@ -119,16 +119,14 @@ class PlantCoordinateNode(Node):
         self.get_logger().info("Waiting for latest color/depth/camera_info before processing")
         self.try_process_pending_scan()
 
-   # -------- Helper functions --------
+    @staticmethod
+    def pixel_depth_to_3d(u, v, z, fx, fy, cx, cy):
+        x = (u - cx) * z / fx
+        y = (v - cy) * z / fy
+        return round(x, 2), round(y, 2), round(z, 2)
 
-    def pixel_depth_to_3d(self, u, v, z, fx, fy, cx, cy):
-        X = (u - cx) * z / fx
-        Y = (v - cy) * z / fy
-        Z = z
-
-        return round(X, 2), round(Y, 2), round(Z, 2)
-
-    def get_depth_median_around_pixel(self, depth, u, v, window_size):
+    @staticmethod
+    def get_depth_median_around_pixel(depth, u, v, window_size):
         half = window_size // 2
         h, w = depth.shape[:2]
 
@@ -139,10 +137,9 @@ class PlantCoordinateNode(Node):
 
         region = depth[v1:v2, u1:u2]
 
-        valid = region[np.isfinite(region)]
-        valid = valid[valid > 0]
+        valid = region[np.isfinite(region) & (region > 0)]
 
-        if len(valid) == 0:
+        if valid.size == 0:
             return None
 
         return float(np.median(valid))
@@ -164,25 +161,18 @@ class PlantCoordinateNode(Node):
 
         plant_depth_values = depth_crop[contour_mask_crop > 0]
 
-        valid_depth = plant_depth_values[np.isfinite(plant_depth_values)]
-        valid_depth = valid_depth[valid_depth > 0]
+        valid_depth = plant_depth_values[np.isfinite(plant_depth_values) & (plant_depth_values > 0)]
 
-        if len(valid_depth) == 0:
+        if valid_depth.size == 0:
             return None
 
         top_threshold = np.percentile(valid_depth, self.top_percentile)
 
-        top_mask_crop = np.zeros_like(contour_mask_crop)
-        top_mask_crop[
-            (contour_mask_crop > 0)
-            & (depth_crop > 0)
-            & np.isfinite(depth_crop)
-            & (depth_crop <= top_threshold)
-        ] = 255
+        top_mask_crop = ((contour_mask_crop > 0) & (depth_crop > 0) & np.isfinite(depth_crop) & (depth_crop <= top_threshold))
 
-        ys, xs = np.where(top_mask_crop > 0)
+        ys, xs = np.where(top_mask_crop)
 
-        if len(xs) == 0:
+        if xs.size == 0:
             return None
 
         top_u_crop = int(np.mean(xs))
@@ -194,7 +184,8 @@ class PlantCoordinateNode(Node):
 
         return top_u_full, top_v_full, top_depth, top_u_crop, top_v_crop
 
-    def calculate_contour_radius_mm(self, depth_mm, area, fx, fy):
+    @staticmethod
+    def calculate_contour_radius_mm(depth_mm, area, fx, fy):
         if depth_mm is None or depth_mm <= 0:
             return None
 
@@ -206,7 +197,8 @@ class PlantCoordinateNode(Node):
 
         return int(radius_mm)
 
-    def depth_to_mm(self, depth):
+    @staticmethod
+    def depth_to_mm(depth):
         if np.issubdtype(depth.dtype, np.integer):
             return depth.astype(np.float32)
         return depth.astype(np.float32) * 1000.0
@@ -219,17 +211,19 @@ class PlantCoordinateNode(Node):
         metadata_path = output_dir / "metadata.yaml"
 
         if metadata_path.exists():
-            with open(metadata_path, "r") as f:
+            with open(metadata_path, "r", encoding="utf-8") as f:
                 metadata = yaml.safe_load(f) or {}
         else:
             metadata = {}
 
-        metadata["plants"] = []
-
-        for row in results:
-            metadata["plants"].append({
+        metadata["plants"] = [
+            {
                 "plant_id": int(row["plant_id"]),
-                "area_px": float(row["area_px"]) if row["area_px"] is not None else None,
+                "area_px": (
+                    float(row["area_px"])
+                    if row["area_px"] is not None
+                    else None
+                ),
                 "center": {
                     "x_mm": row["center_x"],
                     "y_mm": row["center_y"],
@@ -246,15 +240,14 @@ class PlantCoordinateNode(Node):
                     "z_mm": row["target_z"],
                 },
                 "radius_mm": row["radius_mm"],
-            })
+            }
+            for row in results
+        ]
 
-        with open(metadata_path, "w") as f:
+        with open(metadata_path, "w", encoding="utf-8") as f:
             yaml.safe_dump(metadata, f, sort_keys=False)
-    
-    # -------- Main functions --------
 
-    def process_live_frame(self, img, depth, fx, fy, cx_intr, cy_intr, frame_id, output_dir=None):
-
+    def process_live_frame(self, img, depth, fx, fy, cx_intr, cy_intr, output_dir=None):
         h, w = img.shape[:2]
         x1_clamped = max(0, min(self.x1, w))
         x2_clamped = max(0, min(self.x2, w))
@@ -286,17 +279,11 @@ class PlantCoordinateNode(Node):
         contours, _ = cv2.findContours(mask_clean,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
         detection = crop.copy()
 
-        valid_contours = []
-
-        for cnt in contours:
-            area = cv2.contourArea(cnt)
-
-            if area < self.min_area:
-                continue
-
-            valid_contours.append(cnt)
-
-        valid_contours = sorted(valid_contours,key=cv2.contourArea,reverse=True)
+        valid_contours = sorted(
+            (cnt for cnt in contours if cv2.contourArea(cnt) >= self.min_area),
+            key=cv2.contourArea,
+            reverse=True,
+        )
 
         plant_records = []
 
@@ -360,21 +347,26 @@ class PlantCoordinateNode(Node):
                 "radius_mm": radius_mm,
             }
 
-            plant_records.append({"sort_x": row["center_x"],"csv_row": row})
+            plant_records.append(row)
 
-        plant_records = sorted(plant_records,key=lambda r: r["sort_x"] if r["sort_x"] is not None else -999999,reverse=True)
+        plant_records.sort(
+            key=lambda row: (
+                row["center_x"] is not None,
+                row["center_x"] if row["center_x"] is not None else 0,
+            ),
+            reverse=True,
+        )
 
-        results = []
-
-        for plant_id, record in enumerate(plant_records, start=1):
-            record["csv_row"]["plant_id"] = plant_id
-            results.append(record["csv_row"])
+        for plant_id, row in enumerate(plant_records, start=1):
+            row["plant_id"] = plant_id
+        results = plant_records
 
         target_msg = PlantTargetArray()
-        target_msg.run_dir = str(output_dir)
+        target_msg.run_dir = str(output_dir) if output_dir is not None else ""
 
         for row in results:
-            if row["target_x"] is None or row["target_y"] is None or row["target_z"] is None:
+            target_values = (row["target_x"], row["target_y"], row["target_z"])
+            if any(value is None for value in target_values):
                 continue
 
             t = PlantTarget()
@@ -383,23 +375,25 @@ class PlantCoordinateNode(Node):
             t.target_y = float(row["target_y"]) / 1000.0
             t.target_z = float(row["target_z"]) / 1000.0
 
-            if row["radius_mm"] is not None:
-                t.radius_m = float(row["radius_mm"]) / 1000.0
-            else:
-                t.radius_m = 0.05
+            t.radius_m = (
+                float(row["radius_mm"]) / 1000.0
+                if row["radius_mm"] is not None
+                else 0.05
+            )
 
             target_msg.targets.append(t)
 
         self.target_pub.publish(target_msg)
-        self.get_logger().info(f"{output_dir.name}: detected {len(results)} plants")
-        time.sleep(0.5)
+        run_name = (output_dir.name if output_dir is not None else "current frame")
+        self.get_logger().info(f"{run_name}: detected {len(results)} plants")
+
+        if output_dir is not None:
+            cv2.imwrite(str(output_dir / "crop.png"), crop)
+            cv2.imwrite(str(output_dir / "segmented_result.png"), segmented)
+            cv2.imwrite(str(output_dir / "detection.png"), detection)
+            self.save_plant_results_to_metadata(output_dir, results)
+
         self.pub_auto_state_cmd.publish(String(data="individual_plant_scan"))
-
-        cv2.imwrite(str(output_dir / "crop.png"), crop)
-        cv2.imwrite(str(output_dir / "segmented_result.png"), segmented)
-        cv2.imwrite(str(output_dir / "detection.png"), detection)
-
-        self.save_plant_results_to_metadata(output_dir, results)
 
 
 def main(args=None):
