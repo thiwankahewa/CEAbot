@@ -99,7 +99,7 @@ def launch_setup(context, *args, **kwargs):
         package="controller_manager",
         executable="spawner",
         name="robot_traj_controller_spawner",
-        arguments=["joint_trajectory_controller", "--controller-manager", "/controller_manager","--ros-args", "--log-level", "warn"],
+        arguments=["joint_trajectory_controller", "--controller-manager", "/controller_manager","--ros-args", "--log-level", "warn", "--disable-stdout-logs"],
     )
 
     # --- MoveIt 2 Configuration ---
@@ -118,7 +118,7 @@ def launch_setup(context, *args, **kwargs):
     move_group_node = Node(
         package="moveit_ros_move_group",
         executable="move_group",
-        arguments=["--ros-args", "--log-level", "warn"],
+        arguments=["--ros-args", "--log-level", "warn","--disable-stdout-logs",],
         parameters=[moveit_config.to_dict(), {"use_sim_time": actual_sim_time}],
         
     )
