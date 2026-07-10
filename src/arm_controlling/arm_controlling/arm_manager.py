@@ -11,11 +11,10 @@ from controller_manager_msgs.srv import SwitchController
 from rclpy.callback_groups import ReentrantCallbackGroup
 from arm_controlling.moveit_arm_helper import MoveItArmHelper
 
-from arm_interfaces.srv import MoveToPose, PlanToPose
+from arm_interfaces.srv import ExecutePlannedTrajectory, MoveToPose, PlanToPose
 
 
 REST_APPROACH = {"joint_1": -0.628,"joint_2": -2.23,"joint_3": 0.0521,"joint_4": 1.6613,"joint_5": 3.1415,"joint_6": -2.09,"joint_7": -0.0868,}
-REST_FINAL = {"joint_1": -0.5,"joint_2": -2.04,"joint_3": 0.0521,"joint_4": 1.6613,"joint_5": 3.1415,"joint_6": -2.09,"joint_7": -0.0868,}
 POSE_1 = {"joint_1": -0.764,"joint_2": -2.04,"joint_3": 0.0521,"joint_4": 1.6613,"joint_5": 3.1415,"joint_6": -2.09,"joint_7": -0.0868,}
 
 
@@ -36,6 +35,7 @@ class ArmManager(MoveItArmHelper):
         self.switch_controller_client = self.create_client(SwitchController,"/controller_manager/switch_controller",callback_group=self.cb_group,)
         self.srv_move_to_pose = self.create_service(MoveToPose,"/arm/move_to_pose",self.cb_move_to_pose,callback_group=self.cb_group,)
         self.srv_plan_to_pose = self.create_service(PlanToPose,"/arm/plan_to_pose",self.cb_plan_to_pose,callback_group=self.cb_group,)
+        self.srv_execute_planned = self.create_service(ExecutePlannedTrajectory,"/arm/execute_planned_trajectory",self.cb_execute_planned_trajectory,callback_group=self.cb_group,)
         self.srv_go_rest = self.create_service(Trigger, "/arm/go_rest", self.cb_go_rest,callback_group=self.cb_group,)
         self.srv_pose_1 = self.create_service(Trigger, "/arm/pose_1", self.cb_pose_1,callback_group=self.cb_group,)
         self.srv_reset = self.create_service(Trigger, "/arm/reset_moveit_control", self.cb_reset_moveit_control,callback_group=self.cb_group,)
@@ -137,6 +137,7 @@ class ArmManager(MoveItArmHelper):
             response.cost = self.trajectory_joint_cost(traj)
             response.final_joint_names = list(final_joint_map.keys())
             response.final_joint_positions = [final_joint_map[name] for name in response.final_joint_names]
+            response.planned_trajectory = traj
             return response
 
         except Exception as e:
@@ -144,6 +145,53 @@ class ArmManager(MoveItArmHelper):
             response.success = False
             response.message = str(e)
             return response
+
+    def cb_execute_planned_trajectory(self, request, response):
+        with self.command_lock:
+            if self.command_busy:
+                response.success = False
+                response.message = "Arm is busy. Wait until current command finishes."
+                return response
+
+            self.command_busy = True
+            self.stop_requested = False
+
+        try:
+            self.get_logger().info(f"Executing optimizer trajectory: {request.label}")
+
+            if not self.execute_trajectory(request.trajectory):
+                response.success = False
+                response.message = f"Cached trajectory execution failed for {request.label}"
+                return response
+
+            # execute_trajectory() already waits for the ExecuteTrajectory
+            # action result. Keep one joint-position confirmation, but avoid
+            # an additional zero-velocity wait after every view.
+            finished = self.wait_until_trajectory_finished(
+                request.trajectory, tolerance=0.008, timeout=25.0
+            )
+
+            if self.check_stop_requested():
+                response.success = False
+                response.message = "Stopped by user"
+            elif finished:
+                response.success = True
+                response.message = f"Executed optimizer trajectory for {request.label}"
+            else:
+                response.success = False
+                response.message = f"Robot may not be fully settled at {request.label}"
+
+            return response
+
+        except Exception as e:
+            self.get_logger().error(f"execute_planned_trajectory crashed: {e}")
+            response.success = False
+            response.message = str(e)
+            return response
+
+        finally:
+            with self.command_lock:
+                self.command_busy = False
     
     #--------- Helper Methods ---------#
 
@@ -232,12 +280,10 @@ class ArmManager(MoveItArmHelper):
             return False, "Stopped by user"
 
         finished = self.wait_until_trajectory_finished(traj,tolerance=0.008,timeout=25.0,)
-        stopped = self.wait_until_robot_stops(timeout=10.0)
-
         if self.check_stop_requested():
             return False, "Stopped by user"
 
-        if finished and stopped:
+        if finished:
             return True, f"Moved to {target['label']}"
 
         return False, f"Robot may not be fully settled at {target['label']}"
@@ -263,11 +309,13 @@ class ArmManager(MoveItArmHelper):
         if self.check_stop_requested():
             return False, "Stopped by user"
 
-        self.wait_until_trajectory_finished(traj, timeout=25.0)
-        self.wait_until_robot_stops(timeout=10.0)
+        finished = self.wait_until_trajectory_finished(traj, timeout=25.0)
 
         if self.check_stop_requested():
             return False, "Stopped by user"
+
+        if not finished:
+            return False, f"Robot may not be fully settled at {name}"
 
         return True, f"Moved to {name}"
 
@@ -275,28 +323,10 @@ class ArmManager(MoveItArmHelper):
         if self.check_stop_requested():
             return False, "Stopped by user"
 
-        if self.is_near_joint_pose(REST_FINAL):
+        if self.is_near_joint_pose(REST_APPROACH):
             return True, "Arm already at rest"
 
-        ok, msg = self.move_to_joint_pose("rest approach", REST_APPROACH)
-
-        if not ok:
-            return ok, msg
-
-        if self.check_stop_requested():
-            return False, "Stopped by user"
-
-        current = self.get_current_joint_map(timeout=5.0)
-
-        if current is None:
-            return False, "No joint state after rest approach"
-
-        final_rest = REST_FINAL.copy()
-
-        for j in ["joint_2", "joint_3", "joint_4", "joint_5", "joint_6", "joint_7"]:
-            final_rest[j] = current[j]
-
-        return self.move_to_joint_pose("final rest", final_rest)
+        return self.move_to_joint_pose("rest", REST_APPROACH)
 
 
     #--------- Stop and Reset functions ---------#

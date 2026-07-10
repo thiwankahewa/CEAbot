@@ -14,3 +14,4 @@ string message
 float64 cost
 string[] final_joint_names
 float64[] final_joint_positions
+moveit_msgs/RobotTrajectory planned_trajectory

@@ -41,7 +41,7 @@ class MoveItArmHelper(Node):
         self.declare_parameter("orientation_tolerance", 0.01)
         self.declare_parameter("velocity_scaling", 0.4)
         self.declare_parameter("acceleration_scaling", 0.13)
-        self.declare_parameter("planning_time", 5.0)
+        self.declare_parameter("planning_time", 2.0)
 
         self.joint_state_sub = self.create_subscription(
             JointState,
@@ -287,6 +287,15 @@ class MoveItArmHelper(Node):
             previous = current
 
         return total
+
+    def trajectory_duration(self, trajectory):
+        """Return the planned trajectory duration in seconds."""
+        points = trajectory.joint_trajectory.points
+        if not points:
+            return float("inf")
+
+        end_time = points[-1].time_from_start
+        return float(end_time.sec) + float(end_time.nanosec) * 1e-9
 
     def trajectory_final_joint_map(self, trajectory):
         points = trajectory.joint_trajectory.points

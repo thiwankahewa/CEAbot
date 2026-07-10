@@ -10,13 +10,13 @@ from rclpy.time import Time
 from rcl_interfaces.msg import SetParametersResult
 from arm_controlling.moveit_arm_helper import MoveItArmHelper
 from std_msgs.msg import Bool, String
-from arm_interfaces.srv import MoveToPose, PlanToPose
+from arm_interfaces.srv import ExecutePlannedTrajectory, MoveToPose, PlanToPose
 from std_srvs.srv import Trigger
 from arm_interfaces.msg import PlantTargetArray
 from arm_interfaces.srv import CaptureView
 
 
-REST_SETTLED_JOINTS = {"joint_1": -0.5,"joint_2": -2.23,"joint_3": 0.0521,"joint_4": 1.6613,"joint_5": 3.1415,"joint_6": -2.09,"joint_7": -0.0868,}
+REST_SETTLED_JOINTS = {"joint_1": -0.628,"joint_2": -2.23,"joint_3": 0.0521,"joint_4": 1.6613,"joint_5": 3.1415,"joint_6": -2.09,"joint_7": -0.0868,}
 
 class PlantViewScanner(MoveItArmHelper):
     def __init__(self):
@@ -34,6 +34,11 @@ class PlantViewScanner(MoveItArmHelper):
         self.declare_parameter("look_at_angle_offset", 0.2)
         self.declare_parameter("view_count", 3)              
         self.declare_parameter("optimize_view_order", True)
+        # Limit greedy optimization to adjacent groups of plants.  A value of
+        # 2 optimizes plants 1-2, then plants 3-4, while carrying the predicted
+        # final joint state from one group into the next.  Use 0 to optimize
+        # every plant in one global batch (the previous behavior).
+        self.declare_parameter("optimizer_plant_batch_size", 4)
 
         # Fixed tool orientation.
         self.qx = 0.0
@@ -57,6 +62,7 @@ class PlantViewScanner(MoveItArmHelper):
 
         self.move_pose_client = self.create_client(MoveToPose, "/arm/move_to_pose")
         self.plan_pose_client = self.create_client(PlanToPose, "/arm/plan_to_pose")
+        self.execute_planned_client = self.create_client(ExecutePlannedTrajectory,"/arm/execute_planned_trajectory")
         self.go_rest_client = self.create_client(Trigger, "/arm/go_rest")
         self.orbbec_capture_client = self.create_client(CaptureView,"/orbbec_test_scan/capture_view")
 
@@ -78,9 +84,21 @@ class PlantViewScanner(MoveItArmHelper):
         self.look_at_angle_offset = self.get_parameter("look_at_angle_offset").value
         self.view_count = self.get_parameter("view_count").value
         self.optimize_view_order = self.get_parameter("optimize_view_order").value
+        self.optimizer_plant_batch_size = self.get_parameter("optimizer_plant_batch_size").value
 
     def on_params_1(self, params):
-        self._load_scanner_params()
+        scanner_params = {
+            "z_offset",
+            "circle_radius_offset",
+            "circle_height_offset",
+            "look_at_angle_offset",
+            "view_count",
+            "optimize_view_order",
+            "optimizer_plant_batch_size",
+        }
+        for param in params:
+            if param.name in scanner_params:
+                setattr(self, param.name, param.value)
         return SetParametersResult(successful=True)
     
     def cb_targets(self, msg):
@@ -298,7 +316,7 @@ class PlantViewScanner(MoveItArmHelper):
 
     def call_arm_plan_to_pose(self, pose, start_joint_map, timeout=60.0):
         if not self.plan_pose_client.wait_for_service(timeout_sec=5.0):
-            return False, "/arm/plan_to_pose service not available", None, None
+            return False, "/arm/plan_to_pose service not available", None, None, None
 
         req = PlanToPose.Request()
         req.x = pose["x"]
@@ -319,13 +337,35 @@ class PlantViewScanner(MoveItArmHelper):
             if future.done():
                 res = future.result()
                 if res is None:
-                    return False, "No response from arm_manager", None, None
+                    return False, "No response from arm_manager", None, None, None
 
                 final_joint_map = dict(zip(res.final_joint_names, res.final_joint_positions))
-                return res.success, res.message, res.cost, final_joint_map
+                return res.success, res.message, res.cost, final_joint_map, res.planned_trajectory
 
             if time.time() - start > timeout:
-                return False, "Timeout waiting for arm plan", None, None
+                return False, "Timeout waiting for arm plan", None, None, None
+
+            time.sleep(0.05)
+
+    def call_arm_execute_planned(self, trajectory, label, timeout=90.0):
+        if not self.execute_planned_client.wait_for_service(timeout_sec=5.0):
+            return False, "/arm/execute_planned_trajectory service not available"
+
+        req = ExecutePlannedTrajectory.Request()
+        req.trajectory = trajectory
+        req.label = label
+        future = self.execute_planned_client.call_async(req)
+
+        start = time.time()
+        while rclpy.ok():
+            if future.done():
+                res = future.result()
+                if res is None:
+                    return False, "No response from arm_manager"
+                return res.success, res.message
+
+            if time.time() - start > timeout:
+                return False, "Timeout waiting for cached trajectory execution"
 
             time.sleep(0.05)
 
@@ -452,61 +492,154 @@ class PlantViewScanner(MoveItArmHelper):
 
         return items
 
-    def optimize_scan_order(self, items):
-        if not self.optimize_view_order:
-            return items
-
+    def select_next_scan_item(self, remaining, step, batch_index, batch_count):
         start_joint_map = self.get_current_joint_map(timeout=5.0)
         if start_joint_map is None:
-            self.get_logger().warn("No current joint state. Using original plant scan order.")
-            return items
-
-        remaining = list(items)
-        ordered = []
-        step = 1
-
-        self.get_logger().info(f"Optimizing order for {len(remaining)} view poses")
-
-        while remaining and rclpy.ok():
-            best_index = None
-            best_cost = None
-            best_final_joint_map = None
-            best_message = ""
-
-            for i, item in enumerate(remaining):
-                pose = item["pose"]
-                plan_label = f"plant_{item['plant_id']}_{pose['label']}"
-                plan_pose = dict(pose)
-                plan_pose["label"] = plan_label
-
-                success, message, cost, final_joint_map = self.call_arm_plan_to_pose(plan_pose, start_joint_map)
-
-                if not success:
-                    self.get_logger().warn(f"Skipping unreachable candidate {plan_label}: {message}")
-                    continue
-
-                if best_cost is None or cost < best_cost:
-                    best_index = i
-                    best_cost = cost
-                    best_final_joint_map = final_joint_map
-                    best_message = message
-
-            if best_index is None:
-                self.get_logger().warn("Could not plan to any remaining view. Keeping the rest in original order.")
-                ordered.extend(remaining)
-                break
-
-            chosen = remaining.pop(best_index)
-            ordered.append(chosen)
-            start_joint_map = best_final_joint_map
-            pose = chosen["pose"]
-            self.get_logger().info(
-                f"Optimized step {step}: plant {chosen['plant_id']} [{pose['label']}], "
-                f"cost={best_cost:.4f} ({best_message})"
+            self.get_logger().warn(
+                "No current joint state. Using the next pose in original order."
             )
-            step += 1
+            return remaining.pop(0), None, step + 1
 
-        return ordered
+        candidate_count = len(remaining)
+        best_index = None
+        best_duration = None
+        best_distance = None
+        best_trajectory = None
+        best_message = ""
+        failed_items = []
+
+        self.get_logger().info(
+            f"Online optimizer step {step} (batch {batch_index}/{batch_count}): "
+            f"evaluating {candidate_count} candidates from actual joint state"
+        )
+
+        for i, item in enumerate(remaining):
+            pose = item["pose"]
+            plan_label = f"plant_{item['plant_id']}_{pose['label']}"
+            plan_pose = dict(pose)
+            plan_pose["label"] = plan_label
+
+            success, message, cost, _, trajectory = self.call_arm_plan_to_pose(
+                plan_pose, start_joint_map
+            )
+
+            if not success:
+                self.get_logger().warn(
+                    f"Online step {step} candidate {i + 1}/{candidate_count}: "
+                    f"{plan_label} -> FAILED ({message})"
+                )
+                failed_items.append(item)
+                continue
+
+            self.get_logger().info(
+                f"Online step {step} candidate {i + 1}/{candidate_count}: "
+                f"{plan_label} -> duration={self.trajectory_duration(trajectory):.3f}s, "
+                f"joint_distance={cost:.4f}rad"
+            )
+
+            duration = self.trajectory_duration(trajectory)
+            is_better = (
+                best_duration is None
+                or duration < best_duration - 0.05
+                or (
+                    abs(duration - best_duration) <= 0.05
+                    and cost < best_distance
+                )
+            )
+            if is_better:
+                best_index = i
+                best_duration = duration
+                best_distance = cost
+                best_trajectory = trajectory
+                best_message = message
+
+        # Do not retry poses that failed during the next optimizer step. Keep
+        # them for one final pass after all normal batches have completed.
+        if best_index is None:
+            if failed_items:
+                remaining[:] = [item for item in remaining if item not in failed_items]
+                self.deferred_scan_items.extend(failed_items)
+            self.get_logger().warn(
+                f"Could not plan to any remaining view in optimizer batch "
+                f"{batch_index}/{batch_count}. Deferred failed candidates."
+            )
+            return None, None, step + 1
+
+        chosen = remaining[best_index]
+        remaining[:] = [
+            item for item in remaining
+            if item is not chosen and item not in failed_items
+        ]
+        self.deferred_scan_items.extend(failed_items)
+        pose = chosen["pose"]
+        self.get_logger().info(
+            f"Online optimized step {step} (batch {batch_index}/{batch_count}): "
+            f"plant {chosen['plant_id']} [{pose['label']}], "
+            f"duration={best_duration:.3f}s, joint_distance={best_distance:.4f}rad "
+            f"({best_message}); executing this plan now"
+        )
+        return chosen, best_trajectory, step + 1
+
+    def retry_deferred_scan_items(self, order_index, total_items):
+        """Retry each previously unreachable pose once from the actual state."""
+        if not self.deferred_scan_items:
+            return order_index
+
+        deferred = self.deferred_scan_items
+        self.deferred_scan_items = []
+        self.get_logger().info(
+            f"Retrying {len(deferred)} deferred unreachable view(s) once"
+        )
+
+        for item in deferred:
+            start_joint_map = self.get_current_joint_map(timeout=5.0)
+            if start_joint_map is None:
+                self.get_logger().warn(
+                    f"Deferred retry skipped for plant {item['plant_id']} "
+                    f"[{item['pose']['label']}]: no joint state"
+                )
+                continue
+
+            pose = item["pose"]
+            plan_pose = dict(pose)
+            plan_pose["label"] = f"plant_{item['plant_id']}_{pose['label']}"
+            success, message, cost, _, trajectory = self.call_arm_plan_to_pose(
+                plan_pose, start_joint_map
+            )
+            if not success:
+                self.get_logger().warn(
+                    f"Deferred retry failed for {plan_pose['label']}: {message}"
+                )
+                continue
+
+            self.get_logger().info(
+                f"Deferred retry succeeded for {plan_pose['label']}, "
+                f"duration={self.trajectory_duration(trajectory):.3f}s, "
+                f"joint_distance={cost:.4f}rad"
+            )
+            if not self.execute_scan_item(item, order_index, total_items, trajectory):
+                return order_index
+            order_index += 1
+
+        return order_index
+
+    def split_scan_batches(self, items):
+        if not self.optimize_view_order:
+            return [items]
+
+        plant_ids = list(dict.fromkeys(item["plant_id"] for item in items))
+        batch_size = int(self.optimizer_plant_batch_size)
+        if batch_size <= 0:
+            batch_size = len(plant_ids)
+
+        plant_batches = [
+            plant_ids[i:i + batch_size]
+            for i in range(0, len(plant_ids), batch_size)
+        ]
+        return [
+            [item for item in items if item["plant_id"] in batch_plant_ids]
+            for batch_plant_ids in plant_batches
+        ]
 
     #------- main execution loop ---------#
     def run(self):
@@ -519,33 +652,76 @@ class PlantViewScanner(MoveItArmHelper):
             self.get_logger().error("No plant targets received")
             return
 
-        if len(targets) == 0:
-            self.get_logger().error("No valid targets found in CSV")
-            return
+        all_scan_items = self.build_scan_items(targets)
+        scan_batches = self.split_scan_batches(all_scan_items)
+        self.deferred_scan_items = []
+        optimizer_step = 1
+        order_index = 1
 
-        scan_items = self.optimize_scan_order(self.build_scan_items(targets))
+        for batch_index, batch_items in enumerate(scan_batches, start=1):
+            remaining = list(batch_items)
+            plant_ids = list(dict.fromkeys(item["plant_id"] for item in remaining))
+            self.get_logger().info(
+                f"Online optimizer batch {batch_index}/{len(scan_batches)}: "
+                f"plants {plant_ids}, {len(remaining)} view poses"
+            )
 
-        for order_index, item in enumerate(scan_items, start=1):
+            while remaining:
+                if self.optimize_view_order:
+                    item, trajectory, optimizer_step = self.select_next_scan_item(
+                        remaining,
+                        optimizer_step,
+                        batch_index,
+                        len(scan_batches),
+                    )
+                else:
+                    item = remaining.pop(0)
+                    trajectory = None
+
+                if item is None:
+                    break
+
+                if not self.execute_scan_item(
+                    item, order_index, len(all_scan_items), trajectory
+                ):
+                    return
+                order_index += 1
+
+        order_index = self.retry_deferred_scan_items(
+            order_index, len(all_scan_items)
+        )
+        self.finish_scan()
+
+    def execute_scan_item(self, item, order_index, total_items, trajectory=None):
             plant_id = item["plant_id"]
             pose = item["pose"]
             j = item["pose_index"]
             pose_count = item["pose_count"]
 
             self.get_logger().info(
-                f"Scan order {order_index}/{len(scan_items)} - plant {plant_id}, "
+                f"Scan order {order_index}/{total_items} - plant {plant_id}, "
                 f"pose {j}/{pose_count} [{pose['label']}]: "
                 f"x={pose['x']:.4f}, y={pose['y']:.4f}, z={pose['z']:.4f}, "
                 f"q=({pose['qx']:.3f}, {pose['qy']:.3f}, {pose['qz']:.3f}, {pose['qw']:.3f})"
             )
-            self.wait_until_robot_stops(timeout=10.0)
-
             if not self.wait_if_paused_or_stopped():
                 self.get_logger().warn("Scanner stopped")
-                return
+                return False
 
             move_pose = dict(pose)
             move_pose["label"] = f"plant_{plant_id}_{pose['label']}"
-            success, message = self.call_arm_move_to_pose(move_pose)
+            if trajectory is not None:
+                success, message = self.call_arm_execute_planned(
+                    trajectory, move_pose["label"]
+                )
+                if not success and "Stopped by user" not in message:
+                    self.get_logger().warn(
+                        f"Optimizer trajectory failed for {move_pose['label']}: "
+                        f"{message}. Falling back to replanning from actual state."
+                    )
+                    success, message = self.call_arm_move_to_pose(move_pose)
+            else:
+                success, message = self.call_arm_move_to_pose(move_pose)
 
             if not success:
                 self.get_logger().warn(f"Arm move failed for plant {plant_id}, pose {pose['label']}: {message}")
@@ -557,9 +733,9 @@ class PlantViewScanner(MoveItArmHelper):
 
                     if not self.wait_if_paused_or_stopped():
                         self.get_logger().warn("Scanner stopped")
-                        return
+                        return False
 
-                continue
+                return True
 
             self.get_logger().info(message)
 
@@ -587,6 +763,9 @@ class PlantViewScanner(MoveItArmHelper):
             except Exception as e:
                 self.get_logger().warn(f"TF lookup failed: {e}")
 
+            return True
+
+    def finish_scan(self):
         self.get_logger().info("All targets processed. Sending arm to rest.")
         success, message = self.call_arm_go_rest()
         if success:

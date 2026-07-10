@@ -1,0 +1,5 @@
+moveit_msgs/RobotTrajectory trajectory
+string label
+---
+bool success
+string message
