@@ -1,8 +1,9 @@
 build/
 install/
 log/
-src/bench_robot/launch/__pycache__/
-src/bench_robot/bench_robot/__pycache__/
+__pycache__/
+*.py[cod]
+*$py.class
 /.vscode
 mobile_sam.pt
 sam2.1_b.pt
