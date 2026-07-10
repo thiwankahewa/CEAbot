@@ -1,0 +1,16 @@
+float64 x
+float64 y
+float64 z
+float64 qx
+float64 qy
+float64 qz
+float64 qw
+string label
+string[] start_joint_names
+float64[] start_joint_positions
+---
+bool success
+string message
+float64 cost
+string[] final_joint_names
+float64[] final_joint_positions

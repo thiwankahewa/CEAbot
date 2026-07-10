@@ -11,7 +11,7 @@ from controller_manager_msgs.srv import SwitchController
 from rclpy.callback_groups import ReentrantCallbackGroup
 from arm_controlling.moveit_arm_helper import MoveItArmHelper
 
-from arm_interfaces.srv import MoveToPose
+from arm_interfaces.srv import MoveToPose, PlanToPose
 
 
 REST_APPROACH = {"joint_1": -0.628,"joint_2": -2.23,"joint_3": 0.0521,"joint_4": 1.6613,"joint_5": 3.1415,"joint_6": -2.09,"joint_7": -0.0868,}
@@ -35,6 +35,7 @@ class ArmManager(MoveItArmHelper):
 
         self.switch_controller_client = self.create_client(SwitchController,"/controller_manager/switch_controller",callback_group=self.cb_group,)
         self.srv_move_to_pose = self.create_service(MoveToPose,"/arm/move_to_pose",self.cb_move_to_pose,callback_group=self.cb_group,)
+        self.srv_plan_to_pose = self.create_service(PlanToPose,"/arm/plan_to_pose",self.cb_plan_to_pose,callback_group=self.cb_group,)
         self.srv_go_rest = self.create_service(Trigger, "/arm/go_rest", self.cb_go_rest,callback_group=self.cb_group,)
         self.srv_pose_1 = self.create_service(Trigger, "/arm/pose_1", self.cb_pose_1,callback_group=self.cb_group,)
         self.srv_reset = self.create_service(Trigger, "/arm/reset_moveit_control", self.cb_reset_moveit_control,callback_group=self.cb_group,)
@@ -105,6 +106,44 @@ class ArmManager(MoveItArmHelper):
                 self.command_busy = False
 
             self.get_logger().info(f"Finished blocking move_to_pose: {request.label}")
+
+    def cb_plan_to_pose(self, request, response):
+        with self.command_lock:
+            if self.command_busy:
+                response.success = False
+                response.message = "Arm is busy. Cannot plan while current command is running."
+                return response
+
+        start_joint_map = None
+        if len(request.start_joint_names) > 0 or len(request.start_joint_positions) > 0:
+            if len(request.start_joint_names) != len(request.start_joint_positions):
+                response.success = False
+                response.message = "start_joint_names and start_joint_positions length mismatch"
+                return response
+
+            start_joint_map = dict(zip(request.start_joint_names, request.start_joint_positions))
+
+        try:
+            traj = self.plan_to_target(request.x,request.y,request.z,request.qx,request.qy,request.qz,request.qw,start_joint_map=start_joint_map,)
+
+            if traj is None:
+                response.success = False
+                response.message = f"Planning failed for {request.label}"
+                return response
+
+            final_joint_map = self.trajectory_final_joint_map(traj)
+            response.success = True
+            response.message = f"Planned {request.label}"
+            response.cost = self.trajectory_joint_cost(traj)
+            response.final_joint_names = list(final_joint_map.keys())
+            response.final_joint_positions = [final_joint_map[name] for name in response.final_joint_names]
+            return response
+
+        except Exception as e:
+            self.get_logger().error(f"plan_to_pose crashed: {e}")
+            response.success = False
+            response.message = str(e)
+            return response
     
     #--------- Helper Methods ---------#
 
@@ -183,10 +222,6 @@ class ArmManager(MoveItArmHelper):
         if traj is None:
             return False, f"Planning failed for {target['label']}"
 
-        ok, limit_msg = self.trajectory_respects_one_turn_limits(traj)
-        if not ok:
-            return False, f"Rejected trajectory for {target['label']}: {limit_msg}"
-
         if self.check_stop_requested():
             return False, "Stopped by user"
 
@@ -218,10 +253,6 @@ class ArmManager(MoveItArmHelper):
 
         if traj is None:
             return False, f"Planning failed for {name}"
-
-        ok, limit_msg = self.trajectory_respects_one_turn_limits(traj)
-        if not ok:
-            return False, f"Rejected trajectory for {name}: {limit_msg}"
 
         if self.check_stop_requested():
             return False, "Stopped by user"

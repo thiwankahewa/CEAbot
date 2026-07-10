@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 import threading
-import csv
 import math
 import os
 import time
@@ -11,22 +10,13 @@ from rclpy.time import Time
 from rcl_interfaces.msg import SetParametersResult
 from arm_controlling.moveit_arm_helper import MoveItArmHelper
 from std_msgs.msg import Bool, String
-from arm_interfaces.srv import MoveToPose
+from arm_interfaces.srv import MoveToPose, PlanToPose
 from std_srvs.srv import Trigger
 from arm_interfaces.msg import PlantTargetArray
 from arm_interfaces.srv import CaptureView
 
 
-REST_SETTLED_JOINTS = {
-    "joint_1": -0.5,
-    "joint_2": -2.23,
-    "joint_3": 0.0521,
-    "joint_4": 1.6613,
-    "joint_5": 3.1415,
-    "joint_6": -2.09,
-    "joint_7": -0.0868,
-}
-
+REST_SETTLED_JOINTS = {"joint_1": -0.5,"joint_2": -2.23,"joint_3": 0.0521,"joint_4": 1.6613,"joint_5": 3.1415,"joint_6": -2.09,"joint_7": -0.0868,}
 
 class PlantViewScanner(MoveItArmHelper):
     def __init__(self):
@@ -43,6 +33,7 @@ class PlantViewScanner(MoveItArmHelper):
         self.declare_parameter("circle_height_offset", 0.1)
         self.declare_parameter("look_at_angle_offset", 0.2)
         self.declare_parameter("view_count", 3)              
+        self.declare_parameter("optimize_view_order", True)
 
         # Fixed tool orientation.
         self.qx = 0.0
@@ -65,6 +56,7 @@ class PlantViewScanner(MoveItArmHelper):
         #-------- Services and clients ---------#
 
         self.move_pose_client = self.create_client(MoveToPose, "/arm/move_to_pose")
+        self.plan_pose_client = self.create_client(PlanToPose, "/arm/plan_to_pose")
         self.go_rest_client = self.create_client(Trigger, "/arm/go_rest")
         self.orbbec_capture_client = self.create_client(CaptureView,"/orbbec_test_scan/capture_view")
 
@@ -85,6 +77,7 @@ class PlantViewScanner(MoveItArmHelper):
         self.circle_height_offset = self.get_parameter("circle_height_offset").value
         self.look_at_angle_offset = self.get_parameter("look_at_angle_offset").value
         self.view_count = self.get_parameter("view_count").value
+        self.optimize_view_order = self.get_parameter("optimize_view_order").value
 
     def on_params_1(self, params):
         self._load_scanner_params()
@@ -303,6 +296,39 @@ class PlantViewScanner(MoveItArmHelper):
 
             time.sleep(0.05)
 
+    def call_arm_plan_to_pose(self, pose, start_joint_map, timeout=60.0):
+        if not self.plan_pose_client.wait_for_service(timeout_sec=5.0):
+            return False, "/arm/plan_to_pose service not available", None, None
+
+        req = PlanToPose.Request()
+        req.x = pose["x"]
+        req.y = pose["y"]
+        req.z = pose["z"]
+        req.qx = pose["qx"]
+        req.qy = pose["qy"]
+        req.qz = pose["qz"]
+        req.qw = pose["qw"]
+        req.label = pose["label"]
+        req.start_joint_names = list(start_joint_map.keys())
+        req.start_joint_positions = [float(start_joint_map[name]) for name in req.start_joint_names]
+
+        future = self.plan_pose_client.call_async(req)
+
+        start = time.time()
+        while rclpy.ok():
+            if future.done():
+                res = future.result()
+                if res is None:
+                    return False, "No response from arm_manager", None, None
+
+                final_joint_map = dict(zip(res.final_joint_names, res.final_joint_positions))
+                return res.success, res.message, res.cost, final_joint_map
+
+            if time.time() - start > timeout:
+                return False, "Timeout waiting for arm plan", None, None
+
+            time.sleep(0.05)
+
     
     #------- Plant capture function ---------#
 
@@ -408,6 +434,80 @@ class PlantViewScanner(MoveItArmHelper):
             f.write(f"actual_qz: {r.z:.6f}\n")
             f.write(f"actual_qw: {r.w:.6f}\n")
 
+    def build_scan_items(self, targets):
+        items = []
+
+        for plant_id, x, y, z, r in targets:
+            view_poses = self.generate_view_poses(x, y, z, r)
+
+            for j, pose in enumerate(view_poses, start=1):
+                items.append(
+                    {
+                        "plant_id": plant_id,
+                        "pose": pose,
+                        "pose_index": j,
+                        "pose_count": len(view_poses),
+                    }
+                )
+
+        return items
+
+    def optimize_scan_order(self, items):
+        if not self.optimize_view_order:
+            return items
+
+        start_joint_map = self.get_current_joint_map(timeout=5.0)
+        if start_joint_map is None:
+            self.get_logger().warn("No current joint state. Using original plant scan order.")
+            return items
+
+        remaining = list(items)
+        ordered = []
+        step = 1
+
+        self.get_logger().info(f"Optimizing order for {len(remaining)} view poses")
+
+        while remaining and rclpy.ok():
+            best_index = None
+            best_cost = None
+            best_final_joint_map = None
+            best_message = ""
+
+            for i, item in enumerate(remaining):
+                pose = item["pose"]
+                plan_label = f"plant_{item['plant_id']}_{pose['label']}"
+                plan_pose = dict(pose)
+                plan_pose["label"] = plan_label
+
+                success, message, cost, final_joint_map = self.call_arm_plan_to_pose(plan_pose, start_joint_map)
+
+                if not success:
+                    self.get_logger().warn(f"Skipping unreachable candidate {plan_label}: {message}")
+                    continue
+
+                if best_cost is None or cost < best_cost:
+                    best_index = i
+                    best_cost = cost
+                    best_final_joint_map = final_joint_map
+                    best_message = message
+
+            if best_index is None:
+                self.get_logger().warn("Could not plan to any remaining view. Keeping the rest in original order.")
+                ordered.extend(remaining)
+                break
+
+            chosen = remaining.pop(best_index)
+            ordered.append(chosen)
+            start_joint_map = best_final_joint_map
+            pose = chosen["pose"]
+            self.get_logger().info(
+                f"Optimized step {step}: plant {chosen['plant_id']} [{pose['label']}], "
+                f"cost={best_cost:.4f} ({best_message})"
+            )
+            step += 1
+
+        return ordered
+
     #------- main execution loop ---------#
     def run(self):
         targets = self.latest_targets
@@ -423,62 +523,69 @@ class PlantViewScanner(MoveItArmHelper):
             self.get_logger().error("No valid targets found in CSV")
             return
 
-        for plant_id, x, y, z, r in targets:
-            view_poses = self.generate_view_poses(x, y, z, r)
+        scan_items = self.optimize_scan_order(self.build_scan_items(targets))
 
-            for j, pose in enumerate(view_poses, start=1):
+        for order_index, item in enumerate(scan_items, start=1):
+            plant_id = item["plant_id"]
+            pose = item["pose"]
+            j = item["pose_index"]
+            pose_count = item["pose_count"]
+
+            self.get_logger().info(
+                f"Scan order {order_index}/{len(scan_items)} - plant {plant_id}, "
+                f"pose {j}/{pose_count} [{pose['label']}]: "
+                f"x={pose['x']:.4f}, y={pose['y']:.4f}, z={pose['z']:.4f}, "
+                f"q=({pose['qx']:.3f}, {pose['qy']:.3f}, {pose['qz']:.3f}, {pose['qw']:.3f})"
+            )
+            self.wait_until_robot_stops(timeout=10.0)
+
+            if not self.wait_if_paused_or_stopped():
+                self.get_logger().warn("Scanner stopped")
+                return
+
+            move_pose = dict(pose)
+            move_pose["label"] = f"plant_{plant_id}_{pose['label']}"
+            success, message = self.call_arm_move_to_pose(move_pose)
+
+            if not success:
+                self.get_logger().warn(f"Arm move failed for plant {plant_id}, pose {pose['label']}: {message}")
+                if ("Stopped by user" in message or "STOP" in message or "stop" in message or "Controller deactivated" in message):
+                    with self.scan_lock:
+                        self.scan_paused = True
+
+                    self.get_logger().warn("Scanner paused because arm was stopped")
+
+                    if not self.wait_if_paused_or_stopped():
+                        self.get_logger().warn("Scanner stopped")
+                        return
+
+                continue
+
+            self.get_logger().info(message)
+
+            capture_started_at = time.time()
+            capture_success = self.call_orbbec_capture(run_dir=self.latest_run_dir,plant_id=plant_id,view_label=pose["label"])
+            if not capture_success:
+                self.get_logger().warn(f"Orbbec capture failed for plant {plant_id}, view {pose['label']}")
+
+            try:
+                transform = self.tf_buffer.lookup_transform(self.base_frame,self.ee_link,Time())
+                t = transform.transform.translation
+                r = transform.transform.rotation
+
                 self.get_logger().info(
-                    f"Plant {plant_id} - planned pose {j}/{len(view_poses)} [{pose['label']}]: "
-                    f"x={pose['x']:.4f}, y={pose['y']:.4f}, z={pose['z']:.4f}, "
-                    f"q=({pose['qx']:.3f}, {pose['qy']:.3f}, {pose['qz']:.3f}, {pose['qw']:.3f})"
+                    f"Plant {plant_id} - actual pose {j}/{pose_count} [{pose['label']}]: "
+                    f"x={t.x:.4f}, y={t.y:.4f}, z={t.z:.4f}, "
+                    f"q=({r.x:.4f}, {r.y:.4f}, {r.z:.4f}, {r.w:.4f})"
                 )
-                self.wait_until_robot_stops(timeout=10.0)
 
-                if not self.wait_if_paused_or_stopped():
-                    self.get_logger().warn("Scanner stopped")
-                    return
+                if capture_success:
+                    meta_path = self.wait_for_capture_meta(self.latest_run_dir, plant_id, pose["label"], capture_started_at)
+                    if meta_path is not None:
+                        self.append_actual_pose_to_meta(meta_path, plant_id, pose["label"], transform)
 
-                success, message = self.call_arm_move_to_pose(pose)
-
-                if not success:
-                    self.get_logger().warn(f"Arm move failed for plant {plant_id}, pose {pose['label']}: {message}")
-                    if ("Stopped by user" in message or "STOP" in message or "stop" in message or "Controller deactivated" in message):
-                        with self.scan_lock:
-                            self.scan_paused = True
-
-                        self.get_logger().warn("Scanner paused because arm was stopped")
-
-                        if not self.wait_if_paused_or_stopped():
-                            self.get_logger().warn("Scanner stopped")
-                            return
-
-                    continue
-
-                self.get_logger().info(message)
-
-                capture_started_at = time.time()
-                capture_success = self.call_orbbec_capture(run_dir=self.latest_run_dir,plant_id=plant_id,view_label=pose["label"])
-                if not capture_success:
-                    self.get_logger().warn(f"Orbbec capture failed for plant {plant_id}, view {pose['label']}")
-
-                try:
-                    transform = self.tf_buffer.lookup_transform(self.base_frame,self.ee_link,Time())
-                    t = transform.transform.translation
-                    r = transform.transform.rotation
-
-                    self.get_logger().info(
-                        f"Plant {plant_id} - actual pose {j}/{len(view_poses)} [{pose['label']}]: "
-                        f"x={t.x:.4f}, y={t.y:.4f}, z={t.z:.4f}, "
-                        f"q=({r.x:.4f}, {r.y:.4f}, {r.z:.4f}, {r.w:.4f})"
-                    )
-
-                    if capture_success:
-                        meta_path = self.wait_for_capture_meta(self.latest_run_dir, plant_id, pose["label"], capture_started_at)
-                        if meta_path is not None:
-                            self.append_actual_pose_to_meta(meta_path, plant_id, pose["label"], transform)
-
-                except Exception as e:
-                    self.get_logger().warn(f"TF lookup failed: {e}")
+            except Exception as e:
+                self.get_logger().warn(f"TF lookup failed: {e}")
 
         self.get_logger().info("All targets processed. Sending arm to rest.")
         success, message = self.call_arm_go_rest()

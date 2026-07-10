@@ -34,8 +34,6 @@ class MoveItArmHelper(Node):
 
         self.current_joint_state = None
         self.active_execute_goal = None
-        self.one_turn_limited_joints = ["joint_1", "joint_3", "joint_5", "joint_7"]
-        self.max_joint_turn = 2.0 * math.pi
 
         self.declare_parameter("bench_height", 0.75)
         self.declare_parameter("pot_height", 0.15)
@@ -138,6 +136,12 @@ class MoveItArmHelper(Node):
 
         return constraints
 
+    def make_start_state(self, joint_map):
+        joint_state = JointState()
+        joint_state.name = list(joint_map.keys())
+        joint_state.position = [float(joint_map[name]) for name in joint_state.name]
+        return joint_state
+
     def make_min_z_path_constraints(self):
         box = SolidPrimitive()
         box.type = SolidPrimitive.BOX
@@ -211,7 +215,7 @@ class MoveItArmHelper(Node):
 
         return result.planned_trajectory
 
-    def plan_to_target(self, x, y, z, qx, qy, qz, qw):
+    def plan_to_target(self, x, y, z, qx, qy, qz, qw, start_joint_map=None):
         if not self.move_group_client.wait_for_server(timeout_sec=10.0):
             self.get_logger().error("/move_action server not ready")
             return None
@@ -222,7 +226,11 @@ class MoveItArmHelper(Node):
         request.allowed_planning_time = self.planning_time
         request.max_velocity_scaling_factor = self.velocity_scaling
         request.max_acceleration_scaling_factor = self.acceleration_scaling
-        request.start_state.is_diff = True
+        if start_joint_map is None:
+            request.start_state.is_diff = True
+        else:
+            request.start_state.joint_state = self.make_start_state(start_joint_map)
+            request.start_state.is_diff = True
         request.goal_constraints.append(self.make_pose_goal(x, y, z, qx, qy, qz, qw))
         #request.path_constraints = self.make_min_z_path_constraints()
 
@@ -260,42 +268,39 @@ class MoveItArmHelper(Node):
 
         return result.planned_trajectory
 
-    def trajectory_respects_one_turn_limits(self, trajectory):
+    def trajectory_joint_cost(self, trajectory):
+        points = trajectory.joint_trajectory.points
+        joint_names = trajectory.joint_trajectory.joint_names
+
+        if len(points) < 2:
+            return 0.0
+
+        total = 0.0
+        previous = points[0].positions
+
+        for point in points[1:]:
+            current = point.positions
+            for i, _joint_name in enumerate(joint_names):
+                if len(previous) > i and len(current) > i:
+                    total += abs(self.angle_error(current[i], previous[i]))
+
+            previous = current
+
+        return total
+
+    def trajectory_final_joint_map(self, trajectory):
         points = trajectory.joint_trajectory.points
         joint_names = trajectory.joint_trajectory.joint_names
 
         if not points:
-            return True, ""
+            return {}
 
-        for joint_name in self.one_turn_limited_joints:
-            if joint_name not in joint_names:
-                continue
-
-            joint_index = joint_names.index(joint_name)
-            positions = [
-                point.positions[joint_index]
-                for point in points
-                if len(point.positions) > joint_index
-            ]
-
-            if len(positions) < 2:
-                continue
-
-            unwrapped = [positions[0]]
-            for position in positions[1:]:
-                previous = unwrapped[-1]
-                delta = math.atan2(math.sin(position - previous), math.cos(position - previous))
-                unwrapped.append(previous + delta)
-
-            travel = max(unwrapped) - min(unwrapped)
-            if travel > self.max_joint_turn:
-                return (
-                    False,
-                    f"{joint_name} trajectory rotates {math.degrees(travel):.1f} deg "
-                    f"(limit {math.degrees(self.max_joint_turn):.1f} deg)",
-                )
-
-        return True, ""
+        final_positions = points[-1].positions
+        return {
+            joint_name: float(final_positions[i])
+            for i, joint_name in enumerate(joint_names)
+            if len(final_positions) > i
+        }
 
     def make_pose_goal(self, x, y, z, qx, qy, qz, qw):
         target_pose = Pose()

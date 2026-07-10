@@ -6,6 +6,7 @@ find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/MoveToPose.srv"
+  "srv/PlanToPose.srv"
   "msg/PlantTarget.msg"
   "msg/PlantTargetArray.msg"
   "srv/CaptureView.srv"
