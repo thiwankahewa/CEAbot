@@ -1,22 +1,25 @@
 #!/usr/bin/env python3
 
+import time
+
 import cv2
 import numpy as np
-from std_srvs.srv import Trigger
-import time
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String, Bool, Int16, Int16MultiArray, Float32MultiArray
+from std_msgs.msg import Bool, Float32MultiArray, Int16, Int16MultiArray, String
+from std_srvs.srv import Trigger
 
-FIRST_BENCH_ID = 1
-LAST_BENCH_ID = 10
 FIRST_ROW_ID = 11
 LAST_ROW_ID = 61
 END_ROWS = [FIRST_ROW_ID, LAST_ROW_ID]
+TRACKING_STATES = ("bench_tracking_f", "bench_tracking_b")
+DETECTION_STATES = (*TRACKING_STATES, "aruco_centering")
+CAMERA_DEVICE = "/dev/v4l/by-id/usb-Arducam_Technology_Co.__Ltd._USB_2.0_Camera_SN0001-video-index0"
+
 
 class ArucoManager(Node):
     def __init__(self):
-        super().__init__('aruco_detector')
+        super().__init__("aruco_detector")
 
         # ---------------- states and variables ----------------
         self.auto_state = "idle"
@@ -24,11 +27,6 @@ class ArucoManager(Node):
         self.current_bench = None
         self.current_row = None
         self.row_known = False
-
-        self.range_from_bench = 1
-        self.range_from_row = 11
-        self.range_to_bench = 1
-        self.range_to_row = 11
 
         self.scan_start_bench = 1
         self.scan_start_row = 11
@@ -52,21 +50,18 @@ class ArucoManager(Node):
         self.rest_future = None
 
         self.stable_goal_frames = 2
-        self.usb_cam_index = 0
         self.usb_cam_width = 640
         self.usb_cam_height = 480
         self.usb_cam_fps = 15
 
-                # ---------------- services ----------------
-        self.srv_reconnect = self.create_service(Trigger,"/aruco_detector/aruco_camera_reconnect",self.on_camera_reconnect)
+        # ---------------- services ----------------
+        self.srv_reconnect = self.create_service(Trigger, "/aruco_detector/aruco_camera_reconnect", self.on_camera_reconnect)
 
         # ---------------- camera, aruco setup ----------------
-        self.aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_ARUCO_ORIGINAL)
-        self.aruco_params = cv2.aruco.DetectorParameters()
-        self.detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.aruco_params)
+        aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_ARUCO_ORIGINAL)
+        self.detector = cv2.aruco.ArucoDetector(aruco_dict, cv2.aruco.DetectorParameters())
         self.cap = None
         self._open_camera()
-
 
         # ---------------- subs ----------------
         self.sub_auto_state = self.create_subscription(String, '/auto_state', self.cb_auto_state, 10)
@@ -83,9 +78,9 @@ class ArucoManager(Node):
 
         # ---------------- timer ----------------
         self.timer = self.create_timer(0.1, self.detect_tick)
-    
+
         # ---------------- helper functions ----------------
-    
+
     def marker_to_location(self, marker_id: int):
         if FIRST_ROW_ID <= marker_id <= LAST_ROW_ID:
             return self.current_bench, marker_id
@@ -97,16 +92,14 @@ class ArucoManager(Node):
 
     def publish_location(self, marker_id: int, bench: int, row: int, goal_bench: int, goal_row: int):
         if bench is None or row is None or goal_bench is None or goal_row is None:
-            self.get_logger().warn(f"Skipping publish_location: marker={marker_id}, bench={bench}, row={row}, "f"goal_bench={goal_bench}, goal_row={goal_row}")
+            self.get_logger().warn(f"Skipping publish_location: marker={marker_id}, bench={bench}, row={row}, goal_bench={goal_bench}, goal_row={goal_row}")
             return
-        msg = Int16MultiArray()
-        msg.data = [int(marker_id), int(bench), int(row),int(goal_bench), int(goal_row) ]
-        self.pub_location.publish(msg)
+        data = [int(marker_id), int(bench), int(row), int(goal_bench), int(goal_row)]
+        self.pub_location.publish(Int16MultiArray(data=data))
 
     def publish_align_error(self, visible: bool, center_error_px: float = 0.0):
-        msg = Float32MultiArray()
-        msg.data = [1.0 if visible else 0.0, float(center_error_px)]
-        self.pub_align_error.publish(msg)
+        data = [1.0 if visible else 0.0, float(center_error_px)]
+        self.pub_align_error.publish(Float32MultiArray(data=data))
 
     def _ensure_rest_client(self):
         if self.rest_client is None:
@@ -122,10 +115,9 @@ class ArucoManager(Node):
             self.get_logger().warn("Arm rest service is not available yet")
             return False
 
-        req = Trigger.Request()
         self.rest_pending = True
         self.rest_pending_action = action
-        self.rest_future = client.call_async(req)
+        self.rest_future = client.call_async(Trigger.Request())
         self.get_logger().info(f"Requested arm to go to rest before {action}")
         return True
 
@@ -137,12 +129,13 @@ class ArucoManager(Node):
             return False
 
         action = self.rest_pending_action
+        future = self.rest_future
         self.rest_pending = False
         self.rest_pending_action = None
         self.rest_future = None
 
         try:
-            result = self.rest_future.result()
+            result = future.result()
             if result is not None and getattr(result, "success", False):
                 self.get_logger().info(f"Arm rest completed: {getattr(result, 'message', '')}")
             else:
@@ -163,21 +156,21 @@ class ArucoManager(Node):
         return float(np.mean(pts[:, 1]))
 
     def _open_camera(self):
-        self.cap = cv2.VideoCapture("/dev/v4l/by-id/usb-Arducam_Technology_Co.__Ltd._USB_2.0_Camera_SN0001-video-index0",cv2.CAP_V4L2)
+        self.cap = cv2.VideoCapture(CAMERA_DEVICE, cv2.CAP_V4L2)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.usb_cam_width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.usb_cam_height)
         self.cap.set(cv2.CAP_PROP_FPS, self.usb_cam_fps)
 
         if not self.cap.isOpened():
-            self.get_logger().error(f"Could not open USB camera index {self.usb_cam_index}")
+            self.get_logger().error(f"Could not open ArUco camera: {CAMERA_DEVICE}")
             self.cap.release()
             self.cap = None
             return False
-        
-        self.get_logger().info(f"Aruco camera opened at index {self.usb_cam_index}")
+
+        self.get_logger().info(f"ArUco camera opened: {CAMERA_DEVICE}")
         return True
-    
-    def on_camera_reconnect(self, request, response):
+
+    def on_camera_reconnect(self, _request, response):
         try:
             self.get_logger().warn("Aruco camera reconnect requested...")
 
@@ -255,7 +248,7 @@ class ArucoManager(Node):
             self.goal_row += 1
             self.get_logger().info(f"Next goal of current scan range: ({self.goal_bench},{self.goal_row})")
             self.request_tracking_direction()
-            return 
+            return
 
         # Current scan range finished
         next_index = self.scan_plan_index + 1
@@ -265,7 +258,7 @@ class ArucoManager(Node):
                 return
             self.pub_auto_state_cmd.publish(String(data="idle"))
             self.get_logger().info("Full scan range plan complete")
-            return 
+            return
 
         next_bench, next_from_row, next_to_row = self.scan_plan[next_index]
 
@@ -277,9 +270,9 @@ class ArucoManager(Node):
             self.scan_start_row = next_from_row
             self.scan_end_bench = next_bench
             self.scan_end_row = next_to_row
-            self.get_logger().info(f"Next scan range on same bench")
+            self.get_logger().info("Next scan range on same bench")
             self.request_tracking_direction()
-            return 
+            return
 
         # Next scan range is on another bench: route to nearest exit first, then enter next bench, then move to next_from_row.
         self.routing_to_next_bench = True
@@ -288,14 +281,13 @@ class ArucoManager(Node):
         dist_to_last = abs(self.current_row - LAST_ROW_ID)
         exit_row = FIRST_ROW_ID if dist_to_first <= dist_to_last else LAST_ROW_ID
         self.goal_row = exit_row
-        self.get_logger().info(f"Starting route to current bench end: "f"current=({self.current_bench},{self.current_row}), "f"exit=({self.current_bench},{self.goal_row}), "f"next=({next_bench},{next_from_row})")
+        self.get_logger().info(f"Starting route to current bench end: current=({self.current_bench},{self.current_row}), exit=({self.current_bench},{self.goal_row}), next=({next_bench},{next_from_row})")
         self.request_tracking_direction()
-        return 
 
     def is_in_selected_range(self, bench: int, row: int) -> bool:
         if not self.scan_plan:
             return bench == self.goal_bench and row == self.goal_row
-        
+
         current_bench, from_row, to_row = self.scan_plan[self.scan_plan_index]
         if bench != current_bench:
             return False
@@ -304,7 +296,7 @@ class ArucoManager(Node):
         high_row = max(from_row, to_row)
 
         return low_row <= row <= high_row
-    
+
     def is_active_stop_target(self, bench: int, row: int) -> bool:
         if not self.is_in_selected_range(bench, row):
             return False
@@ -314,7 +306,7 @@ class ArucoManager(Node):
     # ---------------- callbacks ----------------
     def cb_auto_state(self, msg: String):
         self.auto_state = (msg.data or "").strip().lower()
-        if self.auto_state not in ("bench_tracking_f", "bench_tracking_b"):
+        if self.auto_state not in TRACKING_STATES:
             self.goal_seen_count = 0
 
     def cb_current_bench(self, msg: Int16):
@@ -325,13 +317,8 @@ class ArucoManager(Node):
         if len(data) < 3 or len(data) % 3 != 0:
             self.get_logger().warn("Goal locations must be [bench, from_row, to_row, bench, from_row, to_row, ...]")
             return
-        
-        self.scan_plan = []
-        for i in range(0, len(data), 3):
-            bench = int(data[i])
-            from_row = int(data[i + 1])
-            to_row = int(data[i + 2])
-            self.scan_plan.append((bench, from_row, to_row))
+
+        self.scan_plan = [tuple(map(int, data[i:i + 3])) for i in range(0, len(data), 3)]
 
         self.scan_plan_index = 0
         self.current_row = None
@@ -345,8 +332,8 @@ class ArucoManager(Node):
         self.scan_start_row = first_from_row
         self.scan_end_bench = first_bench
         self.scan_end_row = first_to_row
-        self.get_logger().info(f"New scan plan received. "f"Starting with ({self.goal_bench},{self.goal_row})")
-        self.get_logger().info(f"Waiting to detect current row")
+        self.get_logger().info(f"New scan plan received. Starting with ({self.goal_bench},{self.goal_row})")
+        self.get_logger().info("Waiting to detect current row")
 
         if self.auto_state != "bench_tracking_f":
             self.pub_auto_state_cmd.publish(String(data="bench_tracking_f"))
@@ -366,7 +353,7 @@ class ArucoManager(Node):
             self.process_pending_rest()
             return
 
-        if self.auto_state not in ("bench_tracking_f", "bench_tracking_b", "aruco_centering"):
+        if self.auto_state not in DETECTION_STATES:
             self.publish_align_error(False)
             return
 
@@ -380,7 +367,7 @@ class ArucoManager(Node):
             self.goal_seen_count = 0
             self.publish_align_error(False)
             return
-        
+
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         corners, ids, _ = self.detector.detectMarkers(gray)
 
@@ -389,7 +376,7 @@ class ArucoManager(Node):
             self.publish_align_error(False)
             return
 
-        ids = ids.flatten().tolist()
+        ids = ids.flatten()
         selected_id = None
         selected_corners = None
 
@@ -424,24 +411,17 @@ class ArucoManager(Node):
         self.request_tracking_direction()
 
         if selected_id != self.prev_selected_id:
-            self.publish_location(selected_id, self.current_bench, self.current_row,  self.goal_bench, self.goal_row)
-            self.get_logger().info(f"marker={selected_id}, current=({self.current_bench},{self.current_row}), "f"goal=({self.goal_bench},{self.goal_row})")
+            self.publish_location(selected_id, self.current_bench, self.current_row, self.goal_bench, self.goal_row)
+            self.get_logger().info(f"marker={selected_id}, current=({self.current_bench},{self.current_row}), goal=({self.goal_bench},{self.goal_row})")
             self.prev_selected_id = selected_id
 
-        center_error_px = None
-        active_goal_visible = False
-
-        if selected_corners is not None:
-            frame_center_x = frame.shape[0] / 2.0
-            marker_center_x = self.marker_center_x(selected_corners)
-            center_error_px = marker_center_x - frame_center_x
-            active_goal_visible = self.is_active_stop_target(self.current_bench, self.current_row)
+        frame_center_x = frame.shape[0] / 2.0
+        center_error_px = self.marker_center_x(selected_corners) - frame_center_x
+        active_goal_visible = self.is_active_stop_target(self.current_bench, self.current_row)
 
         # ---------------- routing mode ----------------
         if self.routing_to_next_bench:
-            routing_goal_visible = active_goal_visible and center_error_px is not None
-
-            if routing_goal_visible:
+            if active_goal_visible:
                 self.goal_seen_count += 1
             else:
                 self.goal_seen_count = 0
@@ -450,18 +430,18 @@ class ArucoManager(Node):
                 self.goal_seen_count = 0
                 self.prev_selected_id = None
 
-                next_bench, next_from_row, next_to_row = self.scan_plan[self.pending_next_plan_index]
+                next_bench = self.scan_plan[self.pending_next_plan_index][0]
 
                 # Reached current bench exit row. Now start bench_changer.
                 if self.current_row in END_ROWS:
                     self.goal_bench = next_bench
-                    self.publish_location(selected_id, self.current_bench, self.current_row,  self.goal_bench, self.goal_row)
-                    self.get_logger().info(f"Reached bench exit: current=({self.current_bench},{self.current_row}), "f"next_bench={next_bench}. Starting bench change.")
+                    self.publish_location(selected_id, self.current_bench, self.current_row, self.goal_bench, self.goal_row)
+                    self.get_logger().info(f"Reached bench exit: current=({self.current_bench},{self.current_row}), next_bench={next_bench}. Starting bench change.")
                     self.pub_auto_state_cmd.publish(String(data="bench_change_start"))
                     return
             return
 
-        if active_goal_visible and center_error_px is not None:
+        if active_goal_visible:
             self.goal_seen_count += 1
         else:
             self.goal_seen_count = 0
@@ -469,7 +449,7 @@ class ArucoManager(Node):
 
         if active_goal_visible and self.auto_state == "aruco_centering":
             self.publish_align_error(True, center_error_px)
-            
+
         if self.goal_seen_count >= self.stable_goal_frames and not self.stop_sent:
             self.stop_sent = True
             self.publish_stop(True)
@@ -485,6 +465,7 @@ class ArucoManager(Node):
             pass
         super().destroy_node()
 
+
 def main(args=None):
     rclpy.init(args=args)
     node = ArucoManager()
@@ -497,5 +478,6 @@ def main(args=None):
         node.destroy_node()
         rclpy.shutdown()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()

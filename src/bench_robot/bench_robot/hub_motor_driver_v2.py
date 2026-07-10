@@ -2,33 +2,38 @@
 
 
 import csv
-import os
-from datetime import datetime
 import time
+from datetime import datetime
+from pathlib import Path
+
 import rclpy
-from rclpy.node import Node
 from pymodbus.client import ModbusSerialClient
-from std_msgs.msg import Float32MultiArray, Bool, String
-from std_srvs.srv import Trigger
 from rcl_interfaces.msg import SetParametersResult
+from rclpy.node import Node
+from std_msgs.msg import Bool, Float32MultiArray, String
+from std_srvs.srv import Trigger
+
+CORRECTION_STATES = ("yaw_correction", "align_center", "aruco_centering")
 
 
 def to_u16_signed(val: int) -> int:
     return val & 0xFFFF
 
+
 def to_i16(val: int) -> int:
     return val - 65536 if val & 0x8000 else val
 
+
 class MotorDriverNode(Node):
     def __init__(self):
-        super().__init__('hub_motor_driver_v2')
+        super().__init__("hub_motor_driver_v2")
 
         # -------- States and variables --------
         self.eStop = False
         self.auto_state = "manual"
 
         self.connected = False
-        self.port = '/dev/ttyUSB0'
+        self.port = "/dev/ttyUSB0"
         self.device_id = 1
         self.parked = False
         self.motor_enabled = True
@@ -43,26 +48,26 @@ class MotorDriverNode(Node):
         self.cmd_right_rpm = 0.0
         self.last_cmd_time = None
 
-        self.power_log_path = '/home/thiwa/CEAbot/power_logs/drive_power_log.csv'
+        self.power_log_path = Path("/home/thiwa/CEAbot/power_logs/drive_power_log.csv")
         self.power_samples = []
         self.state_start_time = self.get_clock().now()
 
         # -------- params --------
-        self.declare_parameter('acel_ms', 1200)
-        self.declare_parameter('decel_ms', 1200)
-        self.declare_parameter('acel_ms_corr', 1200)
-        self.declare_parameter('decel_ms_corr', 1200)
+        self.declare_parameter("acel_ms", 1200)
+        self.declare_parameter("decel_ms", 1200)
+        self.declare_parameter("acel_ms_corr", 1200)
+        self.declare_parameter("decel_ms_corr", 1200)
 
         # -------- services --------
         self.srv_reconnect = self.create_service(Trigger, "/arduino_bridge/hub_servo_reconnect", self.on_reconnect)
 
         # -------- subs --------
         self.sub_auto_state = self.create_subscription(String, "/auto_state", self.cb_auto_state, 10)
-        self.sub_rpm = self.create_subscription(Float32MultiArray, '/wheel_rpm_cmd', self.cb_rpm_cmd, 10)
-        self.sub_estop = self.create_subscription(Bool, '/e_stop', self.cb_estop, 10)
+        self.sub_rpm = self.create_subscription(Float32MultiArray, "/wheel_rpm_cmd", self.cb_rpm_cmd, 10)
+        self.sub_estop = self.create_subscription(Bool, "/e_stop", self.cb_estop, 10)
 
         # -------- pubs --------
-        self.power_pub = self.create_publisher(Float32MultiArray, '/drive_power', 10)
+        self.power_pub = self.create_publisher(Float32MultiArray, "/drive_power", 10)
 
         # -------- timers --------
         self.write_timer = self.create_timer(0.05, self.write_tick)
@@ -74,15 +79,16 @@ class MotorDriverNode(Node):
         self.try_connect(init=True)
         self._apply_profile(force=True)
         self._init_power_log()
-        
+
     def _load_params(self):
-        self.acel_ms = int(self.get_parameter('acel_ms').value)
-        self.decel_ms = int(self.get_parameter('decel_ms').value)
-        self.acel_ms_corr = int(self.get_parameter('acel_ms_corr').value)
-        self.decel_ms_corr = int(self.get_parameter('decel_ms_corr').value)
+        self.acel_ms = int(self.get_parameter("acel_ms").value)
+        self.decel_ms = int(self.get_parameter("decel_ms").value)
+        self.acel_ms_corr = int(self.get_parameter("acel_ms_corr").value)
+        self.decel_ms_corr = int(self.get_parameter("decel_ms_corr").value)
 
     def on_params(self, params):
-        self._load_params()
+        for param in params:
+            setattr(self, param.name, int(param.value))
         self._apply_profile(force=True)
         return SetParametersResult(successful=True)
 
@@ -91,10 +97,10 @@ class MotorDriverNode(Node):
     def ensure_connected(self) -> bool:
         if self.connected:
             return True
-        now = time.time()
+        now = time.monotonic()
 
         # prevent spamming reconnect attempts
-        if (now - self.last_connect_attempt) < self.connect_retry_interval:
+        if now - self.last_connect_attempt < self.connect_retry_interval:
             return False
 
         self.last_connect_attempt = now
@@ -117,7 +123,7 @@ class MotorDriverNode(Node):
 
     def _read_registers(self, addr: int, count: int):
         try:
-            res = self.client.read_holding_registers(addr,count=count,device_id=self.device_id)
+            res = self.client.read_holding_registers(addr, count=count, device_id=self.device_id)
             if res is None or res.isError():
                 self.get_logger().warning(f"read_registers failed @0x{addr:04X}: {res}")
                 self.connected = False
@@ -148,15 +154,16 @@ class MotorDriverNode(Node):
             return
         self._write_rpms(0.0, 0.0)
         if not self.parked:
-            self.set_parking(True)
+            self._write_single(0x200C, 1)
+            self.parked = True
 
     def _apply_profile(self, force: bool = False):
         if not self.ensure_connected():
             return
-        
-        corr = self.auto_state in ("yaw_correction", "align_center", "aruco_centering")
 
-        if (not force) and (corr == self._profile_is_corr):
+        corr = self.auto_state in CORRECTION_STATES
+
+        if not force and corr == self._profile_is_corr:
             return
 
         if corr:
@@ -176,13 +183,12 @@ class MotorDriverNode(Node):
     # ---- callbacks ----
 
     def cb_estop(self, msg: Bool):
-        new_state = bool(msg.data)
-        self.eStop = new_state
+        self.eStop = bool(msg.data)
 
         if self.eStop:
             self.idle_motor_off()
 
-        else:
+        elif self.ensure_connected():
             self._write_single(0x200D, 0x0003)  # velocity mode
             time.sleep(0.02)
             self._write_single(0x200E, 0x0008)  # Enable driver again
@@ -198,7 +204,7 @@ class MotorDriverNode(Node):
             self.auto_state = st
             self._apply_profile(force=False)
 
-        if self.auto_state == "idle" or self.auto_state == "scan_start":
+        if self.auto_state in ("idle", "scan_start"):
             self.idle_motor_off()
         else:
             if not self.motor_enabled:
@@ -216,13 +222,13 @@ class MotorDriverNode(Node):
         self.last_cmd_time = self.get_clock().now()
 
     # ---- timer functions ----
-    
+
     def watchdog_tick(self):
         if self.last_cmd_time is None:
             return
         dt = (self.get_clock().now() - self.last_cmd_time).nanoseconds * 1e-9
         if dt > 0.2:
-            #self.get_logger().warning("cmd timeout -> STOP")
+            # self.get_logger().warning("cmd timeout -> STOP")
             self.stop()
             self.last_cmd_time = None
 
@@ -234,16 +240,13 @@ class MotorDriverNode(Node):
         if not self.ensure_connected():
             return
 
-        left = float(self.cmd_left_rpm)
-        right = float(self.cmd_right_rpm)
-
         if not self.motor_enabled:
             self._write_single(0x200E, 0x0008)
             time.sleep(0.05)
             self.motor_enabled = True
 
         # Keep your mapping (right inverted)
-        self._write_rpms(left, -right)
+        self._write_rpms(self.cmd_left_rpm, -self.cmd_right_rpm)
 
     # ---- connect functions ----
 
@@ -251,7 +254,7 @@ class MotorDriverNode(Node):
         try:
             if self.client.connect():
                 self.connected = True
-                self.connection_error_reported = False 
+                self.connection_error_reported = False
                 self.get_logger().info("Connected to ZLAC8015D" if init else "Reconnected to ZLAC8015D")
                 self._write_single(0x2022, 10)
                 time.sleep(0.02)
@@ -259,6 +262,7 @@ class MotorDriverNode(Node):
                 time.sleep(0.02)
                 self._write_single(0x200E, 0x0008)
                 self.set_parking(False)
+                self.motor_enabled = True
                 return True
             self.connected = False
             if not self.connection_error_reported:
@@ -272,7 +276,7 @@ class MotorDriverNode(Node):
                 self.connection_error_reported = True
             return False
 
-    def on_reconnect(self, request, response):
+    def on_reconnect(self, _request, response):
         try:
             try:
                 if self.connected:
@@ -285,10 +289,7 @@ class MotorDriverNode(Node):
                 self.get_logger().warning(f"disable failed: {e}")
 
             self.connected = False
-            if not self.client.connect():
-                raise RuntimeError("reconnect failed")
-
-            if not self.try_connect(init=False):
+            if not self.try_connect():
                 raise RuntimeError("try_connect failed")
 
             self.last_cmd_time = None
@@ -299,30 +300,28 @@ class MotorDriverNode(Node):
             response.success = False
             response.message = f"Failed: {e}"
         return response
-    
+
     # ---- power logging ----
 
     def _init_power_log(self):
-        folder = os.path.dirname(self.power_log_path)
-        if folder:
-            os.makedirs(folder, exist_ok=True)
+        self.power_log_path.parent.mkdir(parents=True, exist_ok=True)
 
-        if not os.path.exists(self.power_log_path):
-            with open(self.power_log_path, 'w', newline='') as f:
+        if not self.power_log_path.exists():
+            with open(self.power_log_path, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
                 writer.writerow([
-                    'timestamp',
-                    'auto_state',
-                    'duration_s',
-                    'sample_count',
-                    'avg_bus_voltage_v',
-                    'avg_left_current_a',
-                    'avg_right_current_a',
-                    'avg_total_current_a',
-                    'avg_left_power_w',
-                    'avg_right_power_w',
-                    'avg_total_power_w',
-                    'energy_wh'
+                    "timestamp",
+                    "auto_state",
+                    "duration_s",
+                    "sample_count",
+                    "avg_bus_voltage_v",
+                    "avg_left_current_a",
+                    "avg_right_current_a",
+                    "avg_total_current_a",
+                    "avg_left_power_w",
+                    "avg_right_power_w",
+                    "avg_total_power_w",
+                    "energy_wh",
                 ])
 
     def read_drive_power(self):
@@ -347,13 +346,13 @@ class MotorDriverNode(Node):
         total_current_a = abs(left_a) + abs(right_a)
 
         return {
-            'bus_v': bus_v,
-            'left_a': left_a,
-            'right_a': right_a,
-            'total_current_a': total_current_a,
-            'left_power_w': left_power_w,
-            'right_power_w': right_power_w,
-            'total_power_w': total_power_w
+            "bus_v": bus_v,
+            "left_a": left_a,
+            "right_a": right_a,
+            "total_current_a": total_current_a,
+            "left_power_w": left_power_w,
+            "right_power_w": right_power_w,
+            "total_power_w": total_power_w,
         }
 
     def power_tick(self):
@@ -364,54 +363,43 @@ class MotorDriverNode(Node):
         now = self.get_clock().now()
         self.power_samples.append((now, data))
 
-        msg = Float32MultiArray()
-        msg.data = [
-            float(data['total_power_w']),
-            float(data['left_power_w']),
-            float(data['right_power_w']),
-            float(data['bus_v']),
-            float(data['left_a']),
-            float(data['right_a'])
-        ]
-        self.power_pub.publish(msg)
+        values = [float(data[key]) for key in ("total_power_w", "left_power_w", "right_power_w", "bus_v", "left_a", "right_a")]
+        self.power_pub.publish(Float32MultiArray(data=values))
 
     def save_state_power_average(self, state_name: str):
+        now = self.get_clock().now()
         if not self.power_samples:
+            self.state_start_time = now
             return
 
-        now = self.get_clock().now()
         duration_s = (now - self.state_start_time).nanoseconds * 1e-9
         n = len(self.power_samples)
 
-        avg_bus_v = sum(s[1]['bus_v'] for s in self.power_samples) / n
-        avg_left_a = sum(s[1]['left_a'] for s in self.power_samples) / n
-        avg_right_a = sum(s[1]['right_a'] for s in self.power_samples) / n
-        avg_total_current_a = sum(s[1]['total_current_a'] for s in self.power_samples) / n
-        avg_left_power_w = sum(s[1]['left_power_w'] for s in self.power_samples) / n
-        avg_right_power_w = sum(s[1]['right_power_w'] for s in self.power_samples) / n
-        avg_total_power_w = sum(s[1]['total_power_w'] for s in self.power_samples) / n
+        keys = ("bus_v", "left_a", "right_a", "total_current_a", "left_power_w", "right_power_w", "total_power_w")
+        averages = {key: sum(sample[1][key] for sample in self.power_samples) / n for key in keys}
 
-        energy_wh = avg_total_power_w * duration_s / 3600.0
+        energy_wh = averages["total_power_w"] * duration_s / 3600.0
 
-        with open(self.power_log_path, 'a', newline='') as f:
+        with open(self.power_log_path, "a", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow([
-                datetime.now().isoformat(timespec='seconds'),
+                datetime.now().isoformat(timespec="seconds"),
                 state_name,
                 round(duration_s, 3),
                 n,
-                round(avg_bus_v, 3),
-                round(avg_left_a, 3),
-                round(avg_right_a, 3),
-                round(avg_total_current_a, 3),
-                round(avg_left_power_w, 3),
-                round(avg_right_power_w, 3),
-                round(avg_total_power_w, 3),
-                round(energy_wh, 6)
+                round(averages["bus_v"], 3),
+                round(averages["left_a"], 3),
+                round(averages["right_a"], 3),
+                round(averages["total_current_a"], 3),
+                round(averages["left_power_w"], 3),
+                round(averages["right_power_w"], 3),
+                round(averages["total_power_w"], 3),
+                round(energy_wh, 6),
             ])
 
         self.power_samples = []
         self.state_start_time = now
+
 
 def main(args=None):
     rclpy.init(args=args)
@@ -433,5 +421,6 @@ def main(args=None):
         node.destroy_node()
         rclpy.shutdown()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
