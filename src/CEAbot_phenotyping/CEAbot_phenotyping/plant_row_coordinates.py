@@ -189,8 +189,18 @@ class PlantCoordinateNode(Node):
         if xs.size == 0:
             return None
 
-        top_u_crop = int(np.mean(xs))
-        top_v_crop = int(np.mean(ys))
+        # Keep the robust median depth for the arm target, but choose its image
+        # location from an actual top-region plant pixel. The arithmetic mean
+        # of separated leaf/flower clusters can fall into an empty gap.
+        top_center_x = float(np.mean(xs))
+        top_center_y = float(np.mean(ys))
+        distances_sq = (
+            (xs.astype(np.float64) - top_center_x) ** 2
+            + (ys.astype(np.float64) - top_center_y) ** 2
+        )
+        representative_index = int(np.argmin(distances_sq))
+        top_u_crop = int(xs[representative_index])
+        top_v_crop = int(ys[representative_index])
         top_depth = float(np.median(depth_crop[ys, xs]))
 
         top_u_full = top_u_crop + x1
