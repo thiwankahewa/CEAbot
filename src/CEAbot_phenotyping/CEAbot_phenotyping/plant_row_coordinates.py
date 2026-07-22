@@ -41,6 +41,18 @@ class PlantCoordinateNode(Node):
         self.max_depth_mm = 900.0
         self.dilate_itr = 2
 
+        # convention: pot 1 is the rightmost pot and IDs increase to the left.
+        self.declare_parameter("pot_count", 4)
+        self.pot_count = int(self.get_parameter("pot_count").value)
+        if self.pot_count < 1:
+            self.get_logger().warn("pot_count must be at least 1; using 4")
+            self.pot_count = 4
+
+        self.pot_slot_x_fractions = tuple((self.pot_count - slot_index - 0.5) / self.pot_count
+            for slot_index in range(self.pot_count))
+
+        self.max_pot_slot_error_fraction = 0.45 / self.pot_count
+
          # -------- Subscriptions and publishers --------
         self.state_sub = self.create_subscription(String,"/auto_state",self.cb_auto_state,10,)
         self.color_sub = self.create_subscription(Image,"/top_scan/color",self.cb_color,10)
@@ -203,6 +215,24 @@ class PlantCoordinateNode(Node):
             return depth.astype(np.float32)
         return depth.astype(np.float32) * 1000.0
 
+    def assign_pot_slot(self, center_x_crop, crop_width):
+        """Return the fixed pot ID nearest to a detected plant center."""
+        if crop_width <= 0:
+            return None, None
+
+        center_fraction = float(center_x_crop) / float(crop_width)
+        errors = [
+            abs(center_fraction - slot_fraction)
+            for slot_fraction in self.pot_slot_x_fractions
+        ]
+        slot_index = int(np.argmin(errors))
+        slot_error = float(errors[slot_index])
+
+        if slot_error > self.max_pot_slot_error_fraction:
+            return None, slot_error
+
+        return slot_index + 1, slot_error
+
     def save_plant_results_to_metadata(self, output_dir, results):
         if output_dir is None:
             self.get_logger().warn("No run directory received. Plant metadata not saved.")
@@ -270,6 +300,7 @@ class PlantCoordinateNode(Node):
             & (depth_crop >= self.min_depth_mm)
             & (depth_crop <= self.max_depth_mm)
         )
+
         mask[~depth_mask] = 0
         kernel = np.ones((self.kernel_size, self.kernel_size), np.uint8)
         mask_clean = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
@@ -287,7 +318,7 @@ class PlantCoordinateNode(Node):
 
         plant_records = []
 
-        for i, cnt in enumerate(valid_contours):
+        for cnt in valid_contours:
             area = cv2.contourArea(cnt)
             M = cv2.moments(cnt)
 
@@ -299,6 +330,13 @@ class PlantCoordinateNode(Node):
 
             center_x_full = center_x_crop + x1_clamped
             center_y_full = center_y_crop + y1_clamped
+
+            pot_slot_id, pot_slot_error = self.assign_pot_slot(center_x_crop, crop.shape[1])
+
+            if pot_slot_id is None:
+                self.get_logger().warn(
+                    "Ignoring plant contour because its center does not match "f"error={pot_slot_error:.3f}).")
+                continue
 
             center_depth = self.get_depth_median_around_pixel(depth,center_x_full,center_y_full,self.center_window_size)
             top_result = self.get_top_point_from_contour(depth, cnt, x1_clamped, y1_clamped, x2_clamped, y2_clamped)
@@ -329,7 +367,8 @@ class PlantCoordinateNode(Node):
                 center_xy_3d = self.pixel_depth_to_3d(center_x_full,center_y_full,depth_for_center_xy,fx,fy,cx_intr,cy_intr)
 
             row = {
-                "plant_id": i + 1,
+                "plant_id": pot_slot_id,
+                "pot_slot_error": pot_slot_error,
                 "area_px": area,
 
                 "center_x": center_xy_3d[0] if center_xy_3d else None,
@@ -349,17 +388,18 @@ class PlantCoordinateNode(Node):
 
             plant_records.append(row)
 
-        plant_records.sort(
-            key=lambda row: (
-                row["center_x"] is not None,
-                row["center_x"] if row["center_x"] is not None else 0,
-            ),
-            reverse=True,
-        )
+        # A fragmented mask can occasionally produce multiple contours in one
+        # slot. Keep the largest contour, but never renumber another pot.
+        records_by_slot = {}
+        for row in plant_records:
+            slot_id = row["plant_id"]
+            existing = records_by_slot.get(slot_id)
+            if existing is None or row["area_px"] > existing["area_px"]:
+                if existing is not None:
+                    self.get_logger().warn(f"Multiple plant contours matched pot slot {slot_id}; ""keeping the largest contour.")
+                records_by_slot[slot_id] = row
 
-        for plant_id, row in enumerate(plant_records, start=1):
-            row["plant_id"] = plant_id
-        results = plant_records
+        results = [records_by_slot[slot_id] for slot_id in sorted(records_by_slot)]
 
         target_msg = PlantTargetArray()
         target_msg.run_dir = str(output_dir) if output_dir is not None else ""
