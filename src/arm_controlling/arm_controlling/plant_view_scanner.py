@@ -35,7 +35,7 @@ class PlantViewScanner(MoveItArmHelper):
         self.declare_parameter("circle_radius_offset", 0.05)   # distance from top view to side-view circle
         self.declare_parameter("circle_height_offset", 0.1)
         self.declare_parameter("look_at_angle_offset", 0.2)
-        self.declare_parameter("view_count", 5)
+        self.declare_parameter("view_count", 2)
         self.declare_parameter("optimize_view_order", True)
         # Limit greedy optimization to adjacent groups of plants.  A value of
         # 2 optimizes plants 1-2, then plants 3-4, while carrying the predicted
