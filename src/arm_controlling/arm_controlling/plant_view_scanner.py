@@ -4,6 +4,9 @@ import threading
 import math
 import os
 import time
+from datetime import datetime, timezone
+
+import yaml
 import rclpy
 import tf2_ros
 from rclpy.time import Time
@@ -32,7 +35,7 @@ class PlantViewScanner(MoveItArmHelper):
         self.declare_parameter("circle_radius_offset", 0.05)   # distance from top view to side-view circle
         self.declare_parameter("circle_height_offset", 0.1)
         self.declare_parameter("look_at_angle_offset", 0.2)
-        self.declare_parameter("view_count", 3)              
+        self.declare_parameter("view_count", 5)
         self.declare_parameter("optimize_view_order", True)
         # Limit greedy optimization to adjacent groups of plants.  A value of
         # 2 optimizes plants 1-2, then plants 3-4, while carrying the predicted
@@ -132,9 +135,14 @@ class PlantViewScanner(MoveItArmHelper):
         threading.Thread(target=self.run_scan_thread, daemon=True).start()
 
     def run_scan_thread(self):
+        self.scan_results = {}
+        self.scan_processing_complete = False
         try:
             self.run()
+        except Exception as exc:
+            self.get_logger().error(f"Plant scan crashed: {exc}")
         finally:
+            self.save_scan_summary()
             self.scan_busy = False
 
     def cb_pause_scan(self, request, response):
@@ -492,6 +500,114 @@ class PlantViewScanner(MoveItArmHelper):
 
         return items
 
+    def initialize_scan_summary(self, items):
+        self.scan_processing_complete = False
+        self.scan_results = {
+            (item["plant_id"], item["pose"]["label"]): {
+                "plant_id": int(item["plant_id"]),
+                "view": item["pose"]["label"],
+                "motion_status": "pending",
+                "capture_status": "not_attempted",
+            }
+            for item in items
+        }
+
+    def set_scan_result(self, item, motion_status=None, capture_status=None):
+        key = (item["plant_id"], item["pose"]["label"])
+        result = self.scan_results.get(key)
+        if result is None:
+            return
+        if motion_status is not None:
+            result["motion_status"] = motion_status
+        if capture_status is not None:
+            result["capture_status"] = capture_status
+
+    def save_scan_summary(self):
+        if not getattr(self, "scan_results", None) or not self.latest_run_dir:
+            return
+
+        metadata_path = os.path.join(self.latest_run_dir, "metadata.yaml")
+        try:
+            if os.path.exists(metadata_path):
+                with open(metadata_path, "r", encoding="utf-8") as metadata_file:
+                    metadata = yaml.safe_load(metadata_file) or {}
+            else:
+                metadata = {}
+
+            results = list(self.scan_results.values())
+            reached = sum(r["motion_status"] == "reached" for r in results)
+            planning_failed = sum(
+                r["motion_status"] == "planning_failed" for r in results
+            )
+            execution_failed = sum(
+                r["motion_status"] == "execution_failed" for r in results
+            )
+            capture_succeeded = sum(
+                r["capture_status"] == "succeeded" for r in results
+            )
+            capture_failed = sum(
+                r["capture_status"] == "failed" for r in results
+            )
+
+            per_plant = []
+            for plant_id in sorted({r["plant_id"] for r in results}):
+                plant_results = [r for r in results if r["plant_id"] == plant_id]
+                per_plant.append(
+                    {
+                        "plant_id": plant_id,
+                        "requested_poses": len(plant_results),
+                        "reached_poses": sum(
+                            r["motion_status"] == "reached" for r in plant_results
+                        ),
+                        "planning_failed": sum(
+                            r["motion_status"] == "planning_failed"
+                            for r in plant_results
+                        ),
+                        "execution_failed": sum(
+                            r["motion_status"] == "execution_failed"
+                            for r in plant_results
+                        ),
+                        "capture_succeeded": sum(
+                            r["capture_status"] == "succeeded"
+                            for r in plant_results
+                        ),
+                        "failed_views": [
+                            {
+                                "label": r["view"],
+                                "motion_status": r["motion_status"],
+                            }
+                            for r in plant_results
+                            if r["motion_status"] != "reached"
+                        ],
+                    }
+                )
+
+            requested = len(results)
+            metadata["plant_scan"] = {
+                "processing_complete": self.scan_processing_complete,
+                "requested_poses": requested,
+                "reached_poses": reached,
+                "success_rate_percent": (
+                    round(100.0 * reached / requested, 2) if requested else 0.0
+                ),
+                "planning_failed": planning_failed,
+                "execution_failed": execution_failed,
+                "capture_succeeded": capture_succeeded,
+                "capture_failed": capture_failed,
+                "pending_poses": sum(
+                    r["motion_status"] == "pending" for r in results
+                ),
+                "plants": per_plant,
+            }
+
+            temporary_path = metadata_path + ".plant_scan.tmp"
+            with open(temporary_path, "w", encoding="utf-8") as metadata_file:
+                yaml.safe_dump(metadata, metadata_file, sort_keys=False)
+            os.replace(temporary_path, metadata_path)
+            self.get_logger().info(f"Saved plant scan summary to {metadata_path}")
+        except Exception as exc:
+            self.get_logger().error(f"Could not save plant scan metadata: {exc}")
+
     def select_next_scan_item(self, remaining, step, batch_index, batch_count):
         start_joint_map = self.get_current_joint_map(timeout=5.0)
         if start_joint_map is None:
@@ -598,6 +714,7 @@ class PlantViewScanner(MoveItArmHelper):
                     f"Deferred retry skipped for plant {item['plant_id']} "
                     f"[{item['pose']['label']}]: no joint state"
                 )
+                self.set_scan_result(item, motion_status="planning_failed")
                 continue
 
             pose = item["pose"]
@@ -610,6 +727,7 @@ class PlantViewScanner(MoveItArmHelper):
                 self.get_logger().warn(
                     f"Deferred retry failed for {plan_pose['label']}: {message}"
                 )
+                self.set_scan_result(item, motion_status="planning_failed")
                 continue
 
             self.get_logger().info(
@@ -653,6 +771,7 @@ class PlantViewScanner(MoveItArmHelper):
             return
 
         all_scan_items = self.build_scan_items(targets)
+        self.initialize_scan_summary(all_scan_items)
         scan_batches = self.split_scan_batches(all_scan_items)
         self.deferred_scan_items = []
         optimizer_step = 1
@@ -690,6 +809,7 @@ class PlantViewScanner(MoveItArmHelper):
         order_index = self.retry_deferred_scan_items(
             order_index, len(all_scan_items)
         )
+        self.scan_processing_complete = True
         self.finish_scan()
 
     def execute_scan_item(self, item, order_index, total_items, trajectory=None):
@@ -724,6 +844,11 @@ class PlantViewScanner(MoveItArmHelper):
                 success, message = self.call_arm_move_to_pose(move_pose)
 
             if not success:
+                self.set_scan_result(
+                    item,
+                    motion_status="execution_failed",
+                    capture_status="not_attempted",
+                )
                 self.get_logger().warn(f"Arm move failed for plant {plant_id}, pose {pose['label']}: {message}")
                 if ("Stopped by user" in message or "STOP" in message or "stop" in message or "Controller deactivated" in message):
                     with self.scan_lock:
@@ -741,6 +866,11 @@ class PlantViewScanner(MoveItArmHelper):
 
             capture_started_at = time.time()
             capture_success = self.call_orbbec_capture(run_dir=self.latest_run_dir,plant_id=plant_id,view_label=pose["label"])
+            self.set_scan_result(
+                item,
+                motion_status="reached",
+                capture_status="succeeded" if capture_success else "failed",
+            )
             if not capture_success:
                 self.get_logger().warn(f"Orbbec capture failed for plant {plant_id}, view {pose['label']}")
 
