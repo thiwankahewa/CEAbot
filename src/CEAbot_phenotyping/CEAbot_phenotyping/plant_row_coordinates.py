@@ -31,8 +31,10 @@ class PlantCoordinateNode(Node):
         self.x2 = 1124
         self.y2 = 631
 
-        self.lower_green = np.array([22, 27, 0])
+        self.lower_green = np.array([35, 27, 10])
         self.upper_green = np.array([95, 255, 255])
+        self.lower_yellow = np.array([20, 80, 100])
+        self.upper_yellow = np.array([38, 255, 255])
         self.min_area = 3000
         self.kernel_size = 4
         self.top_percentile = 5.0
@@ -156,7 +158,7 @@ class PlantCoordinateNode(Node):
 
         return float(np.median(valid))
 
-    def get_top_point_from_contour(self, depth_full, contour_crop, x1, y1, x2, y2):
+    def get_top_point_from_contour(self,depth_full,contour_crop,measurement_mask_crop,x1,y1,x2,y2,):
         h_crop = y2 - y1
         w_crop = x2 - x1
 
@@ -165,13 +167,13 @@ class PlantCoordinateNode(Node):
 
         depth_crop = depth_full[y1:y2, x1:x2]
 
-        if depth_crop.shape[:2] != contour_mask_crop.shape:
-            self.get_logger().warn(
-                f"Depth crop shape {depth_crop.shape[:2]} does not match contour mask shape {contour_mask_crop.shape}."
-            )
+        if (depth_crop.shape[:2] != contour_mask_crop.shape
+            or measurement_mask_crop.shape != contour_mask_crop.shape):
+            self.get_logger().warn("Depth, measurement-mask, and contour-mask shapes do not match.")
             return None
 
-        plant_depth_values = depth_crop[contour_mask_crop > 0]
+        plant_pixels = ((contour_mask_crop > 0)& (measurement_mask_crop > 0))
+        plant_depth_values = depth_crop[plant_pixels]
 
         valid_depth = plant_depth_values[np.isfinite(plant_depth_values) & (plant_depth_values > 0)]
 
@@ -180,7 +182,7 @@ class PlantCoordinateNode(Node):
 
         top_threshold = np.percentile(valid_depth, self.top_percentile)
 
-        top_mask_crop = ((contour_mask_crop > 0) & (depth_crop > 0) & np.isfinite(depth_crop) & (depth_crop <= top_threshold))
+        top_mask_crop = (plant_pixels& (depth_crop > 0)& np.isfinite(depth_crop)& (depth_crop <= top_threshold))
 
         ys, xs = np.where(top_mask_crop)
 
@@ -293,7 +295,8 @@ class PlantCoordinateNode(Node):
         depth_crop = depth[y1_clamped:y2_clamped, x1_clamped:x2_clamped]
 
         hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-        mask = cv2.inRange(hsv, self.lower_green, self.upper_green)
+        green_mask = cv2.inRange(hsv, self.lower_green, self.upper_green)
+        yellow_mask = cv2.inRange(hsv, self.lower_yellow, self.upper_yellow)
 
         depth_mask = (
             np.isfinite(depth_crop)
@@ -301,13 +304,23 @@ class PlantCoordinateNode(Node):
             & (depth_crop <= self.max_depth_mm)
         )
 
-        mask[~depth_mask] = 0
+        green_mask[~depth_mask] = 0
+        yellow_mask[~depth_mask] = 0
         kernel = np.ones((self.kernel_size, self.kernel_size), np.uint8)
-        mask_clean = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-        mask_clean = cv2.morphologyEx(mask_clean, cv2.MORPH_CLOSE, kernel)
-        mask_clean = cv2.dilate(mask_clean, kernel, iterations=self.dilate_itr)
-        segmented = cv2.bitwise_and(crop, crop, mask=mask_clean)
-        contours, _ = cv2.findContours(mask_clean,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
+        green_clean = cv2.morphologyEx(green_mask, cv2.MORPH_OPEN, kernel)
+        green_clean = cv2.morphologyEx(green_clean, cv2.MORPH_CLOSE, kernel)
+        yellow_kernel = np.ones((2, 2), np.uint8)
+        yellow_clean = cv2.morphologyEx(yellow_mask, cv2.MORPH_OPEN, yellow_kernel)
+
+        # This conservative mask is the only mask allowed to contribute depth
+        # measurements. Dilation below is used strictly to group fragmented
+        # plant parts into one contour.
+        measurement_mask = cv2.bitwise_or(green_clean, yellow_clean)
+        grouping_mask = cv2.morphologyEx(measurement_mask, cv2.MORPH_CLOSE, kernel)
+        grouping_mask = cv2.dilate(grouping_mask, kernel, iterations=self.dilate_itr)
+
+        segmented = cv2.bitwise_and(crop, crop, mask=measurement_mask)
+        contours, _ = cv2.findContours(grouping_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         detection = crop.copy()
 
         valid_contours = sorted(
@@ -339,7 +352,15 @@ class PlantCoordinateNode(Node):
                 continue
 
             center_depth = self.get_depth_median_around_pixel(depth,center_x_full,center_y_full,self.center_window_size)
-            top_result = self.get_top_point_from_contour(depth, cnt, x1_clamped, y1_clamped, x2_clamped, y2_clamped)
+            top_result = self.get_top_point_from_contour(
+                depth,
+                cnt,
+                measurement_mask,
+                x1_clamped,
+                y1_clamped,
+                x2_clamped,
+                y2_clamped,
+            )
 
             top_3d = None
             top_depth = None
@@ -430,6 +451,8 @@ class PlantCoordinateNode(Node):
         if output_dir is not None:
             cv2.imwrite(str(output_dir / "crop.png"), crop)
             cv2.imwrite(str(output_dir / "segmented_result.png"), segmented)
+            cv2.imwrite(str(output_dir / "measurement_mask.png"), measurement_mask)
+            cv2.imwrite(str(output_dir / "grouping_mask.png"), grouping_mask)
             cv2.imwrite(str(output_dir / "detection.png"), detection)
             self.save_plant_results_to_metadata(output_dir, results)
 
