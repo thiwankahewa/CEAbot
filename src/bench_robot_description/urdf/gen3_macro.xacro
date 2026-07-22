@@ -30,7 +30,7 @@
     sim_isaac:=false
     isaac_joint_commands:=/isaac_joint_commands
     isaac_joint_states:=/isaac_joint_states
-    use_external_cable:=false
+    use_external_cable:=true
     initial_positions:=${dict(joint_1=0.0,joint_2=0.0,joint_3=0.0,joint_4=0.0,joint_5=0.0,joint_6=0.0,joint_7=0.0)}
     moveit_active:=false">
 
@@ -121,8 +121,8 @@
         <axis
           xyz="0 0 1" />
         <limit
-          lower="${-2*PI}"
-          upper="${2*PI}"
+          lower="${-PI}"
+          upper="${PI}"
           effort="39"
           velocity="1.3963" />
       </joint>
@@ -211,8 +211,8 @@
         <axis
           xyz="0 0 1" />
         <limit
-          lower="${-2*PI}"
-          upper="${2*PI}"
+          lower="${-PI}"
+          upper="${PI}"
           effort="39"
           velocity="1.3963" />
       </joint>
@@ -301,8 +301,8 @@
         <axis
           xyz="0 0 1" />
         <limit
-          lower="${-2*PI}"
-          upper="${2*PI}"
+          lower="${-PI}"
+          upper="${PI}"
           effort="9"
           velocity="1.2218" />
       </joint>
@@ -417,8 +417,8 @@
         <axis
           xyz="0 0 1" />
         <limit
-          lower="${-2*PI}"
-          upper="${2*PI}"
+          lower="${-PI}"
+          upper="${PI}"
           effort="9"
           velocity="1.2218" />
       </joint>

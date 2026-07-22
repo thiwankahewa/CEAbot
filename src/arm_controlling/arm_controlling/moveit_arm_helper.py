@@ -375,9 +375,27 @@ class MoveItArmHelper(Node):
             result = result_wrap.result
 
             if result.error_code.val != MoveItErrorCodes.SUCCESS:
-                self.get_logger().error(
-                    f"Execution failed. MoveIt error code: {result.error_code.val}"
-                )
+                self.get_logger().error(f"Execution failed. MoveIt error code: {result.error_code.val}")
+
+                # ExecuteTrajectory can time out while the lower-level
+                # FollowJointTrajectory controller is still RUNNING.  Do not
+                # immediately return and allow a fallback trajectory to start
+                # from a moving/stale robot state.  Observe the original goal
+                # through its expected duration and accept it if the endpoint
+                # is reached; otherwise wait for the arm to stop before the
+                # caller replans.
+                planned_duration = self.trajectory_duration(trajectory)
+                recovery_timeout = max(5.0, planned_duration + 5.0)
+                self.get_logger().warn("Execution action failed; waiting up to "f"{recovery_timeout:.1f}s for the active controller motion")
+                reached = self.wait_until_trajectory_finished(trajectory,tolerance=0.008,timeout=recovery_timeout,)
+                if reached:
+                    stopped = self.wait_until_robot_stops(timeout=5.0)
+                    if stopped:
+                        self.get_logger().warn("Controller reached the planned endpoint after ""MoveIt reported an execution failure")
+                        return True
+
+                self.get_logger().warn("Original trajectory did not finish successfully; ""waiting for the robot to stop before replanning")
+                self.wait_until_robot_stops(timeout=10.0)
                 return False
 
             return True
@@ -399,8 +417,9 @@ class MoveItArmHelper(Node):
 
         return True, "Active trajectory cancel requested"
 
-    def wait_until_robot_stops(self, velocity_tolerance=0.005, timeout=10.0):
+    def wait_until_robot_stops(self, velocity_tolerance=0.005, timeout=10.0, stable_duration=0.5):
         start_time = time.time()
+        stable_since = None
 
         while rclpy.ok():
             if time.time() - start_time > timeout:
@@ -418,8 +437,13 @@ class MoveItArmHelper(Node):
             max_vel = max(abs(v) for v in self.current_joint_state.velocity)
 
             if max_vel < velocity_tolerance:
-                self.get_logger().info("Robot arm stopped")
-                return True
+                if stable_since is None:
+                    stable_since = time.time()
+                elif time.time() - stable_since >= stable_duration:
+                    self.get_logger().info("Robot arm stopped")
+                    return True
+            else:
+                stable_since = None
 
             time.sleep(0.05)
 
