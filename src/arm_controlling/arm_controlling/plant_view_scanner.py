@@ -452,7 +452,7 @@ class PlantViewScanner(MoveItArmHelper):
             time.sleep(0.05)
 
     def wait_for_capture_meta(self, run_dir, plant_id, view_label, started_at, timeout=30.0):
-        meta_path = os.path.join(run_dir, f"plant_{int(plant_id):02d}", str(view_label), "meta.txt")
+        meta_path = os.path.join(run_dir, f"plant_{int(plant_id):02d}", str(view_label), "meta.yaml")
         start = time.time()
 
         while rclpy.ok():
@@ -469,18 +469,29 @@ class PlantViewScanner(MoveItArmHelper):
         t = transform.transform.translation
         r = transform.transform.rotation
 
-        with open(meta_path, "a") as f:
-            f.write(f"actual_pose_frame: {self.base_frame}\n")
-            f.write(f"actual_pose_child_frame: {self.ee_link}\n")
-            f.write(f"plant_id: {int(plant_id)}\n")
-            f.write(f"view_label: {view_label}\n")
-            f.write(f"actual_x: {t.x:.6f}\n")
-            f.write(f"actual_y: {t.y:.6f}\n")
-            f.write(f"actual_z: {t.z:.6f}\n")
-            f.write(f"actual_qx: {r.x:.6f}\n")
-            f.write(f"actual_qy: {r.y:.6f}\n")
-            f.write(f"actual_qz: {r.z:.6f}\n")
-            f.write(f"actual_qw: {r.w:.6f}\n")
+        with open(meta_path, "r", encoding="utf-8") as f:
+            metadata = yaml.safe_load(f) or {}
+
+        metadata.update(
+            {
+                "actual_pose_frame": self.base_frame,
+                "actual_pose_child_frame": self.ee_link,
+                "plant_id": int(plant_id),
+                "view_label": str(view_label),
+                "actual_x": round(t.x, 6),
+                "actual_y": round(t.y, 6),
+                "actual_z": round(t.z, 6),
+                "actual_qx": round(r.x, 6),
+                "actual_qy": round(r.y, 6),
+                "actual_qz": round(r.z, 6),
+                "actual_qw": round(r.w, 6),
+            }
+        )
+
+        temporary_meta_path = meta_path + ".tmp"
+        with open(temporary_meta_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(metadata, f, sort_keys=False)
+        os.replace(temporary_meta_path, meta_path)
 
     def build_scan_items(self, targets):
         items = []
@@ -507,20 +518,17 @@ class PlantViewScanner(MoveItArmHelper):
                 "plant_id": int(item["plant_id"]),
                 "view": item["pose"]["label"],
                 "motion_status": "pending",
-                "capture_status": "not_attempted",
             }
             for item in items
         }
 
-    def set_scan_result(self, item, motion_status=None, capture_status=None):
+    def set_scan_result(self, item, motion_status=None):
         key = (item["plant_id"], item["pose"]["label"])
         result = self.scan_results.get(key)
         if result is None:
             return
         if motion_status is not None:
             result["motion_status"] = motion_status
-        if capture_status is not None:
-            result["capture_status"] = capture_status
 
     def save_scan_summary(self):
         if not getattr(self, "scan_results", None) or not self.latest_run_dir:
@@ -542,13 +550,6 @@ class PlantViewScanner(MoveItArmHelper):
             execution_failed = sum(
                 r["motion_status"] == "execution_failed" for r in results
             )
-            capture_succeeded = sum(
-                r["capture_status"] == "succeeded" for r in results
-            )
-            capture_failed = sum(
-                r["capture_status"] == "failed" for r in results
-            )
-
             per_plant = []
             for plant_id in sorted({r["plant_id"] for r in results}):
                 plant_results = [r for r in results if r["plant_id"] == plant_id]
@@ -567,10 +568,6 @@ class PlantViewScanner(MoveItArmHelper):
                             r["motion_status"] == "execution_failed"
                             for r in plant_results
                         ),
-                        "capture_succeeded": sum(
-                            r["capture_status"] == "succeeded"
-                            for r in plant_results
-                        ),
                         "failed_views": [
                             {
                                 "label": r["view"],
@@ -587,13 +584,9 @@ class PlantViewScanner(MoveItArmHelper):
                 "processing_complete": self.scan_processing_complete,
                 "requested_poses": requested,
                 "reached_poses": reached,
-                "success_rate_percent": (
-                    round(100.0 * reached / requested, 2) if requested else 0.0
-                ),
+                "success_rate_percent": (round(100.0 * reached / requested, 2) if requested else 0.0),
                 "planning_failed": planning_failed,
                 "execution_failed": execution_failed,
-                "capture_succeeded": capture_succeeded,
-                "capture_failed": capture_failed,
                 "pending_poses": sum(
                     r["motion_status"] == "pending" for r in results
                 ),
@@ -847,7 +840,6 @@ class PlantViewScanner(MoveItArmHelper):
                 self.set_scan_result(
                     item,
                     motion_status="execution_failed",
-                    capture_status="not_attempted",
                 )
                 self.get_logger().warn(f"Arm move failed for plant {plant_id}, pose {pose['label']}: {message}")
                 if ("Stopped by user" in message or "STOP" in message or "stop" in message or "Controller deactivated" in message):
@@ -869,7 +861,6 @@ class PlantViewScanner(MoveItArmHelper):
             self.set_scan_result(
                 item,
                 motion_status="reached",
-                capture_status="succeeded" if capture_success else "failed",
             )
             if not capture_success:
                 self.get_logger().warn(f"Orbbec capture failed for plant {plant_id}, view {pose['label']}")

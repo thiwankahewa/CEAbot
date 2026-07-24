@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 
 import os
+from datetime import datetime, timezone
+
 import cv2
 import numpy as np
+import yaml
 
 import rclpy
 from rclpy.node import Node
@@ -175,7 +178,7 @@ class OrbbecTestScanNode(Node):
         depth_npy_path = os.path.join(run_dir, 'depth.npy')
         cloud_xyzrgb_npy_path = os.path.join(run_dir, 'cloud_xyzrgb.npy')
         cloud_ply_path = os.path.join(run_dir, 'cloud.ply')
-        meta_path = os.path.join(run_dir, 'meta.txt')
+        meta_path = os.path.join(run_dir, 'meta.yaml')
 
         cv2.imwrite(color_path, self.latest_color)      # Save RGB
         np.save(depth_npy_path, self.latest_depth)      # Save depth raw
@@ -187,13 +190,26 @@ class OrbbecTestScanNode(Node):
         else:
             self.get_logger().warn('Point cloud does not contain RGB fields. Saved XYZ only.')
 
-        with open(meta_path, 'w') as f:
-            f.write(f'color_shape: {self.latest_color.shape}\n')
-            f.write(f'depth_shape: {self.latest_depth.shape}\n')
-            f.write(f'depth_dtype: {self.latest_depth.dtype}\n')
-            f.write(f'frame_id: {self.latest_color_msg.header.frame_id}\n')
-            if xyzrgb_points is not None:
-                f.write(f'cloud_xyzrgb_point_count: {len(xyzrgb_points)}\n')
+        sensor_timestamp = self.msg_stamp_to_float(
+            self.latest_color_msg.header.stamp
+        )
+        metadata = {
+            'plant_id': int(plant_id),
+            'view_label': str(view_label),
+            'capture_timestamp_utc': datetime.now(timezone.utc).isoformat(),
+            'sensor_timestamp_seconds': sensor_timestamp,
+            'color_shape': list(self.latest_color.shape),
+            'depth_shape': list(self.latest_depth.shape),
+            'depth_dtype': str(self.latest_depth.dtype),
+            'frame_id': self.latest_color_msg.header.frame_id,
+        }
+        if xyzrgb_points is not None:
+            metadata['cloud_xyzrgb_point_count'] = len(xyzrgb_points)
+
+        temporary_meta_path = meta_path + '.tmp'
+        with open(temporary_meta_path, 'w', encoding='utf-8') as f:
+            yaml.safe_dump(metadata, f, sort_keys=False)
+        os.replace(temporary_meta_path, meta_path)
 
     def extract_pointcloud_arrays(self, cloud_msg):
         field_map = {f.name: f for f in cloud_msg.fields}
