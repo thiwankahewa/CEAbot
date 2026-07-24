@@ -464,12 +464,46 @@
       <origin xyz="0.0133 0 0.012" rpy="0 -1.5708 0"/>
     </joint>-->
 
-    <xacro:include filename="$(find orbbec_description)/urdf/gemini_335_336.urdf.xacro" />
+    <!-- Local copy fixes the upstream camera_link visual/collision mismatch. -->
+    <xacro:include filename="$(find bench_robot_description)/urdf/gemini_335_336_aligned.urdf.xacro" />
 
-    <joint name="orbbec_mount_joint" type="fixed">
+    <!--
+      The centered bracket STL is in millimetres and has its bounding-box
+      center at the bracket link origin. This makes joint rotations occur
+      about the center of the bracket instead of the Fusion assembly origin.
+    -->
+    <link name="${prefix}ee_camera_bracket_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh
+            filename="package://bench_robot_description/meshes/EE_camera_bracket_centered.stl"
+            scale="0.001 0.001 0.001"/>
+        </geometry>
+        <material name="ee_camera_bracket_material">
+          <color rgba="0.15 0.15 0.15 1.0"/>
+        </material>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <geometry>
+          <mesh
+            filename="package://bench_robot_description/meshes/EE_camera_bracket_centered.stl"
+            scale="0.001 0.001 0.001"/>
+        </geometry>
+      </collision>
+    </link>
+
+    <joint name="${prefix}ee_camera_bracket_joint" type="fixed">
       <parent link="${prefix}end_effector_link"/>
+      <child link="${prefix}ee_camera_bracket_link"/>
+      <origin xyz="0 -0.009 -0.012" rpy="0 0 3.1416"/>
+    </joint>
+
+    <joint name="${prefix}orbbec_mount_joint" type="fixed">
+      <parent link="${prefix}ee_camera_bracket_link"/>
       <child link="camera_link"/>
-      <origin xyz="0 0.025 0.03" rpy="0 -1.5708 0"/>
+      <origin xyz="0.025 0.045 0.015" rpy="-1.5708 -1.5708 0"/>
     </joint>
     
   </xacro:macro>

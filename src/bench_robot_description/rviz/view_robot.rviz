@@ -9,8 +9,8 @@ Panels:
         - /RobotModel1
         - /TF1
         - /TF1/Frames1
-      Splitter Ratio: 0.5
-    Tree Height: 816
+      Splitter Ratio: 0.5117647051811218
+    Tree Height: 708
   - Class: rviz_common/Selection
     Name: Selection
   - Class: rviz_common/Tool Properties
@@ -73,6 +73,11 @@ Visualization Manager:
           Show Axes: false
           Show Trail: false
         base_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        bench_support_beam_link:
           Alpha: 1
           Show Axes: false
           Show Trail: false
@@ -147,6 +152,11 @@ Visualization Manager:
           Show Axes: false
           Show Trail: false
           Value: true
+        ee_camera_bracket_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
         end_effector_link:
           Alpha: 1
           Show Axes: false
@@ -156,6 +166,27 @@ Visualization Manager:
           Show Axes: false
           Show Trail: false
           Value: true
+        gemini335_camera_link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        gemini335_color_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        gemini335_color_optical_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        gemini335_depth_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+        gemini335_depth_optical_frame:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
         half_arm_1_link:
           Alpha: 1
           Show Axes: false
@@ -243,8 +274,10 @@ Visualization Manager:
       Frames:
         All Enabled: false
         arm_mount_link:
-          Value: true
+          Value: false
         base_link:
+          Value: false
+        bench_support_beam_link:
           Value: false
         bracelet_link:
           Value: false
@@ -274,9 +307,21 @@ Visualization Manager:
           Value: false
         column_right_link:
           Value: false
-        end_effector_link:
+        ee_camera_bracket_link:
           Value: true
+        end_effector_link:
+          Value: false
         forearm_link:
+          Value: false
+        gemini335_camera_link:
+          Value: false
+        gemini335_color_frame:
+          Value: false
+        gemini335_color_optical_frame:
+          Value: false
+        gemini335_depth_frame:
+          Value: false
+        gemini335_depth_optical_frame:
           Value: false
         half_arm_1_link:
           Value: false
@@ -297,7 +342,7 @@ Visualization Manager:
         top_beam_link:
           Value: false
         world:
-          Value: true
+          Value: false
         zed2i_camera_center:
           Value: false
         zed2i_camera_link:
@@ -305,14 +350,14 @@ Visualization Manager:
         zed2i_left_camera_frame:
           Value: false
         zed2i_left_camera_frame_optical:
-          Value: true
+          Value: false
         zed2i_right_camera_frame:
           Value: false
         zed2i_right_camera_frame_optical:
           Value: false
       Marker Scale: 1
       Name: TF
-      Show Arrows: false
+      Show Arrows: true
       Show Axes: true
       Show Names: false
       Tree:
@@ -327,23 +372,26 @@ Visualization Manager:
                         spherical_wrist_2_link:
                           bracelet_link:
                             end_effector_link:
-                              camera_link:
-                                camera_bottom_screw_frame:
-                                  {}
-                                camera_depth_frame:
-                                  camera_color_frame:
-                                    camera_color_optical_frame:
-                                      {}
-                                  camera_depth_optical_frame:
+                              ee_camera_bracket_link:
+                                camera_link:
+                                  camera_bottom_screw_frame:
                                     {}
-                                  camera_left_ir_frame:
-                                    camera_left_ir_optical_frame:
+                                  camera_depth_frame:
+                                    camera_color_frame:
+                                      camera_color_optical_frame:
+                                        {}
+                                    camera_depth_optical_frame:
                                       {}
-                                  camera_right_ir_frame:
-                                    camera_right_ir_optical_frame:
-                                      {}
+                                    camera_left_ir_frame:
+                                      camera_left_ir_optical_frame:
+                                        {}
+                                    camera_right_ir_frame:
+                                      camera_right_ir_optical_frame:
+                                        {}
                               tool_frame:
                                 {}
+          bench_support_beam_link:
+            {}
           column_left_link:
             {}
           column_right_link:
@@ -362,6 +410,13 @@ Visualization Manager:
                   zed2i_right_camera_frame:
                     zed2i_right_camera_frame_optical:
                       {}
+            gemini335_camera_link:
+              gemini335_depth_frame:
+                gemini335_color_frame:
+                  gemini335_color_optical_frame:
+                    {}
+                gemini335_depth_optical_frame:
+                  {}
       Update Interval: 0
       Value: true
   Enabled: true
@@ -410,33 +465,33 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 10
+      Distance: 0.3804921507835388
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 0
-        Y: 0
-        Z: 0
-      Focal Shape Fixed Size: false
+        X: -0.05783270671963692
+        Y: 0.028502775356173515
+        Z: 0.5883746147155762
+      Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.7853981852531433
+      Pitch: -0.054602161049842834
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz)
-      Yaw: 0.7853981852531433
+      Yaw: 5.68676233291626
     Saved: ~
 Window Geometry:
   Displays:
     collapsed: false
-  Height: 1107
+  Height: 999
   Hide Left Dock: false
   Hide Right Dock: false
-  QMainWindow State: 000000ff00000000fd000000040000000000000156000003b9fc0200000008fb0000001200530065006c0065006300740069006f006e00000001e10000009b0000005c00fffffffb0000001e0054006f006f006c002000500072006f007000650072007400690065007302000001ed000001df00000185000000a3fb000000120056006900650077007300200054006f006f02000001df000002110000018500000122fb000000200054006f006f006c002000500072006f0070006500720074006900650073003203000002880000011d000002210000017afb000000100044006900730070006c006100790073010000003b000003b9000000c700fffffffb0000002000730065006c0065006300740069006f006e00200062007500660066006500720200000138000000aa0000023a00000294fb00000014005700690064006500530074006500720065006f02000000e6000000d2000003ee0000030bfb0000000c004b0069006e0065006300740200000186000001060000030c00000261000000010000010f000003b9fc0200000003fb0000001e0054006f006f006c002000500072006f00700065007200740069006500730100000041000000780000000000000000fb0000000a00560069006500770073010000003b000003b9000000a000fffffffb0000001200530065006c0065006300740069006f006e010000025a000000b200000000000000000000000200000490000000a9fc0100000001fb0000000a00560069006500770073030000004e00000080000002e10000019700000003000007740000003efc0100000002fb0000000800540069006d00650100000000000007740000025300fffffffb0000000800540069006d0065010000000000000450000000000000000000000503000003b900000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  QMainWindow State: 000000ff00000000fd0000000400000000000001560000034dfc0200000008fb0000001200530065006c0065006300740069006f006e00000001e10000009b0000005c00fffffffb0000001e0054006f006f006c002000500072006f007000650072007400690065007302000001ed000001df00000185000000a3fb000000120056006900650077007300200054006f006f02000001df000002110000018500000122fb000000200054006f006f006c002000500072006f0070006500720074006900650073003203000002880000011d000002210000017afb000000100044006900730070006c006100790073010000003b0000034d000000c700fffffffb0000002000730065006c0065006300740069006f006e00200062007500660066006500720200000138000000aa0000023a00000294fb00000014005700690064006500530074006500720065006f02000000e6000000d2000003ee0000030bfb0000000c004b0069006e0065006300740200000186000001060000030c00000261000000010000010f0000034dfc0200000003fb0000001e0054006f006f006c002000500072006f00700065007200740069006500730100000041000000780000000000000000fb0000000a00560069006500770073010000003b0000034d000000a000fffffffb0000001200530065006c0065006300740069006f006e010000025a000000b200000000000000000000000200000490000000a9fc0100000001fb0000000a00560069006500770073030000004e00000080000002e10000019700000003000007740000003efc0100000002fb0000000800540069006d00650100000000000007740000025300fffffffb0000000800540069006d00650100000000000004500000000000000000000005030000034d00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
   Selection:
     collapsed: false
   Time:
