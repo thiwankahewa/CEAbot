@@ -254,7 +254,7 @@ class TopScanNode(Node):
 
         metadata = {
             "camera": "Orbbec Gemini 335",
-            "timestamp": stamp,
+            "top_scan_timestamp": stamp,
             "location": location_str,
             "frames": {
                 "color_frame_id": self.latest_color_msg.header.frame_id,

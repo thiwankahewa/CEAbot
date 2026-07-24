@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 from pathlib import Path
+from datetime import datetime
 
 import cv2
 import numpy as np
@@ -365,16 +366,15 @@ class PlantCoordinateNode(Node):
             self.pub_auto_state_cmd.publish(String(data="individual_plant_scan"))
     
             if output_dir is not None:
+                self.save_plant_results_to_metadata(output_dir, results)
                 cv2.imwrite(str(output_dir / "crop.png"), crop)
                 cv2.imwrite(str(output_dir / "segmented_result.png"), segmented)
                 cv2.imwrite(str(output_dir / "measurement_mask.png"), measurement_mask)
                 cv2.imwrite(str(output_dir / "grouping_mask.png"), grouping_mask)
-                cv2.imwrite(str(output_dir / "pot_interior_mask.png"), pot_interior_mask)
-                cv2.imwrite(str(output_dir / "soil_candidate_mask.png"), soil_candidate_mask)
-                cv2.imwrite(str(output_dir / "pot_rim_detection.png"), pot_rim_detection)
+                #cv2.imwrite(str(output_dir / "pot_interior_mask.png"), pot_interior_mask)
+                #cv2.imwrite(str(output_dir / "soil_candidate_mask.png"), soil_candidate_mask)
+                #cv2.imwrite(str(output_dir / "pot_rim_detection.png"), pot_rim_detection)
                 cv2.imwrite(str(output_dir / "detection.png"), detection)
-                self.save_plant_results_to_metadata(output_dir, results)
-            
 
     def assign_pot_slot(self, center_x_crop, crop_width):
         """Return the fixed pot ID nearest to a detected plant center."""
@@ -578,6 +578,8 @@ class PlantCoordinateNode(Node):
                 metadata = yaml.safe_load(f) or {}
         else:
             metadata = {}
+
+        metadata["row_segmentation_timestamp"] = datetime.now().strftime("%Y%m%d_%H%M%S")
 
         metadata["segmentation_parameters"] = {
             "crop": {

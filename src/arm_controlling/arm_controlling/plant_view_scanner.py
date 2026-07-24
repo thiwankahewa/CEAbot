@@ -4,7 +4,7 @@ import threading
 import math
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 
 import yaml
 import rclpy
@@ -137,6 +137,7 @@ class PlantViewScanner(MoveItArmHelper):
     def run_scan_thread(self):
         self.scan_results = {}
         self.scan_processing_complete = False
+        self.scan_end_time = None
         try:
             self.run()
         except Exception as exc:
@@ -465,7 +466,16 @@ class PlantViewScanner(MoveItArmHelper):
 
             time.sleep(0.1)
 
-    def append_pose_data_to_meta(self, meta_path, plant_id, view_label, commanded_pose, transform):
+    def append_pose_data_to_meta(
+        self,
+        meta_path,
+        plant_id,
+        view_label,
+        commanded_pose,
+        transform,
+        start_time,
+        end_time,
+    ):
         t = transform.transform.translation
         r = transform.transform.rotation
 
@@ -503,6 +513,8 @@ class PlantViewScanner(MoveItArmHelper):
             {
                 "pose_frame": self.base_frame,
                 "pose_child_frame": self.ee_link,
+                "start_time": start_time,
+                "end_time": end_time,
                 "commanded_x": round(commanded_pose["x"], 6),
                 "commanded_y": round(commanded_pose["y"], 6),
                 "commanded_z": round(commanded_pose["z"], 6),
@@ -575,6 +587,15 @@ class PlantViewScanner(MoveItArmHelper):
                     metadata = yaml.safe_load(metadata_file) or {}
             else:
                 metadata = {}
+
+            metadata["plant_view_scanner_parameters"] = {
+                "z_offset": float(self.z_offset),
+                "circle_radius_offset": float(self.circle_radius_offset),
+                "circle_height_offset": float(self.circle_height_offset),
+                "look_at_angle_offset": float(self.look_at_angle_offset),
+            }
+            if self.scan_end_time is not None:
+                metadata["scan_end_time"] = self.scan_end_time
 
             results = list(self.scan_results.values())
             reached = sum(r["motion_status"] == "reached" for r in results)
@@ -662,6 +683,7 @@ class PlantViewScanner(MoveItArmHelper):
             plan_pose = dict(pose)
             plan_pose["label"] = plan_label
 
+            item["planning_started_at"] = datetime.now().strftime("%Y%m%d_%H%M%S")
             success, message, cost, _, trajectory = self.call_arm_plan_to_pose(
                 plan_pose, start_joint_map
             )
@@ -747,6 +769,7 @@ class PlantViewScanner(MoveItArmHelper):
             pose = item["pose"]
             plan_pose = dict(pose)
             plan_pose["label"] = f"plant_{item['plant_id']}_{pose['label']}"
+            item["planning_started_at"] = datetime.now().strftime("%Y%m%d_%H%M%S")
             success, message, cost, _, trajectory = self.call_arm_plan_to_pose(
                 plan_pose, start_joint_map
             )
@@ -868,6 +891,7 @@ class PlantViewScanner(MoveItArmHelper):
                     )
                     success, message = self.call_arm_move_to_pose(move_pose)
             else:
+                item["planning_started_at"] = datetime.now().strftime("%Y%m%d_%H%M%S")
                 success, message = self.call_arm_move_to_pose(move_pose)
 
             if not success:
@@ -913,12 +937,15 @@ class PlantViewScanner(MoveItArmHelper):
                 if capture_success:
                     meta_path = self.wait_for_capture_meta(self.latest_run_dir, plant_id, pose["label"], capture_started_at)
                     if meta_path is not None:
+                        capture_end_time = datetime.now().strftime("%Y%m%d_%H%M%S")
                         self.append_pose_data_to_meta(
                             meta_path,
                             plant_id,
                             pose["label"],
                             pose,
                             transform,
+                            item["planning_started_at"],
+                            capture_end_time,
                         )
 
             except Exception as e:
@@ -935,6 +962,7 @@ class PlantViewScanner(MoveItArmHelper):
                 self.get_logger().warn("Arm did not confirm rest. Not publishing /top_scan/scan_done.")
                 return
 
+            self.scan_end_time = datetime.now().strftime("%Y%m%d_%H%M%S")
             self.pub_auto_state_cmd.publish(String(data="idle"))
             self.pub_top_scan_done.publish(Bool(data=True))
             self.get_logger().info("Plant row scan complete.")
