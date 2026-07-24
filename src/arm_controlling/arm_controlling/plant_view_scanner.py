@@ -465,19 +465,51 @@ class PlantViewScanner(MoveItArmHelper):
 
             time.sleep(0.1)
 
-    def append_actual_pose_to_meta(self, meta_path, plant_id, view_label, transform):
+    def append_pose_data_to_meta(self, meta_path, plant_id, view_label, commanded_pose, transform):
         t = transform.transform.translation
         r = transform.transform.rotation
+
+        translation_error_mm = (math.sqrt(
+            (t.x - commanded_pose["x"]) ** 2
+            + (t.y - commanded_pose["y"]) ** 2
+            + (t.z - commanded_pose["z"]) ** 2
+        )) * 1000.0
+
+        commanded_quaternion = [
+            commanded_pose["qx"],
+            commanded_pose["qy"],
+            commanded_pose["qz"],
+            commanded_pose["qw"],
+        ]
+        actual_quaternion = [r.x, r.y, r.z, r.w]
+        commanded_norm = math.sqrt(sum(value ** 2 for value in commanded_quaternion))
+        actual_norm = math.sqrt(sum(value ** 2 for value in actual_quaternion))
+        if commanded_norm < 1e-12 or actual_norm < 1e-12:
+            raise ValueError("Cannot calculate angular error from a zero-length quaternion")
+
+        quaternion_dot = sum(
+            commanded * actual
+            for commanded, actual in zip(
+                commanded_quaternion, actual_quaternion
+            )
+        ) / (commanded_norm * actual_norm)
+        quaternion_dot = max(-1.0, min(1.0, quaternion_dot))
+        angular_error_rad = 2.0 * math.acos(abs(quaternion_dot))
 
         with open(meta_path, "r", encoding="utf-8") as f:
             metadata = yaml.safe_load(f) or {}
 
         metadata.update(
             {
-                "actual_pose_frame": self.base_frame,
-                "actual_pose_child_frame": self.ee_link,
-                "plant_id": int(plant_id),
-                "view_label": str(view_label),
+                "pose_frame": self.base_frame,
+                "pose_child_frame": self.ee_link,
+                "commanded_x": round(commanded_pose["x"], 6),
+                "commanded_y": round(commanded_pose["y"], 6),
+                "commanded_z": round(commanded_pose["z"], 6),
+                "commanded_qx": round(commanded_pose["qx"], 6),
+                "commanded_qy": round(commanded_pose["qy"], 6),
+                "commanded_qz": round(commanded_pose["qz"], 6),
+                "commanded_qw": round(commanded_pose["qw"], 6),
                 "actual_x": round(t.x, 6),
                 "actual_y": round(t.y, 6),
                 "actual_z": round(t.z, 6),
@@ -485,6 +517,8 @@ class PlantViewScanner(MoveItArmHelper):
                 "actual_qy": round(r.y, 6),
                 "actual_qz": round(r.z, 6),
                 "actual_qw": round(r.w, 6),
+                "translation_error_mm": round(translation_error_mm, 6),
+                "angular_error_deg": round(math.degrees(angular_error_rad), 6),
             }
         )
 
@@ -879,7 +913,13 @@ class PlantViewScanner(MoveItArmHelper):
                 if capture_success:
                     meta_path = self.wait_for_capture_meta(self.latest_run_dir, plant_id, pose["label"], capture_started_at)
                     if meta_path is not None:
-                        self.append_actual_pose_to_meta(meta_path, plant_id, pose["label"], transform)
+                        self.append_pose_data_to_meta(
+                            meta_path,
+                            plant_id,
+                            pose["label"],
+                            pose,
+                            transform,
+                        )
 
             except Exception as e:
                 self.get_logger().warn(f"TF lookup failed: {e}")

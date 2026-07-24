@@ -190,9 +190,7 @@ class OrbbecTestScanNode(Node):
         else:
             self.get_logger().warn('Point cloud does not contain RGB fields. Saved XYZ only.')
 
-        sensor_timestamp = self.msg_stamp_to_float(
-            self.latest_color_msg.header.stamp
-        )
+        sensor_timestamp = self.msg_stamp_to_float(self.latest_color_msg.header.stamp)
         metadata = {
             'plant_id': int(plant_id),
             'view_label': str(view_label),

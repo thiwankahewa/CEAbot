@@ -579,6 +579,35 @@ class PlantCoordinateNode(Node):
         else:
             metadata = {}
 
+        metadata["segmentation_parameters"] = {
+            "crop": {
+                "x_min_px": int(self.x1),
+                "y_min_px": int(self.y1),
+                "x_max_px": int(self.x2),
+                "y_max_px": int(self.y2),
+            },
+            "shared": {
+                "minimum_depth_mm": float(self.min_depth_mm),
+                "maximum_depth_mm": float(self.max_depth_mm),
+                "minimum_contour_area_px": float(self.min_area),
+                "grouping_dilation_iterations": int(self.dilate_itr),
+            },
+            "main_plant": {
+                "hsv_lower": [int(value) for value in self.lower_green],
+                "hsv_upper": [int(value) for value in self.upper_green],
+                "morphology_kernel_size_px": int(self.kernel_size),
+                "morphology_operations": ["open", "close"],
+                "top_depth_percentile": float(self.top_percentile),
+                "center_depth_window_size_px": int(self.center_window_size),
+            },
+            "flower": {
+                "hsv_lower": [int(value) for value in self.lower_yellow],
+                "hsv_upper": [int(value) for value in self.upper_yellow],
+                "morphology_kernel_size_px": 2,
+                "morphology_operations": ["open"],
+            },
+        }
+
         metadata["plants"] = [
             {
                 "plant_id": int(row["plant_id"]),
