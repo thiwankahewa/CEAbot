@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Interactive tuner for plant, pot-rim, and soil segmentation."""
+"""Interactive tuner for plant, pot-rim, and soil segmentation with custom UI controls."""
 
 import argparse
 from pathlib import Path
@@ -30,11 +30,11 @@ DEFAULTS = {
     "search_radius_pct": (55, 100), "support_dist_x10": (25, 100),
     "min_coverage_pct": (40, 100), "min_support": (70, 1000),
     # Soil
-    "s_h_lo": (5, 179), "s_s_lo": (25, 255), "s_v_lo": (20, 255),
-    "s_h_hi": (30, 179), "s_s_hi": (255, 255), "s_v_hi": (210, 255),
-    "soil_z_min": (150, 2500), "soil_z_max": (1300, 3000),
+    "s_h_lo": (0, 179), "s_s_lo": (0, 255), "s_v_lo": (0, 255),
+    "s_h_hi": (89, 179), "s_s_hi": (255, 255), "s_v_hi": (255, 255),
+    "soil_z_min": (773, 2500), "soil_z_max": (942, 3000),
     "plant_exclusion": (5, 31), "soil_open": (3, 15),
-    "soil_min_pixels": (300, 10000), "soil_max_mad": (12, 100),
+    "soil_min_pixels": (380, 10000), "soil_max_mad": (10, 100),
 }
 
 WINDOWS = {
@@ -55,24 +55,160 @@ WINDOWS = {
 }
 
 
-def nothing(_value):
-    pass
+# Initialize state for parameters and mouse UI interaction
+PARAMS = {}
+for name, (initial, maximum) in DEFAULTS.items():
+    PARAMS[name] = {"val": initial, "min": 0, "max": maximum}
+
+active_slider = None
+is_dragging_scrollbar = False
+is_dragging_canvas = False
+drag_start_y = 0
+drag_start_scroll = 0
+scroll_offset = 0
+
+# UI Metrics
+CANVAS_W = 500
+VIEW_H = 850
+SLIDER_X_START = 160
+SLIDER_W = 210
+ROW_H = 30
+START_Y = 50
+
+SCROLLBAR_X = 475
+SCROLLBAR_W = 18
 
 
-def create_controls():
-    for window, names in WINDOWS.items():
-        cv2.namedWindow(window, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(window, 430, 520)
-        for name in names:
-            initial, maximum = DEFAULTS[name]
-            cv2.createTrackbar(name, window, initial, maximum, nothing)
+def get_ui_elements():
+    ui_elements = []
+    for section_title, keys in WINDOWS.items():
+        ui_elements.append({"type": "header", "title": section_title})
+        for key in keys:
+            ui_elements.append({"type": "slider", "key": key})
+    return ui_elements
+
+
+def get_max_scroll():
+    ui_elements = get_ui_elements()
+    return max(0, len(ui_elements) * ROW_H + START_Y - (VIEW_H - 40))
+
+
+def mouse_callback(event, x, y, flags, param):
+    global active_slider, scroll_offset, is_dragging_scrollbar, is_dragging_canvas, drag_start_y, drag_start_scroll
+
+    ui_elements = get_ui_elements()
+    max_scroll = get_max_scroll()
+
+    adj_y = y + scroll_offset
+
+    if event == cv2.EVENT_LBUTTONDOWN:
+        # 1. Click on Scrollbar Track
+        if x >= SCROLLBAR_X - 5:
+            is_dragging_scrollbar = True
+            pct = np.clip(y / float(VIEW_H), 0.0, 1.0)
+            scroll_offset = int(pct * max_scroll)
+            return
+
+        # 2. Click on a Slider
+        clicked_slider = False
+        for idx, elem in enumerate(ui_elements):
+            if elem["type"] == "slider":
+                s_y = START_Y + idx * ROW_H
+                if s_y - 12 <= adj_y <= s_y + 12 and SLIDER_X_START - 10 <= x <= SLIDER_X_START + SLIDER_W + 10:
+                    active_slider = elem["key"]
+                    p = PARAMS[active_slider]
+                    pct = np.clip((x - SLIDER_X_START) / float(SLIDER_W), 0.0, 1.0)
+                    PARAMS[active_slider]["val"] = int(p["min"] + pct * (p["max"] - p["min"]))
+                    clicked_slider = True
+                    break
+
+        # 3. Click on Background -> Drag Canvas to Scroll
+        if not clicked_slider:
+            is_dragging_canvas = True
+            drag_start_y = y
+            drag_start_scroll = scroll_offset
+
+    elif event == cv2.EVENT_MOUSEMOVE:
+        if is_dragging_scrollbar:
+            pct = np.clip(y / float(VIEW_H), 0.0, 1.0)
+            scroll_offset = int(pct * max_scroll)
+
+        elif is_dragging_canvas:
+            dy = drag_start_y - y
+            scroll_offset = int(np.clip(drag_start_scroll + dy, 0, max_scroll))
+
+        elif active_slider is not None:
+            p = PARAMS[active_slider]
+            pct = np.clip((x - SLIDER_X_START) / float(SLIDER_W), 0.0, 1.0)
+            PARAMS[active_slider]["val"] = int(p["min"] + pct * (p["max"] - p["min"]))
+
+    elif event == cv2.EVENT_LBUTTONUP:
+        active_slider = None
+        is_dragging_scrollbar = False
+        is_dragging_canvas = False
+
+
+def render_ui_canvas():
+    ui_elements = get_ui_elements()
+    max_scroll = get_max_scroll()
+
+    total_h = max(VIEW_H, len(ui_elements) * ROW_H + START_Y + 50)
+    full_canvas = np.full((total_h, CANVAS_W, 3), (30, 28, 28), dtype=np.uint8)
+
+    cv2.putText(full_canvas, "TUNER CONTROLS", (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 0), 2, cv2.LINE_AA)
+
+    for idx, elem in enumerate(ui_elements):
+        s_y = START_Y + idx * ROW_H
+
+        if elem["type"] == "header":
+            # Section Header divider
+            cv2.rectangle(full_canvas, (10, s_y - 15), (460, s_y + 8), (45, 45, 45), -1)
+            cv2.putText(full_canvas, f"--- {elem['title'].upper()} ---", (15, s_y + 2),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 255, 255), 1, cv2.LINE_AA)
+        else:
+            name = elem["key"]
+            p = PARAMS[name]
+
+            # White text label
+            cv2.putText(full_canvas, f"{name}:", (15, s_y + 4),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.38, (240, 240, 240), 1, cv2.LINE_AA)
+
+            # Trackbar Base Line
+            cv2.line(full_canvas, (SLIDER_X_START, s_y), (SLIDER_X_START + SLIDER_W, s_y), (70, 70, 70), 3, cv2.LINE_AA)
+
+            # Active Progress Bar
+            denom = (p["max"] - p["min"])
+            val_pct = (p["val"] - p["min"]) / float(denom) if denom > 0 else 0.0
+            knob_x = int(SLIDER_X_START + val_pct * SLIDER_W)
+
+            cv2.line(full_canvas, (SLIDER_X_START, s_y), (knob_x, s_y), (235, 140, 30), 3, cv2.LINE_AA)
+            cv2.circle(full_canvas, (knob_x, s_y), 6, (255, 255, 255), -1, cv2.LINE_AA)
+
+            # Active Value Readout Text
+            cv2.putText(full_canvas, str(p["val"]), (SLIDER_X_START + SLIDER_W + 10, s_y + 4),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.38, (150, 230, 255), 1, cv2.LINE_AA)
+
+    # Crop full virtual canvas down to window frame size with scroll offset
+    viewport = full_canvas[scroll_offset:scroll_offset + VIEW_H, 0:CANVAS_W].copy()
+
+    # Draw Interactive Scrollbar Track
+    cv2.rectangle(viewport, (SCROLLBAR_X, 0), (SCROLLBAR_X + SCROLLBAR_W, VIEW_H), (20, 20, 20), -1)
+    if max_scroll > 0:
+        thumb_h = max(40, int((VIEW_H / float(total_h)) * VIEW_H))
+        thumb_y = int((scroll_offset / float(max_scroll)) * (VIEW_H - thumb_h))
+        cv2.rectangle(viewport, (SCROLLBAR_X + 2, thumb_y), (SCROLLBAR_X + SCROLLBAR_W - 2, thumb_y + thumb_h), (120, 120, 120), -1)
+
+    # Footer Help Bar
+    cv2.rectangle(viewport, (0, VIEW_H - 25), (CANVAS_W, VIEW_H), (15, 15, 15), -1)
+    cv2.putText(viewport, "Drag scrollbar/background or Arrow keys | 's' save | 'q' quit", (10, VIEW_H - 8),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, (160, 160, 160), 1, cv2.LINE_AA)
+
+    return viewport
 
 
 def params():
-    values = {}
-    for window, names in WINDOWS.items():
-        for name in names:
-            values[name] = cv2.getTrackbarPos(name, window)
+    values = {k: v["val"] for k, v in PARAMS.items()}
+
     # Values that must never be zero.
     for name in (
         "plant_kernel", "yellow_kernel", "pot_count", "iterations",
@@ -293,15 +429,26 @@ def save(folder, result, p):
 
 
 def main():
+    global scroll_offset
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("folder", type=Path)
     args = parser.parse_args()
     folder = args.folder.expanduser()
     color, depth = load_folder(folder)
-    create_controls()
+
+    control_win = "Control Panel (Click & Drag)"
+    cv2.namedWindow(control_win, cv2.WINDOW_GUI_NORMAL)
+    cv2.resizeWindow(control_win, CANVAS_W, VIEW_H)
+    cv2.setMouseCallback(control_win, mouse_callback)
+    cv2.moveWindow(control_win, 10, 10)
+
     cv2.namedWindow("Dashboard", cv2.WINDOW_NORMAL)
-    cv2.resizeWindow("Dashboard", 1200, 720)
+    cv2.resizeWindow("Dashboard", 1100, 750)
+    cv2.moveWindow(Dashboard_win := "Dashboard", 530, 10)
+
     previous, result, current = None, None, None
+
     while True:
         current = params()
         snapshot = tuple(current.items())
@@ -311,14 +458,26 @@ def main():
             print("\nPer-pot result:")
             for item in result["telemetry"]:
                 print(item)
-        cv2.imshow("Dashboard", dashboard(result))
-        key = cv2.waitKey(30) & 0xFF
+
+        cv2.imshow(control_win, render_ui_canvas())
+        cv2.imshow(Dashboard_win, dashboard(result))
+
+        key = cv2.waitKeyEx(20)
+
         if key in (27, ord("q")):
             break
-        if key == ord("s"):
+        elif key == ord("s"):
             save(folder, result, current)
+        # Up Arrow / Page Up
+        elif key in (2490368, 82, 0, 2162688):
+            scroll_offset = max(0, scroll_offset - 40)
+        # Down Arrow / Page Down
+        elif key in (2621440, 84, 1, 2228224):
+            scroll_offset = min(get_max_scroll(), scroll_offset + 40)
+
     cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
     main()
+    

@@ -3,6 +3,7 @@
 from pathlib import Path
 import argparse
 import numpy as np
+import yaml
 from scipy.spatial.transform import Rotation
 
 
@@ -19,16 +20,9 @@ VIEW_COLORS = np.array(
 )
 
 
-def parse_meta_txt(path: Path) -> dict:
-    data = {}
-
-    for line in path.read_text().splitlines():
-        if ":" not in line:
-            continue
-        key, value = line.split(":", 1)
-        data[key.strip()] = value.strip()
-
-    return data
+def parse_meta_yaml(path: Path) -> dict:
+    with path.open("r", encoding="utf-8") as metadata_file:
+        return yaml.safe_load(metadata_file) or {}
 
 
 def pose_to_matrix(meta: dict) -> np.ndarray:
@@ -160,13 +154,13 @@ def reconstruct_plant(plant_dir: Path,output_dir: Path,max_points_per_view: int,
     print(f"\n{plant_dir.name}: found {len(view_dirs)} view folders")
 
     for view_index, view_dir in enumerate(view_dirs):
-        meta_path = view_dir / "meta.txt"
+        meta_path = view_dir / "meta.yaml"
         if not meta_path.exists():
-            print(f"  skip {view_dir.name}: missing meta.txt")
+            print(f"  skip {view_dir.name}: missing meta.yaml")
             continue
 
         try:
-            meta = parse_meta_txt(meta_path)
+            meta = parse_meta_yaml(meta_path)
             pose_child_frame = meta.get("actual_pose_child_frame", "unknown")
 
             if pose_child_frame != "camera_color_optical_frame":

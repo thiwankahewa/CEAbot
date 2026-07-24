@@ -271,27 +271,7 @@ class TopScanNode(Node):
             return None
 
         return {
-            "frame_id": str(msg.header.frame_id),
-            "stamp": {
-                "sec": int(msg.header.stamp.sec),
-                "nanosec": int(msg.header.stamp.nanosec),
-            },
-            "height": int(msg.height),
-            "width": int(msg.width),
-            "distortion_model": str(msg.distortion_model),
             "K": [float(x) for x in msg.k],
-            "R": [float(x) for x in msg.r],
-            "P": [float(x) for x in msg.p],
-            "D": [float(x) for x in msg.d],
-            "binning_x": int(msg.binning_x),
-            "binning_y": int(msg.binning_y),
-            "roi": {
-                "x_offset": int(msg.roi.x_offset),
-                "y_offset": int(msg.roi.y_offset),
-                "height": int(msg.roi.height),
-                "width": int(msg.roi.width),
-                "do_rectify": bool(msg.roi.do_rectify),
-            },
         }
 
 
