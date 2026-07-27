@@ -5,6 +5,7 @@ Panels:
     Property Tree Widget:
       Expanded:
         - /MotionPlanning1
+        - /TF1
         - /TF1/Frames1
       Splitter Ratio: 0.5
     Tree Height: 226
@@ -91,11 +92,6 @@ Visualization Manager:
             Show Axes: false
             Show Trail: false
             Value: true
-          camera_bracket_link:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
           camera_color_frame:
             Alpha: 1
             Show Axes: false
@@ -147,6 +143,11 @@ Visualization Manager:
             Show Trail: false
             Value: true
           column_right_link:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+            Value: true
+          ee_camera_bracket_link:
             Alpha: 1
             Show Axes: false
             Show Trail: false
@@ -226,31 +227,6 @@ Visualization Manager:
             Show Trail: false
             Value: true
           world:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          zed2i_camera_center:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
-          zed2i_camera_link:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          zed2i_left_camera_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          zed2i_left_camera_frame_optical:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          zed2i_right_camera_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          zed2i_right_camera_frame_optical:
             Alpha: 1
             Show Axes: false
             Show Trail: false
@@ -324,11 +300,6 @@ Visualization Manager:
             Show Axes: false
             Show Trail: false
             Value: true
-          camera_bracket_link:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
           camera_color_frame:
             Alpha: 1
             Show Axes: false
@@ -380,6 +351,11 @@ Visualization Manager:
             Show Trail: false
             Value: true
           column_right_link:
+            Alpha: 1
+            Show Axes: false
+            Show Trail: false
+            Value: true
+          ee_camera_bracket_link:
             Alpha: 1
             Show Axes: false
             Show Trail: false
@@ -462,31 +438,6 @@ Visualization Manager:
             Alpha: 1
             Show Axes: false
             Show Trail: false
-          zed2i_camera_center:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-            Value: true
-          zed2i_camera_link:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          zed2i_left_camera_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          zed2i_left_camera_frame_optical:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          zed2i_right_camera_frame:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
-          zed2i_right_camera_frame_optical:
-            Alpha: 1
-            Show Axes: false
-            Show Trail: false
         Robot Alpha: 0.5
         Show Robot Collision: false
         Show Robot Visual: true
@@ -502,17 +453,15 @@ Visualization Manager:
         base_link:
           Value: false
         bench_support_beam_link:
-          Value: true
+          Value: false
         bracelet_link:
           Value: false
         camera_bottom_screw_frame:
           Value: false
-        camera_bracket_link:
-          Value: false
         camera_color_frame:
           Value: false
         camera_color_optical_frame:
-          Value: false
+          Value: true
         camera_depth_frame:
           Value: false
         camera_depth_optical_frame:
@@ -531,20 +480,22 @@ Visualization Manager:
           Value: false
         column_right_link:
           Value: false
+        ee_camera_bracket_link:
+          Value: false
         end_effector_link:
-          Value: true
+          Value: false
         forearm_link:
           Value: false
         gemini335_camera_link:
-          Value: true
+          Value: false
         gemini335_color_frame:
-          Value: true
+          Value: false
         gemini335_color_optical_frame:
           Value: true
         gemini335_depth_frame:
-          Value: true
+          Value: false
         gemini335_depth_optical_frame:
-          Value: true
+          Value: false
         half_arm_1_link:
           Value: false
         half_arm_2_link:
@@ -565,18 +516,6 @@ Visualization Manager:
           Value: false
         world:
           Value: true
-        zed2i_camera_center:
-          Value: false
-        zed2i_camera_link:
-          Value: false
-        zed2i_left_camera_frame:
-          Value: false
-        zed2i_left_camera_frame_optical:
-          Value: true
-        zed2i_right_camera_frame:
-          Value: false
-        zed2i_right_camera_frame_optical:
-          Value: false
       Marker Scale: 1
       Name: TF
       Show Arrows: false
@@ -594,21 +533,22 @@ Visualization Manager:
                         spherical_wrist_2_link:
                           bracelet_link:
                             end_effector_link:
-                              camera_link:
-                                camera_bottom_screw_frame:
-                                  {}
-                                camera_depth_frame:
-                                  camera_color_frame:
-                                    camera_color_optical_frame:
-                                      {}
-                                  camera_depth_optical_frame:
+                              ee_camera_bracket_link:
+                                camera_link:
+                                  camera_bottom_screw_frame:
                                     {}
-                                  camera_left_ir_frame:
-                                    camera_left_ir_optical_frame:
+                                  camera_depth_frame:
+                                    camera_color_frame:
+                                      camera_color_optical_frame:
+                                        {}
+                                    camera_depth_optical_frame:
                                       {}
-                                  camera_right_ir_frame:
-                                    camera_right_ir_optical_frame:
-                                      {}
+                                    camera_left_ir_frame:
+                                      camera_left_ir_optical_frame:
+                                        {}
+                                    camera_right_ir_frame:
+                                      camera_right_ir_optical_frame:
+                                        {}
                               tool_frame:
                                 {}
           bench_support_beam_link:
@@ -622,15 +562,6 @@ Visualization Manager:
           plate_right_link:
             {}
           top_beam_link:
-            camera_bracket_link:
-              zed2i_camera_link:
-                zed2i_camera_center:
-                  zed2i_left_camera_frame:
-                    zed2i_left_camera_frame_optical:
-                      {}
-                  zed2i_right_camera_frame:
-                    zed2i_right_camera_frame_optical:
-                      {}
             gemini335_camera_link:
               gemini335_depth_frame:
                 gemini335_color_frame:
@@ -658,25 +589,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 5.776000022888184
+      Distance: 3.018171548843384
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 0.15578950941562653
-        Y: 0.4775252342224121
-        Z: 0.8697106838226318
+        X: 0.1860475391149521
+        Y: 0.3744746148586273
+        Z: 1.0507522821426392
       Focal Shape Fixed Size: false
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.46539825201034546
+      Pitch: 0.29039812088012695
       Target Frame: world
       Value: Orbit (rviz_default_plugins)
-      Yaw: 4.913583278656006
+      Yaw: 4.638580799102783
     Saved: ~
 Window Geometry:
   Displays:
@@ -694,5 +625,5 @@ Window Geometry:
   Views:
     collapsed: false
   Width: 1908
-  X: 1920
-  Y: 361
+  X: 1888
+  Y: 501

@@ -1,71 +1,50 @@
+#---web app testing
 ros2 launch rosbridge_server rosbridge_websocket_launch.xml 
 
+#---building ros packages
 colcon build --symlink-install
 
+#---ROS general commands
+ros2 topic hz /astra2/color/image_raw
+ros2 topic echo /astra2/color/camera_info --once
+ros2 run tf2_ros tf2_echo base_link zed_camera_center
+
+#---GIT commands
+git pull --rebase origin main
+
+#---other
+sudo chown -R thiwa:thiwa /home/thiwa/scan_data_zed
+sudo ip addr add 192.168.1.2/24 dev enP1p1s0
+
+#---configuring moveit packages
 ros2 launch moveit_setup_assistant setup_assistant.launch.py
 
+#--launch robot 
 ros2 launch bench_robot robot.launch.py 2>&1 | grep -Ev "DEBUG|\[INFO\].*\[zed.zed_node\]|\[component_container_isolated-[0-9]+\]|\[component_container-[0-9]+\]"
 
 ros2 launch bench_robot_description view_robot.launch.py
 ros2 launch bench_robot robot_sim_gazebo.launch.py use_fake_hardware:=true      
 ros2 launch bench_robot robot_sim_gazebo.launch.py use_fake_hardware:=true launch_arm_controller:=true
 ros2 launch bench_robot robot_sim_gazebo.launch.py robot_ip:=192.168.1.10 2>&1 | grep -v DEBUG
-ros2 launch bench_robot robot_sim_gazebo.launch.py robot_ip:=192.168.1.10 use_rviz:=false 2>&1 | grep -v DEBUG
 ros2 launch bench_robot robot_sim_gazebo.launch.py robot_ip:=192.168.1.10 launch_arm_controller:=true | grep -v DEBUG
 
-ros2 launch bench_robot full_robot.launch.py use_fake_hardware:=true 2>&1 | grep -Ev "DEBUG|\[INFO\].*\[zed.zed_node\]|\[component_container_isolated-[0-9]+\]|\[component_container-[0-9]+\]"
-ros2 launch bench_robot full_robot.launch.py use_fake_hardware:=true launch_arm_controller:=true
 ros2 launch bench_robot full_robot.launch.py robot_ip:=192.168.1.10 2>&1 | grep -Ev "DEBUG|\[INFO\].*\[zed.zed_node\]|\[component_container_isolated-[0-9]+\]|\[component_container-[0-9]+\]"
 ros2 launch bench_robot full_robot.launch.py robot_ip:=192.168.1.10 use_rviz:=false 2>&1 | grep -Ev "DEBUG|\[INFO\].*\[zed.zed_node\]|\[component_container_isolated-[0-9]+\]|\[component_container-[0-9]+\]"
 
-
-
+#---camera related
 ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zedm
-ros2 launch bench_robot zed.launch.py
-
 ros2 run orbbec_camera list_devices_node
 
-# Astra 2 top scan test
-ros2 launch bench_robot astra_top_scan.launch.py
 
-ros2 topic list | grep -E "/astra2/(color|depth)|/zed_top_scan"
-ros2 topic hz /astra2/color/image_raw
-ros2 topic hz /astra2/depth/image_raw
-ros2 topic echo /astra2/color/camera_info --once
-ros2 topic echo /astra2/depth/camera_info --once
-
-ros2 topic echo /zed_top_scan/run_dir
-ros2 topic echo /auto_state_cmd
 
 ros2 topic pub /robot_location std_msgs/msg/Int16MultiArray "{data: [0, 1, 15, 1, 15]}" --once
-ros2 topic pub /auto_state std_msgs/msg/String "{data: top_view_scan}" --once
-
-ls -td ~/scan_data_astra2/* | head -1
-python3 ~/CEAbot/src/bench_robot/Test/validate_top_scan_folder.py "$(ls -td ~/scan_data_astra2/* | head -1)"
 
 
-
-ros2 topic pub /auto_state std_msgs/msg/String "{data: scan_start}" --once
-ros2 topic pub /robot_location std_msgs/msg/Int16MultiArray "{data: [0, 1, 15, 1, 15]}" --once
-
-ros2 echo
-
-
-ros2 run tf2_ros tf2_echo base_link zed_camera_center
-
-
-
-git pull --rebase origin main
-
-
- sudo chown -R thiwa:thiwa /home/thiwa/scan_data_zed
-
- #plant_segmentation tuner
+#plant_segmentation tuner
 python3 plant_segmentation_tuner.py /path/to/scan_folder
 
 
 python3 ~/CEAbot/src/bench_robot/Test/publish_zed_top_scan_folder.py /home/thiwa/scan_data_zed/b1_r15_20260608_133520 --trigger
-ros2 topic pub /auto_state std_msgs/msg/String "{data: individual_plant_scan}" --once
 
 python3 ~/CEAbot/src/CEAbot_phenotyping/test/reconstruct_plant_views.py \
   /home/thiwa/scan_data_zed/b1_r15_20260608_133520
@@ -73,7 +52,16 @@ python3 ~/CEAbot/src/CEAbot_phenotyping/test/reconstruct_plant_views.py \
   --save-debug-views \
     --color-by-view \
 
+ros2 topic pub --once /plant_row/targets arm_interfaces/msg/PlantTargetArray \
+"{run_dir: '/home/thiwa/scan_data/b1_r13_20260709_144506', targets: [
+  {plant_id: 1, target_x: 0.45654, target_y: 0.15719, target_z: 0.840, radius_m: 0.062},
+  {plant_id: 2, target_x: 0.14228, target_y: 0.17708, target_z: 0.808, radius_m: 0.069},
+  {plant_id: 3, target_x: -0.15780, target_y: 0.17515, target_z: 0.833, radius_m: 0.058},
+  {plant_id: 4, target_x: -0.42001, target_y: 0.18824, target_z: 0.833, radius_m: 0.053}
+]}"
+
+ros2 topic pub /auto_state std_msgs/msg/String "{data: individual_plant_scan}" --once
 
 
 
-sudo ip addr add 192.168.1.2/24 dev enP1p1s0
+
