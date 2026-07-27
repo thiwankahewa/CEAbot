@@ -31,7 +31,7 @@ class PlantViewScanner(MoveItArmHelper):
         self.base_frame = "gemini335_color_optical_frame"
         self.ee_link = "gemini336_color_optical_frame"
 
-        self.declare_parameter("z_offset", 0.3)              # meters above target
+        self.declare_parameter("z_offset", 0.25)              # meters above target
         self.declare_parameter("circle_radius_offset", 0.1)   # distance from top view to side-view circle
         self.declare_parameter("circle_height_offset", 0.02)
         self.declare_parameter("look_at_angle_offset", 0.2)
