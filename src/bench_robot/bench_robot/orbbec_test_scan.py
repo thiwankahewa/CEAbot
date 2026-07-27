@@ -35,8 +35,8 @@ class OrbbecTestScanNode(Node):
         self.latest_depth_msg = None
 
         # ---------------- services ----------------
-        self.streams_cli = self.create_client(SetBool, '/camera/set_streams_enable')
-        self.get_logger().info('Waiting for /camera/set_streams_enable service...')
+        self.streams_cli = self.create_client(SetBool, '/gemini336/set_streams_enable')
+        self.get_logger().info('Waiting for /gemini336/set_streams_enable service...')
         self.streams_cli.wait_for_service()
         self.get_logger().info('Service available.')
 
@@ -45,9 +45,9 @@ class OrbbecTestScanNode(Node):
         # ---------------- subs ----------------
 
         # Time-synchronized color + depth + point cloud
-        self.color_sub = Subscriber(self, Image, '/camera/color/image_raw')
-        self.depth_sub = Subscriber(self, Image, '/camera/depth/image_raw')
-        self.cloud_sub = Subscriber(self, PointCloud2, '/camera/depth_registered/points')
+        self.color_sub = Subscriber(self, Image, '/gemini336/color/image_raw')
+        self.depth_sub = Subscriber(self, Image, '/gemini336/depth/image_raw')
+        self.cloud_sub = Subscriber(self, PointCloud2, '/gemini336/depth_registered/points')
         self.sync = ApproximateTimeSynchronizer([self.color_sub, self.depth_sub, self.cloud_sub],queue_size=20,slop=0.25)
         self.sync.registerCallback(self.synced_callback)
         

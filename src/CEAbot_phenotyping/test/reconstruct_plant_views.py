@@ -4,7 +4,6 @@ from pathlib import Path
 import argparse
 import numpy as np
 import yaml
-from scipy.spatial.transform import Rotation
 
 
 VIEW_COLORS = np.array(
@@ -18,6 +17,11 @@ VIEW_COLORS = np.array(
     ],
     dtype=np.float64,
 )
+
+EXPECTED_POSE_FRAME = "gemini335_color_optical_frame"
+EXPECTED_POSE_CHILD_FRAME = "gemini336_color_optical_frame"
+LEGACY_POSE_CHILD_FRAME = "camera_color_optical_frame"
+EXPECTED_CLOUD_FRAME = "gemini336_color_optical_frame"
 
 
 def parse_meta_yaml(path: Path) -> dict:
@@ -57,8 +61,20 @@ def pose_to_matrix(meta: dict) -> np.ndarray:
         dtype=np.float64,
     )
 
+    quat_norm = np.linalg.norm(quat_xyzw)
+    if quat_norm < 1e-12:
+        raise ValueError("actual pose quaternion has zero length")
+
+    x, y, z, w = quat_xyzw / quat_norm
     transform = np.eye(4, dtype=np.float64)
-    transform[:3, :3] = Rotation.from_quat(quat_xyzw).as_matrix()
+    transform[:3, :3] = np.array(
+        [
+            [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - z * w), 2.0 * (x * z + y * w)],
+            [2.0 * (x * y + z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - x * w)],
+            [2.0 * (x * z - y * w), 2.0 * (y * z + x * w), 1.0 - 2.0 * (x * x + y * y)],
+        ],
+        dtype=np.float64,
+    )
     transform[:3, 3] = translation
     return transform
 
@@ -161,12 +177,28 @@ def reconstruct_plant(plant_dir: Path,output_dir: Path,max_points_per_view: int,
 
         try:
             meta = parse_meta_yaml(meta_path)
-            pose_child_frame = meta.get("actual_pose_child_frame", "unknown")
+            pose_frame = meta.get("pose_frame", "unknown")
+            pose_child_frame = meta.get("pose_child_frame", "unknown")
+            cloud_frame = meta.get("frame_id", "unknown")
 
-            if pose_child_frame != "camera_color_optical_frame":
+            if pose_frame != EXPECTED_POSE_FRAME:
                 raise ValueError(
-                    "unsupported actual_pose_child_frame "
-                    f"{pose_child_frame!r}; expected camera_color_optical_frame"
+                    f"unsupported pose_frame {pose_frame!r}; "
+                    f"expected {EXPECTED_POSE_FRAME}"
+                )
+            if pose_child_frame not in {
+                EXPECTED_POSE_CHILD_FRAME,
+                LEGACY_POSE_CHILD_FRAME,
+            }:
+                raise ValueError(
+                    f"unsupported pose_child_frame {pose_child_frame!r}; "
+                    f"expected {EXPECTED_POSE_CHILD_FRAME} "
+                    f"(or legacy {LEGACY_POSE_CHILD_FRAME})"
+                )
+            if cloud_frame != EXPECTED_CLOUD_FRAME:
+                raise ValueError(
+                    f"unsupported point-cloud frame {cloud_frame!r}; "
+                    f"expected {EXPECTED_CLOUD_FRAME}"
                 )
 
             transform_world_camera = pose_to_matrix(meta)
@@ -206,8 +238,9 @@ def main():
     parser = argparse.ArgumentParser(
         description=(
             "Merge plant view point clouds using saved camera poses. "
-            "Metadata must store zed2i_left_camera_frame_optical -> "
-            "camera_color_optical_frame."
+            "Metadata must store gemini335_color_optical_frame -> "
+            "gemini336_color_optical_frame poses for point clouds captured in "
+            "gemini336_color_optical_frame."
         )
     )
     parser.add_argument("scan_dir", type=Path, help="Folder containing plant_XX/view folders")

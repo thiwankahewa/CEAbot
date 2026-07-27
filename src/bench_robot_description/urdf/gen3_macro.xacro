@@ -464,7 +464,7 @@
       <origin xyz="0.0133 0 0.012" rpy="0 -1.5708 0"/>
     </joint>-->
 
-    <!-- Local copy fixes the upstream camera_link visual/collision mismatch. -->
+    <!-- Local copy fixes the upstream gemini336_link visual/collision mismatch. -->
     <xacro:include filename="$(find bench_robot_description)/urdf/gemini_335_336_aligned.urdf.xacro" />
 
     <!--
@@ -502,7 +502,7 @@
 
     <joint name="${prefix}orbbec_mount_joint" type="fixed">
       <parent link="${prefix}ee_camera_bracket_link"/>
-      <child link="camera_link"/>
+      <child link="gemini336_link"/>
       <origin xyz="0.025 0.045 0.015" rpy="-1.5708 -1.5708 0"/>
     </joint>
     

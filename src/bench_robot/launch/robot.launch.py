@@ -55,8 +55,27 @@ def generate_launch_description():
         ),
         launch_arguments={
             "camera_name": "gemini335",
-            #"serial_number": "AARK7530058",
+            "serial_number": "CP1L44P0002P",
             "enable_colored_point_cloud": "false",
+            "enable_point_cloud": "false",
+            "depth_registration": "true",
+            "enable_ir": "false",
+            "publish_tf": "false",
+        }.items()
+    )
+
+    gemini336_launch = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            PathJoinSubstitution([
+                FindPackageShare("orbbec_camera"),
+                "launch",
+                "gemini_330_series.launch.py"
+            ])
+        ),
+        launch_arguments={
+            "camera_name": "gemini336",
+            "serial_number": "CP9KB530003R",
+            "enable_colored_point_cloud": "true",
             "enable_point_cloud": "false",
             "depth_registration": "true",
             "enable_ir": "false",
@@ -68,6 +87,7 @@ def generate_launch_description():
     return LaunchDescription([
         #orbbec_launch,
         gemini335_launch,
+        gemini336_launch,
         #zed_launch,
 
         Node(
@@ -126,10 +146,10 @@ def generate_launch_description():
             package="bench_robot",
             executable="top_scan",
             output="screen",),
-        # Node(
-        #     package="bench_robot",
-        #     executable="orbbec_test_scan",
-        #     output="screen",),
+        Node(
+            package="bench_robot",
+            executable="orbbec_test_scan",
+            output="screen",),
         Node(
             package="CEAbot_phenotyping",
             executable="plant_row_coordinates",

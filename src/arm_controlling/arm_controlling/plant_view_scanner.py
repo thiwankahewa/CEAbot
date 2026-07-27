@@ -29,13 +29,13 @@ class PlantViewScanner(MoveItArmHelper):
         self.latest_targets = []
         self.latest_run_dir = None
         self.base_frame = "gemini335_color_optical_frame"
-        self.ee_link = "camera_color_optical_frame"
+        self.ee_link = "gemini336_color_optical_frame"
 
-        self.declare_parameter("z_offset", 0.2)              # meters above target
-        self.declare_parameter("circle_radius_offset", 0.05)   # distance from top view to side-view circle
-        self.declare_parameter("circle_height_offset", 0.1)
+        self.declare_parameter("z_offset", 0.3)              # meters above target
+        self.declare_parameter("circle_radius_offset", 0.1)   # distance from top view to side-view circle
+        self.declare_parameter("circle_height_offset", 0.02)
         self.declare_parameter("look_at_angle_offset", 0.2)
-        self.declare_parameter("view_count", 2)
+        self.declare_parameter("view_count", 4)
         self.declare_parameter("optimize_view_order", True)
         # Limit greedy optimization to adjacent groups of plants.  A value of
         # 2 optimizes plants 1-2, then plants 3-4, while carrying the predicted
