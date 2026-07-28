@@ -9,6 +9,7 @@ from datetime import datetime
 import yaml
 import rclpy
 import tf2_ros
+from rclpy.duration import Duration
 from rclpy.time import Time
 from rcl_interfaces.msg import SetParametersResult
 from arm_controlling.moveit_arm_helper import MoveItArmHelper
@@ -29,6 +30,7 @@ class PlantViewScanner(MoveItArmHelper):
         self.latest_targets = []
         self.latest_run_dir = None
         self.base_frame = "gemini335_color_optical_frame"
+        self.reconstruction_frame = "base_link"
         self.ee_link = "gemini336_color_optical_frame"
 
         self.declare_parameter("z_offset", 0.25)              # meters above target
@@ -466,6 +468,22 @@ class PlantViewScanner(MoveItArmHelper):
 
             time.sleep(0.1)
 
+    @staticmethod
+    def point_cloud_time_from_meta(meta_path):
+        with open(meta_path, "r", encoding="utf-8") as f:
+            metadata = yaml.safe_load(f) or {}
+
+        stamp = metadata.get("cloud_timestamp")
+        if not isinstance(stamp, dict):
+            raise ValueError("Capture metadata is missing cloud_timestamp")
+
+        sec = int(stamp["sec"])
+        nanosec = int(stamp["nanosec"])
+        if sec < 0 or not 0 <= nanosec < 1_000_000_000:
+            raise ValueError(f"Invalid point-cloud timestamp: sec={sec}, nanosec={nanosec}")
+
+        return Time(seconds=sec, nanoseconds=nanosec)
+
     def append_pose_data_to_meta(
         self,
         meta_path,
@@ -473,16 +491,19 @@ class PlantViewScanner(MoveItArmHelper):
         view_label,
         commanded_pose,
         transform,
+        planning_transform,
         start_time,
         end_time,
     ):
         t = transform.transform.translation
         r = transform.transform.rotation
+        planning_t = planning_transform.transform.translation
+        planning_r = planning_transform.transform.rotation
 
         translation_error_mm = (math.sqrt(
-            (t.x - commanded_pose["x"]) ** 2
-            + (t.y - commanded_pose["y"]) ** 2
-            + (t.z - commanded_pose["z"]) ** 2
+            (planning_t.x - commanded_pose["x"]) ** 2
+            + (planning_t.y - commanded_pose["y"]) ** 2
+            + (planning_t.z - commanded_pose["z"]) ** 2
         )) * 1000.0
 
         commanded_quaternion = [
@@ -491,7 +512,12 @@ class PlantViewScanner(MoveItArmHelper):
             commanded_pose["qz"],
             commanded_pose["qw"],
         ]
-        actual_quaternion = [r.x, r.y, r.z, r.w]
+        actual_quaternion = [
+            planning_r.x,
+            planning_r.y,
+            planning_r.z,
+            planning_r.w,
+        ]
         commanded_norm = math.sqrt(sum(value ** 2 for value in commanded_quaternion))
         actual_norm = math.sqrt(sum(value ** 2 for value in actual_quaternion))
         if commanded_norm < 1e-12 or actual_norm < 1e-12:
@@ -511,8 +537,9 @@ class PlantViewScanner(MoveItArmHelper):
 
         metadata.update(
             {
-                "pose_frame": self.base_frame,
+                "pose_frame": self.reconstruction_frame,
                 "pose_child_frame": self.ee_link,
+                "command_frame": self.base_frame,
                 "start_time": start_time,
                 "end_time": end_time,
                 "commanded_x": round(commanded_pose["x"], 6),
@@ -529,6 +556,13 @@ class PlantViewScanner(MoveItArmHelper):
                 "actual_qy": round(r.y, 6),
                 "actual_qz": round(r.z, 6),
                 "actual_qw": round(r.w, 6),
+                "planning_actual_x": round(planning_t.x, 6),
+                "planning_actual_y": round(planning_t.y, 6),
+                "planning_actual_z": round(planning_t.z, 6),
+                "planning_actual_qx": round(planning_r.x, 6),
+                "planning_actual_qy": round(planning_r.y, 6),
+                "planning_actual_qz": round(planning_r.z, 6),
+                "planning_actual_qw": round(planning_r.w, 6),
                 "translation_error_mm": round(translation_error_mm, 6),
                 "angular_error_deg": round(math.degrees(angular_error_rad), 6),
             }
@@ -923,20 +957,40 @@ class PlantViewScanner(MoveItArmHelper):
             if not capture_success:
                 self.get_logger().warn(f"Orbbec capture failed for plant {plant_id}, view {pose['label']}")
 
-            try:
-                transform = self.tf_buffer.lookup_transform(self.base_frame,self.ee_link,Time())
-                t = transform.transform.translation
-                r = transform.transform.rotation
+            if capture_success:
+                meta_path = self.wait_for_capture_meta(self.latest_run_dir,plant_id,pose["label"],capture_started_at,)
+                if meta_path is not None:
+                    try:
+                        cloud_time = self.point_cloud_time_from_meta(meta_path)
+                        lookup_timeout = Duration(seconds=2.0)
 
-                self.get_logger().info(
-                    f"Plant {plant_id} - actual pose {j}/{pose_count} [{pose['label']}]: "
-                    f"x={t.x:.4f}, y={t.y:.4f}, z={t.z:.4f}, "
-                    f"q=({r.x:.4f}, {r.y:.4f}, {r.z:.4f}, {r.w:.4f})"
-                )
+                        # Reconstruction pose: base_link <- camera optical frame,
+                        # sampled at the exact PointCloud2 timestamp.
+                        transform = self.tf_buffer.lookup_transform(
+                            self.reconstruction_frame,
+                            self.ee_link,
+                            cloud_time,
+                            timeout=lookup_timeout,
+                        )
 
-                if capture_success:
-                    meta_path = self.wait_for_capture_meta(self.latest_run_dir, plant_id, pose["label"], capture_started_at)
-                    if meta_path is not None:
+                        # The commanded pose is expressed in self.base_frame,
+                        # so use a second timestamped lookup for pose error.
+                        planning_transform = self.tf_buffer.lookup_transform(
+                            self.base_frame,
+                            self.ee_link,
+                            cloud_time,
+                            timeout=lookup_timeout,
+                        )
+
+                        t = transform.transform.translation
+                        r = transform.transform.rotation
+                        self.get_logger().info(
+                            f"Plant {plant_id} - point-cloud-time pose "
+                            f"{j}/{pose_count} [{pose['label']}]: "
+                            f"x={t.x:.4f}, y={t.y:.4f}, z={t.z:.4f}, "
+                            f"q=({r.x:.4f}, {r.y:.4f}, {r.z:.4f}, {r.w:.4f})"
+                        )
+
                         capture_end_time = datetime.now().strftime("%Y%m%d_%H%M%S")
                         self.append_pose_data_to_meta(
                             meta_path,
@@ -944,12 +998,15 @@ class PlantViewScanner(MoveItArmHelper):
                             pose["label"],
                             pose,
                             transform,
+                            planning_transform,
                             item["planning_started_at"],
                             capture_end_time,
                         )
-
-            except Exception as e:
-                self.get_logger().warn(f"TF lookup failed: {e}")
+                    except Exception as e:
+                        self.get_logger().warn(
+                            f"Timestamped TF lookup failed for "
+                            f"{pose['label']}: {e}"
+                        )
 
             return True
 

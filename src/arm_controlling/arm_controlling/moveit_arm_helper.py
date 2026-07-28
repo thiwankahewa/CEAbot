@@ -30,7 +30,7 @@ class MoveItArmHelper(Node):
 
         self.planning_group = "arm"
         self.base_frame = "gemini335_color_optical_frame"
-        self.ee_link = "end_effector_link"
+        self.ee_link = "gemini336_color_optical_frame"
 
         self.current_joint_state = None
         self.active_execute_goal = None

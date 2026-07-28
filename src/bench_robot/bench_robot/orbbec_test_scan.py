@@ -191,15 +191,22 @@ class OrbbecTestScanNode(Node):
             self.get_logger().warn('Point cloud does not contain RGB fields. Saved XYZ only.')
 
         sensor_timestamp = self.msg_stamp_to_float(self.latest_color_msg.header.stamp)
+        cloud_stamp = self.latest_cloud_msg.header.stamp
         metadata = {
             'plant_id': int(plant_id),
             'view_label': str(view_label),
             'capture_timestamp_utc': datetime.now(timezone.utc).isoformat(),
             'sensor_timestamp_seconds': sensor_timestamp,
+            'cloud_timestamp':{'sec': int(cloud_stamp.sec),'nanosec': int(cloud_stamp.nanosec),},
             'color_shape': list(self.latest_color.shape),
             'depth_shape': list(self.latest_depth.shape),
             'depth_dtype': str(self.latest_depth.dtype),
-            'frame_id': self.latest_color_msg.header.frame_id,
+            # cloud_xyzrgb.npy contains points expressed in the PointCloud2
+            # header frame. Reconstruction must transform that frame, rather
+            # than assuming it is identical to the color image frame.
+            'frame_id': self.latest_cloud_msg.header.frame_id,
+            'color_frame_id': self.latest_color_msg.header.frame_id,
+            'depth_frame_id': self.latest_depth_msg.header.frame_id,
         }
         if xyzrgb_points is not None:
             metadata['cloud_xyzrgb_point_count'] = len(xyzrgb_points)

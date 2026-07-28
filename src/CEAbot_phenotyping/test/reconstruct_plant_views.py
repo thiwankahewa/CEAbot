@@ -18,7 +18,8 @@ VIEW_COLORS = np.array(
     dtype=np.float64,
 )
 
-EXPECTED_POSE_FRAME = "gemini335_color_optical_frame"
+EXPECTED_POSE_FRAME = "base_link"
+LEGACY_POSE_FRAME = "gemini335_color_optical_frame"
 EXPECTED_POSE_CHILD_FRAME = "gemini336_color_optical_frame"
 LEGACY_POSE_CHILD_FRAME = "camera_color_optical_frame"
 EXPECTED_CLOUD_FRAME = "gemini336_color_optical_frame"
@@ -181,10 +182,11 @@ def reconstruct_plant(plant_dir: Path,output_dir: Path,max_points_per_view: int,
             pose_child_frame = meta.get("pose_child_frame", "unknown")
             cloud_frame = meta.get("frame_id", "unknown")
 
-            if pose_frame != EXPECTED_POSE_FRAME:
+            if pose_frame not in {EXPECTED_POSE_FRAME, LEGACY_POSE_FRAME}:
                 raise ValueError(
                     f"unsupported pose_frame {pose_frame!r}; "
-                    f"expected {EXPECTED_POSE_FRAME}"
+                    f"expected {EXPECTED_POSE_FRAME} "
+                    f"(or legacy {LEGACY_POSE_FRAME})"
                 )
             if pose_child_frame not in {
                 EXPECTED_POSE_CHILD_FRAME,
