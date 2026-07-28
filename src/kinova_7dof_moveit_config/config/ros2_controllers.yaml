@@ -1,7 +1,10 @@
 # This config file is used by ros2_control
 controller_manager:
   ros__parameters:
-    update_rate: 150 # Hz
+    # The Gen3 low-level cyclic interface is designed for a 1 kHz command
+    # stream. A slower loop can trip the robot watchdog and make a resumed
+    # trajectory jump to a later setpoint after a missed UDP exchange.
+    update_rate: 1000 # Hz
 
     joint_trajectory_controller:
       type: joint_trajectory_controller/JointTrajectoryController
@@ -30,6 +33,11 @@ joint_trajectory_controller:
     state_interfaces:
       - position
       - velocity
+    # Publishing and action monitoring do not need to run at the 1 kHz
+    # hardware-loop rate.
+    state_publish_rate: 100.0
+    action_monitor_rate: 20.0
+    allow_partial_joints_goal: false
 
 twist_controller:
   ros__parameters:

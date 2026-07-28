@@ -43,7 +43,7 @@ Stephen Brawner (brawner@gmail.com)
         <visual>
             <origin xyz="0 0 0" rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_path}gemini336_bottom_screw_frame.STL" />
+                <mesh filename="${mesh_path}camera_bottom_screw_frame.STL" />
             </geometry>
             <material name="">
                 <color rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
@@ -52,7 +52,7 @@ Stephen Brawner (brawner@gmail.com)
         <collision>
             <origin xyz="0 0 0" rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_path}gemini336_bottom_screw_frame.STL" />
+                <mesh filename="${mesh_path}camera_bottom_screw_frame.STL" />
             </geometry>
         </collision>
     </link>
@@ -76,7 +76,7 @@ Stephen Brawner (brawner@gmail.com)
         <visual>
             <origin xyz="-25 0 0" rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_path}gemini336_left_ir_frame.STL" />
+                <mesh filename="${mesh_path}camera_left_ir_frame.STL" />
             </geometry>
             <material name="">
                 <color rgba="0.501960784313725 0.250980392156863 0.250980392156863 1" />
@@ -85,7 +85,7 @@ Stephen Brawner (brawner@gmail.com)
         <collision>
             <origin xyz="0 0 0" rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_path}gemini336_left_ir_frame.STL" />
+                <mesh filename="${mesh_path}camera_left_ir_frame.STL" />
             </geometry>
         </collision>
     </link>
@@ -108,7 +108,7 @@ Stephen Brawner (brawner@gmail.com)
         <visual>
             <origin xyz="0 0 0" rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_path}gemini336_left_ir_optical_frame.STL" />
+                <mesh filename="${mesh_path}camera_left_ir_optical_frame.STL" />
             </geometry>
             <material name="">
                 <color rgba="0.501960784313725 0.250980392156863 0.250980392156863 1" />
@@ -117,7 +117,7 @@ Stephen Brawner (brawner@gmail.com)
         <collision>
             <origin xyz="0 0 0" rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_path}gemini336_left_ir_optical_frame.STL" />
+                <mesh filename="${mesh_path}camera_left_ir_optical_frame.STL" />
             </geometry>
         </collision>
     </link>
@@ -141,7 +141,7 @@ Stephen Brawner (brawner@gmail.com)
         <visual>
             <origin xyz="0 0 0" rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_path}gemini336_right_ir_frame.STL" />
+                <mesh filename="${mesh_path}camera_right_ir_frame.STL" />
             </geometry>
             <material name="">
                 <color rgba="0.501960784313725 0.250980392156863 0.250980392156863 1" />
@@ -150,7 +150,7 @@ Stephen Brawner (brawner@gmail.com)
         <collision>
             <origin xyz="0 0 0" rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_path}gemini336_right_ir_frame.STL" />
+                <mesh filename="${mesh_path}camera_right_ir_frame.STL" />
             </geometry>
         </collision>
     </link>
@@ -173,7 +173,7 @@ Stephen Brawner (brawner@gmail.com)
         <visual>
             <origin xyz="0 0 0" rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_path}gemini336_right_ir_optical_frame.STL" />
+                <mesh filename="${mesh_path}camera_right_ir_optical_frame.STL" />
             </geometry>
             <material name="">
                 <color rgba="0.501960784313725 0.250980392156863 0.250980392156863 1" />
@@ -182,7 +182,7 @@ Stephen Brawner (brawner@gmail.com)
         <collision>
             <origin xyz="0 0 0" rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_path}gemini336_right_ir_optical_frame.STL" />
+                <mesh filename="${mesh_path}camera_right_ir_optical_frame.STL" />
             </geometry>
         </collision>
     </link>
@@ -206,7 +206,7 @@ Stephen Brawner (brawner@gmail.com)
         <visual>
             <origin xyz="0 0 0" rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_path}gemini336_color_frame.STL" />
+                <mesh filename="${mesh_path}camera_color_frame.STL" />
             </geometry>
             <material name="">
                 <color rgba="0.501960784313725 0.250980392156863 0.250980392156863 1" />
@@ -215,7 +215,7 @@ Stephen Brawner (brawner@gmail.com)
         <collision>
             <origin xyz="0 0 0" rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_path}gemini336_color_frame.STL" />
+                <mesh filename="${mesh_path}camera_color_frame.STL" />
             </geometry>
         </collision>
     </link>
@@ -239,7 +239,7 @@ Stephen Brawner (brawner@gmail.com)
         <visual>
             <origin xyz="0 0 0" rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_path}gemini336_color_optical_frame.STL" />
+                <mesh filename="${mesh_path}camera_color_optical_frame.STL" />
             </geometry>
             <material name="">
                 <color rgba="0.501960784313725 0.250980392156863 0.250980392156863 1" />
@@ -248,7 +248,7 @@ Stephen Brawner (brawner@gmail.com)
         <collision>
             <origin xyz="0 0 0" rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_path}gemini336_color_optical_frame.STL" />
+                <mesh filename="${mesh_path}camera_color_optical_frame.STL" />
             </geometry>
         </collision>
     </link>
@@ -272,7 +272,7 @@ Stephen Brawner (brawner@gmail.com)
         <visual>
             <origin xyz="0 0 0" rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_path}gemini336_depth_frame.STL" />
+                <mesh filename="${mesh_path}camera_depth_frame.STL" />
             </geometry>
             <material name="">
                 <color rgba="0.501960784313725 0.250980392156863 0.250980392156863 1" />
@@ -281,7 +281,7 @@ Stephen Brawner (brawner@gmail.com)
         <collision>
             <origin xyz="0 0 0" rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_path}gemini336_depth_frame.STL" />
+                <mesh filename="${mesh_path}camera_depth_frame.STL" />
             </geometry>
         </collision>
     </link>
@@ -303,7 +303,7 @@ Stephen Brawner (brawner@gmail.com)
         <visual>
             <origin xyz="0 0 0" rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_path}gemini336_depth_optical_frame.STL" />
+                <mesh filename="${mesh_path}camera_depth_optical_frame.STL" />
             </geometry>
             <material name="">
                 <color rgba="0.501960784313725 0.250980392156863 0.250980392156863 1" />
@@ -312,7 +312,7 @@ Stephen Brawner (brawner@gmail.com)
         <collision>
             <origin xyz="0 0 0" rpy="0 0 0" />
             <geometry>
-                <mesh filename="${mesh_path}gemini336_depth_optical_frame.STL" />
+                <mesh filename="${mesh_path}camera_depth_optical_frame.STL" />
             </geometry>
         </collision>
     </link>
