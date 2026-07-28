@@ -80,6 +80,13 @@ def pose_to_matrix(meta: dict) -> np.ndarray:
     return transform
 
 
+def planning_pose_to_matrix(meta: dict) -> np.ndarray:
+    planning_meta = dict(meta)
+    for name in ("x", "y", "z", "qx", "qy", "qz", "qw"):
+        planning_meta[f"actual_{name}"] = meta[f"planning_actual_{name}"]
+    return pose_to_matrix(planning_meta)
+
+
 def transform_points(points_xyz: np.ndarray, transform: np.ndarray) -> np.ndarray:
     return points_xyz @ transform[:3, :3].T + transform[:3, 3]
 
@@ -104,7 +111,12 @@ def voxel_downsample_xyzrgb(points: np.ndarray, voxel_size: float) -> np.ndarray
     return points[keep_indices]
 
 
-def load_cloud_xyzrgb(view_dir: Path, max_points_per_view: int) -> np.ndarray:
+def load_cloud_xyzrgb(
+    view_dir: Path,
+    max_points_per_view: int,
+    minimum_depth: float,
+    maximum_depth: float,
+) -> np.ndarray:
     cloud_path = view_dir / "cloud_xyzrgb.npy"
     if not cloud_path.exists():
         raise FileNotFoundError(f"missing {cloud_path}")
@@ -116,7 +128,49 @@ def load_cloud_xyzrgb(view_dir: Path, max_points_per_view: int) -> np.ndarray:
     cloud = cloud[:, :6].astype(np.float64, copy=False)
     valid = np.isfinite(cloud[:, 0]) & np.isfinite(cloud[:, 1]) & np.isfinite(cloud[:, 2])
     cloud = cloud[valid]
+    # Crop in the original camera frame before TF reconstruction. Optical Z is
+    # the measured forward depth, so this removes distant background directly.
+    cloud = cloud[
+        (cloud[:, 2] >= minimum_depth) & (cloud[:, 2] <= maximum_depth)
+    ]
     return limit_points(cloud, max_points_per_view)
+
+
+def get_plant_crop(scan_dir: Path, plant_dir: Path, first_meta: dict):
+    scan_meta = parse_meta_yaml(scan_dir / "metadata.yaml")
+    plant_id = int(plant_dir.name.removeprefix("plant_"))
+    plant = next(
+        (item for item in scan_meta.get("plants", []) if int(item["plant_id"]) == plant_id),
+        None,
+    )
+    if plant is None:
+        raise ValueError(f"metadata.yaml has no target for {plant_dir.name}")
+
+    target_command = np.array(
+        [
+            plant["target"]["x_mm"] / 1000.0,
+            plant["target"]["y_mm"] / 1000.0,
+            plant["target"]["z_mm"] / 1000.0,
+            1.0,
+        ],
+        dtype=np.float64,
+    )
+    base_from_command = pose_to_matrix(first_meta) @ np.linalg.inv(
+        planning_pose_to_matrix(first_meta)
+    )
+    center = (base_from_command @ target_command)[:3]
+    radius = float(plant["radius_mm"]) / 1000.0
+    return center, radius
+
+
+def crop_world_points(points, center, radius, below, above):
+    horizontal_distance = np.linalg.norm(points[:, :2] - center[:2], axis=1)
+    keep = (
+        (horizontal_distance <= radius)
+        & (points[:, 2] >= center[2] - below)
+        & (points[:, 2] <= center[2] + above)
+    )
+    return points[keep]
 
 
 def save_binary_ply(path: Path, points: np.ndarray):
@@ -164,11 +218,38 @@ def recolor_cloud(points: np.ndarray, color_index: int) -> np.ndarray:
     return recolored
 
 
-def reconstruct_plant(plant_dir: Path,output_dir: Path,max_points_per_view: int,voxel_size: float,save_debug_views: bool,color_by_view: bool,):
+def reconstruct_plant(
+    scan_dir: Path,
+    plant_dir: Path,
+    output_dir: Path,
+    max_points_per_view: int,
+    voxel_size: float,
+    save_debug_views: bool,
+    color_by_view: bool,
+    minimum_depth: float,
+    maximum_depth: float,
+    crop_margin: float,
+    crop_below: float,
+    crop_above: float,
+):
     view_dirs = sorted(path for path in plant_dir.iterdir() if path.is_dir())
     transformed_views = []
 
-    print(f"\n{plant_dir.name}: found {len(view_dirs)} view folders")
+    first_meta_path = next(
+        (view / "meta.yaml" for view in view_dirs if (view / "meta.yaml").exists()),
+        None,
+    )
+    if first_meta_path is None:
+        print(f"{plant_dir.name}: no view metadata found")
+        return
+    plant_center, detected_radius = get_plant_crop(
+        scan_dir, plant_dir, parse_meta_yaml(first_meta_path)
+    )
+    crop_radius = detected_radius + crop_margin
+    print(
+        f"\n{plant_dir.name}: found {len(view_dirs)} view folders, "
+        f"crop radius={crop_radius * 1000:.0f} mm"
+    )
 
     for view_index, view_dir in enumerate(view_dirs):
         meta_path = view_dir / "meta.yaml"
@@ -205,8 +286,21 @@ def reconstruct_plant(plant_dir: Path,output_dir: Path,max_points_per_view: int,
 
             transform_world_camera = pose_to_matrix(meta)
 
-            cloud = load_cloud_xyzrgb(view_dir, max_points_per_view)
+            cloud = load_cloud_xyzrgb(
+                view_dir,
+                max_points_per_view,
+                minimum_depth,
+                maximum_depth,
+            )
+            depth_cropped_count = len(cloud)
             cloud[:, :3] = transform_points(cloud[:, :3], transform_world_camera)
+            cloud = crop_world_points(
+                cloud,
+                plant_center,
+                crop_radius,
+                crop_below,
+                crop_above,
+            )
             if color_by_view:
                 cloud = recolor_cloud(cloud, view_index)
             transformed_views.append(cloud)
@@ -215,7 +309,10 @@ def reconstruct_plant(plant_dir: Path,output_dir: Path,max_points_per_view: int,
                 debug_path = output_dir / "debug_views" / plant_dir.name / f"{view_dir.name}_transformed.ply"
                 save_binary_ply(debug_path, cloud)
 
-            print(f"  loaded {view_dir.name}: {len(cloud)} points")
+            print(
+                f"  loaded {view_dir.name}: {depth_cropped_count} after depth crop, "
+                f"{len(cloud)} after plant crop"
+            )
         except Exception as exc:
             print(f"  skip {view_dir.name}: {exc}")
 
@@ -248,15 +345,25 @@ def main():
     parser.add_argument("scan_dir", type=Path, help="Folder containing plant_XX/view folders")
     parser.add_argument("--plant", default="", help="Only reconstruct one plant, e.g. plant_01")
     parser.add_argument("--output-dir", type=Path, default=None, help="Output directory for merged PLY files")
-    parser.add_argument("--voxel-size", type=float, default=0.003, help="Voxel size in meters. Use 0 to disable.")
+    parser.add_argument("--voxel-size", type=float, default=0.001, help="Voxel size in meters. Use 0 to disable.")
     parser.add_argument("--save-debug-views", action="store_true", help="Save each transformed view as its own PLY.")
     parser.add_argument("--color-by-view", action="store_true", help="Override RGB so each view has a unique debug color.")
     parser.add_argument(
         "--max-points-per-view",
         type=int,
-        default=250000,
+        default=0,
         help="Random point cap per view before merging. Use 0 for all points.",
     )
+    parser.add_argument("--min-depth", type=float, default=0.15, help="Minimum camera-frame depth in metres.")
+    parser.add_argument("--max-depth", type=float, default=0.70, help="Maximum camera-frame depth in metres.")
+    parser.add_argument(
+        "--crop-margin",
+        type=float,
+        default=0.05,
+        help="Horizontal margin added to detected plant radius in metres.",
+    )
+    parser.add_argument("--crop-below", type=float, default=0.12)
+    parser.add_argument("--crop-above", type=float, default=0.30)
     args = parser.parse_args()
 
     scan_dir = args.scan_dir.expanduser()
@@ -272,12 +379,18 @@ def main():
 
     for plant_dir in plant_dirs:
         reconstruct_plant(
+            scan_dir,
             plant_dir,
             output_dir,
             args.max_points_per_view,
             args.voxel_size,
             args.save_debug_views,
             args.color_by_view,
+            args.min_depth,
+            args.max_depth,
+            args.crop_margin,
+            args.crop_below,
+            args.crop_above,
         )
 
 
