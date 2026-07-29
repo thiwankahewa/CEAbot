@@ -484,40 +484,88 @@ class PlantViewScanner(MoveItArmHelper):
 
         return Time(seconds=sec, nanoseconds=nanosec)
 
-    def append_pose_data_to_meta(
-        self,
-        meta_path,
-        plant_id,
-        view_label,
-        commanded_pose,
-        transform,
-        planning_transform,
-        start_time,
-        end_time,
-    ):
-        t = transform.transform.translation
-        r = transform.transform.rotation
-        planning_t = planning_transform.transform.translation
-        planning_r = planning_transform.transform.rotation
+    @staticmethod
+    def compose_commanded_pose(parent_transform, commanded_pose):
+        """Return base_link <- camera command from base_link <- command frame."""
+        parent_t = parent_transform.transform.translation
+        parent_r = parent_transform.transform.rotation
 
-        translation_error_mm = (math.sqrt(
-            (planning_t.x - commanded_pose["x"]) ** 2
-            + (planning_t.y - commanded_pose["y"]) ** 2
-            + (planning_t.z - commanded_pose["z"]) ** 2
-        )) * 1000.0
-
-        commanded_quaternion = [
+        parent_q = [parent_r.x, parent_r.y, parent_r.z, parent_r.w]
+        child_q = [
             commanded_pose["qx"],
             commanded_pose["qy"],
             commanded_pose["qz"],
             commanded_pose["qw"],
         ]
-        actual_quaternion = [
-            planning_r.x,
-            planning_r.y,
-            planning_r.z,
-            planning_r.w,
+
+        def normalize(q):
+            norm = math.sqrt(sum(value * value for value in q))
+            if norm < 1e-12:
+                raise ValueError("Cannot compose a zero-length quaternion")
+            return [value / norm for value in q]
+
+        def multiply(left, right):
+            lx, ly, lz, lw = left
+            rx, ry, rz, rw = right
+            return [
+                lw * rx + lx * rw + ly * rz - lz * ry,
+                lw * ry - lx * rz + ly * rw + lz * rx,
+                lw * rz + lx * ry - ly * rx + lz * rw,
+                lw * rw - lx * rx - ly * ry - lz * rz,
+            ]
+
+        parent_q = normalize(parent_q)
+        child_q = normalize(child_q)
+        commanded_q = normalize(multiply(parent_q, child_q))
+
+        # Rotate the commanded translation into base_link using
+        # q * [v, 0] * conjugate(q).
+        child_t_q = [
+            commanded_pose["x"],
+            commanded_pose["y"],
+            commanded_pose["z"],
+            0.0,
         ]
+        parent_q_conjugate = [
+            -parent_q[0],
+            -parent_q[1],
+            -parent_q[2],
+            parent_q[3],
+        ]
+        rotated_t = multiply(
+            multiply(parent_q, child_t_q),
+            parent_q_conjugate,
+        )
+
+        return {
+            "x": parent_t.x + rotated_t[0],
+            "y": parent_t.y + rotated_t[1],
+            "z": parent_t.z + rotated_t[2],
+            "qx": commanded_q[0],
+            "qy": commanded_q[1],
+            "qz": commanded_q[2],
+            "qw": commanded_q[3],
+        }
+
+    def append_pose_data_to_meta(
+        self,
+        meta_path,
+        commanded_pose,
+        transform,
+        start_time,
+        end_time,
+    ):
+        t = transform.transform.translation
+        r = transform.transform.rotation
+
+        translation_error_mm = (math.sqrt(
+            (t.x - commanded_pose["x"]) ** 2
+            + (t.y - commanded_pose["y"]) ** 2
+            + (t.z - commanded_pose["z"]) ** 2
+        )) * 1000.0
+
+        commanded_quaternion = [commanded_pose["qx"],commanded_pose["qy"],commanded_pose["qz"],commanded_pose["qw"],]
+        actual_quaternion = [r.x,r.y,r.z,r.w,]
         commanded_norm = math.sqrt(sum(value ** 2 for value in commanded_quaternion))
         actual_norm = math.sqrt(sum(value ** 2 for value in actual_quaternion))
         if commanded_norm < 1e-12 or actual_norm < 1e-12:
@@ -556,13 +604,6 @@ class PlantViewScanner(MoveItArmHelper):
                 "actual_qy": round(r.y, 6),
                 "actual_qz": round(r.z, 6),
                 "actual_qw": round(r.w, 6),
-                "planning_actual_x": round(planning_t.x, 6),
-                "planning_actual_y": round(planning_t.y, 6),
-                "planning_actual_z": round(planning_t.z, 6),
-                "planning_actual_qx": round(planning_r.x, 6),
-                "planning_actual_qy": round(planning_r.y, 6),
-                "planning_actual_qz": round(planning_r.z, 6),
-                "planning_actual_qw": round(planning_r.w, 6),
                 "translation_error_mm": round(translation_error_mm, 6),
                 "angular_error_deg": round(math.degrees(angular_error_rad), 6),
             }
@@ -572,6 +613,61 @@ class PlantViewScanner(MoveItArmHelper):
         with open(temporary_meta_path, "w", encoding="utf-8") as f:
             yaml.safe_dump(metadata, f, sort_keys=False)
         os.replace(temporary_meta_path, meta_path)
+
+    def save_plant_target_in_reconstruction_frame(
+        self,
+        plant_id,
+        target_command,
+        base_from_command,
+        cloud_time,
+    ):
+        """Save a detected plant center in the same frame as reconstructed clouds."""
+        if plant_id in self.saved_base_targets:
+            return
+
+        target_pose = {
+            "x": target_command["x"],
+            "y": target_command["y"],
+            "z": target_command["z"],
+            "qx": 0.0,
+            "qy": 0.0,
+            "qz": 0.0,
+            "qw": 1.0,
+        }
+        target_base = self.compose_commanded_pose(base_from_command, target_pose)
+        metadata_path = os.path.join(self.latest_run_dir, "metadata.yaml")
+
+        with open(metadata_path, "r", encoding="utf-8") as metadata_file:
+            metadata = yaml.safe_load(metadata_file) or {}
+
+        plant = next(
+            (
+                entry
+                for entry in metadata.get("plants", [])
+                if int(entry["plant_id"]) == int(plant_id)
+            ),
+            None,
+        )
+        if plant is None:
+            raise ValueError(f"metadata.yaml has no target for plant_{int(plant_id):02d}")
+
+        plant["target_base"] = {
+            "frame_id": self.reconstruction_frame,
+            "x_m": round(target_base["x"], 6),
+            "y_m": round(target_base["y"], 6),
+            "z_m": round(target_base["z"], 6),
+            "source_frame": self.base_frame,
+            "tf_timestamp": {
+                "sec": int(cloud_time.nanoseconds // 1_000_000_000),
+                "nanosec": int(cloud_time.nanoseconds % 1_000_000_000),
+            },
+        }
+
+        temporary_path = metadata_path + ".target_base.tmp"
+        with open(temporary_path, "w", encoding="utf-8") as metadata_file:
+            yaml.safe_dump(metadata, metadata_file, sort_keys=False)
+        os.replace(temporary_path, metadata_path)
+        self.saved_base_targets.add(plant_id)
 
     def build_scan_items(self, targets):
         items = []
@@ -586,6 +682,7 @@ class PlantViewScanner(MoveItArmHelper):
                         "pose": pose,
                         "pose_index": j,
                         "pose_count": len(view_poses),
+                        "target_command": {"x": x, "y": y, "z": z},
                     }
                 )
 
@@ -855,6 +952,7 @@ class PlantViewScanner(MoveItArmHelper):
             return
 
         all_scan_items = self.build_scan_items(targets)
+        self.saved_base_targets = set()
         self.initialize_scan_summary(all_scan_items)
         scan_batches = self.split_scan_batches(all_scan_items)
         self.deferred_scan_items = []
@@ -973,13 +1071,13 @@ class PlantViewScanner(MoveItArmHelper):
                             timeout=lookup_timeout,
                         )
 
-                        # The commanded pose is expressed in self.base_frame,
-                        # so use a second timestamped lookup for pose error.
-                        planning_transform = self.tf_buffer.lookup_transform(
-                            self.base_frame,
-                            self.ee_link,
+                        base_to_command_frame = self.tf_buffer.lookup_transform(self.reconstruction_frame,self.base_frame,cloud_time,timeout=lookup_timeout,)
+                        commanded_pose_in_base = self.compose_commanded_pose(base_to_command_frame,pose,)
+                        self.save_plant_target_in_reconstruction_frame(
+                            plant_id,
+                            item["target_command"],
+                            base_to_command_frame,
                             cloud_time,
-                            timeout=lookup_timeout,
                         )
 
                         t = transform.transform.translation
@@ -994,11 +1092,8 @@ class PlantViewScanner(MoveItArmHelper):
                         capture_end_time = datetime.now().strftime("%Y%m%d_%H%M%S")
                         self.append_pose_data_to_meta(
                             meta_path,
-                            plant_id,
-                            pose["label"],
-                            pose,
+                            commanded_pose_in_base,
                             transform,
-                            planning_transform,
                             item["planning_started_at"],
                             capture_end_time,
                         )

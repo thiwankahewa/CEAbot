@@ -48,13 +48,6 @@ def pose_matrix(meta):
     return result
 
 
-def planning_pose_matrix(meta):
-    planning_meta = dict(meta)
-    for name in ("x", "y", "z", "qx", "qy", "qz", "qw"):
-        planning_meta[f"actual_{name}"] = meta[f"planning_actual_{name}"]
-    return pose_matrix(planning_meta)
-
-
 def transform_xyz(xyz, transform):
     return xyz @ transform[:3, :3].T + transform[:3, 3]
 
@@ -87,7 +80,7 @@ def load_cloud(view_dir, maximum, seed, minimum_depth, maximum_depth):
     return cap_points(points, maximum, seed)
 
 
-def plant_geometry(scan_dir, plant_name, first_meta):
+def plant_geometry(scan_dir, plant_name):
     """Return the detected plant target in base_link and its horizontal radius."""
     scan_meta = load_metadata(scan_dir / "metadata.yaml")
     plant_id = int(plant_name.removeprefix("plant_"))
@@ -98,20 +91,21 @@ def plant_geometry(scan_dir, plant_name, first_meta):
     if plant is None:
         raise ValueError(f"{scan_dir / 'metadata.yaml'} has no entry for {plant_name}")
 
-    target_command = np.array(
-        [
-            plant["target"]["x_mm"] / 1000.0,
-            plant["target"]["y_mm"] / 1000.0,
-            plant["target"]["z_mm"] / 1000.0,
-            1.0,
-        ]
+    target = plant.get("target_base")
+    if target is None:
+        raise ValueError(
+            f"metadata.yaml has no target_base for {plant_name}; "
+            "capture a new scan with the updated plant_view_scanner"
+        )
+    if target.get("frame_id") != "base_link":
+        raise ValueError(
+            f"unsupported target_base frame {target.get('frame_id')!r}; "
+            "expected 'base_link'"
+        )
+    target_base = np.asarray(
+        [target["x_m"], target["y_m"], target["z_m"]],
+        dtype=np.float64,
     )
-    # Both camera poses were sampled at the cloud timestamp, so this recovers
-    # base_link <- command_frame without requiring a live TF tree.
-    base_from_command = pose_matrix(first_meta) @ np.linalg.inv(
-        planning_pose_matrix(first_meta)
-    )
-    target_base = (base_from_command @ target_command)[:3]
     return target_base, float(plant["radius_mm"]) / 1000.0
 
 
@@ -410,10 +404,7 @@ def align_plant(plant_dir, output_dir, args):
         print(f"{plant_dir.name}: no point clouds found")
         return
 
-    first_meta = load_metadata(view_dirs[0] / "meta.yaml")
-    plant_center, detected_radius = plant_geometry(
-        plant_dir.parent, plant_dir.name, first_meta
-    )
+    plant_center, detected_radius = plant_geometry(plant_dir.parent, plant_dir.name)
     crop_radius = detected_radius + args.crop_margin
     if args.coarse_rgbd:
         initial_poses, saved_poses, coarse_diagnostics = build_initial_poses(
