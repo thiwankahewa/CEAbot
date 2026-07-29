@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 import os
-from datetime import datetime, timezone
 
 import cv2
 import numpy as np
@@ -190,17 +189,13 @@ class OrbbecTestScanNode(Node):
         else:
             self.get_logger().warn('Point cloud does not contain RGB fields. Saved XYZ only.')
 
-        sensor_timestamp = self.msg_stamp_to_float(self.latest_color_msg.header.stamp)
         cloud_stamp = self.latest_cloud_msg.header.stamp
         metadata = {
             'plant_id': int(plant_id),
             'view_label': str(view_label),
-            'capture_timestamp_utc': datetime.now(timezone.utc).isoformat(),
-            'sensor_timestamp_seconds': sensor_timestamp,
             'cloud_timestamp':{'sec': int(cloud_stamp.sec),'nanosec': int(cloud_stamp.nanosec),},
             'color_shape': list(self.latest_color.shape),
             'depth_shape': list(self.latest_depth.shape),
-            'depth_dtype': str(self.latest_depth.dtype),
             # cloud_xyzrgb.npy contains points expressed in the PointCloud2
             # header frame. Reconstruction must transform that frame, rather
             # than assuming it is identical to the color image frame.
@@ -297,8 +292,6 @@ class OrbbecTestScanNode(Node):
             f.write(header.encode('ascii'))
             ply_points.tofile(f)
 
-    def msg_stamp_to_float(self, stamp):
-        return float(stamp.sec) + float(stamp.nanosec) * 1e-9
 
 def main(args=None):
     rclpy.init(args=args)

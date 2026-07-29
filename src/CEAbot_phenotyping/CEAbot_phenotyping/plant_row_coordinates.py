@@ -598,15 +598,11 @@ class PlantCoordinateNode(Node):
                 "hsv_lower": [int(value) for value in self.lower_green],
                 "hsv_upper": [int(value) for value in self.upper_green],
                 "morphology_kernel_size_px": int(self.kernel_size),
-                "morphology_operations": ["open", "close"],
-                "top_depth_percentile": float(self.top_percentile),
-                "center_depth_window_size_px": int(self.center_window_size),
             },
             "flower": {
                 "hsv_lower": [int(value) for value in self.lower_yellow],
                 "hsv_upper": [int(value) for value in self.upper_yellow],
                 "morphology_kernel_size_px": 2,
-                "morphology_operations": ["open"],
             },
         }
 
@@ -620,12 +616,12 @@ class PlantCoordinateNode(Node):
                     if row["area_px"] is not None
                     else None
                 ),
+                "radius_mm": row["radius_mm"],
                 "target": {
                     "x_mm": row["target_x"],
                     "y_mm": row["target_y"],
                     "z_mm": row["target_z"],
                 },
-                "radius_mm": row["radius_mm"],
             }
             for row in results
         ]
