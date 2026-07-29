@@ -15,6 +15,7 @@
   <depend>std_srvs</depend>
   <depend>sensor_msgs_py</depend>
   <depend>cv_bridge</depend>
+  <depend>tf2_ros</depend>
   <depend>message_filters</depend>
   <depend>arm_interfaces</depend>
 

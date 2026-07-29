@@ -63,3 +63,26 @@ ros2 topic pub /auto_state std_msgs/msg/String "{data: individual_plant_scan}" -
 
 
 
+ros2 launch bench_robot robot_sim_gazebo.launch.py \
+  robot_ip:=192.168.1.10 \
+  use_rviz:=false \
+  2>&1 | grep -v DEBUG
+
+
+  ros2 launch orbbec_camera gemini_330_series.launch.py \
+  camera_name:=ge mini336 \
+  serial_number:=CP9KB530003R \
+  enable_colored_point_cloud:=true \
+  enable_point_cloud:=false \
+  depth_registration:=true \
+  enable_ir:=false \
+  publish_tf:=false
+
+
+ros2 run bench_robot handeye_capture \
+  --squares-x 5 \
+  --squares-y 7 \
+  --square-length 0.030 \
+  --marker-length 0.022 \
+  --dictionary DICT_4X4_50 \
+  --display-rate 3

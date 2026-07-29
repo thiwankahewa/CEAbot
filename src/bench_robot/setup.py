@@ -42,6 +42,8 @@ setup(
             'zed_test_scan = bench_robot.zed_test_scan:main',
             'bench_changer = bench_robot.bench_changer:main',
             'system_stats_publisher = bench_robot.system_stats_publisher:main',
+            'handeye_capture = bench_robot.handeye_capture:main',
+            'handeye_solve = bench_robot.handeye_solve:main',
         ],
     },
 )
