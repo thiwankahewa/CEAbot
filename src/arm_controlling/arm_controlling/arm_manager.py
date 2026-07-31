@@ -15,7 +15,7 @@ from arm_interfaces.srv import ExecutePlannedTrajectory, MoveToPose, PlanToPose
 
 
 REST_APPROACH = {"joint_1": -0.628,"joint_2": -2.23,"joint_3": 0.0521,"joint_4": 1.6613,"joint_5": 3.1415,"joint_6": -2.09,"joint_7": -0.0868,}
-POSE_1 = {"joint_1": -1.545,"joint_2": -1.925,"joint_3": 0.0,"joint_4": 1.375,"joint_5": 0.0,"joint_6": 1.435,"joint_7": 1.5708,}
+POSE_1 = {"joint_1": -1.545,"joint_2": -1.877,"joint_3": 0.0,"joint_4": 1.792,"joint_5": 0.0,"joint_6": 0.87,"joint_7": 3.142,}
 
 
 class ArmManager(MoveItArmHelper):
@@ -48,7 +48,31 @@ class ArmManager(MoveItArmHelper):
         return response
 
     def cb_pose_1(self, request, response):
-        response.success, response.message = self.start_command("pose_1",lambda: self.move_to_joint_pose("pose_1", POSE_1),)
+        # bench_changer must not move the chassis until the arm has physically
+        # reached this camera pose. Unlike the fire-and-forget rest command,
+        # keep this service pending until execution and pose confirmation end.
+        with self.command_lock:
+            if self.command_busy:
+                response.success = False
+                response.message = "Arm is busy. Wait until current command finishes."
+                return response
+
+            self.command_busy = True
+            self.stop_requested = False
+
+        try:
+            self.get_logger().info("Starting blocking command: pose_1")
+            response.success, response.message = self.move_to_joint_pose("pose_1", POSE_1)
+        except Exception as exc:
+            self.get_logger().error(f"Command pose_1 crashed: {exc}")
+            response.success = False
+            response.message = str(exc)
+        finally:
+            with self.command_lock:
+                self.command_busy = False
+
+        self.get_logger().info(
+            f"Finished blocking command: pose_1 (success={response.success})")
         return response
 
     def cb_reset_moveit_control(self, request, response):
