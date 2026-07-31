@@ -86,3 +86,6 @@ ros2 run bench_robot handeye_capture \
   --marker-length 0.022 \
   --dictionary DICT_4X4_50 \
   --display-rate 3
+
+
+ ros2 run bench_robot handeye_capture   --squares-x 5   --squares-y 7   --square-length 0.030   --marker-length 0.022   --dictionary DICT_4X4_50   --display-rate 3

@@ -11,6 +11,7 @@ WHEEL_DIAMETER_M = 0.2032
 WHEEL_CIRCUMFERENCE_M = math.pi * WHEEL_DIAMETER_M
 TRACKING_STATES = ("bench_tracking_f", "bench_tracking_b")
 TOF_STATES = (*TRACKING_STATES, "yaw_correction", "align_center")
+CONTROL_STATES = (*TOF_STATES, "aruco_centering")
 
 
 class BenchTracker(Node):
@@ -199,7 +200,7 @@ class BenchTracker(Node):
         if not all(value is not None and self.min_tof <= value <= self.max_tof for value in (fl, fr, rl, rr)):
             self.invalid_data_warned = True
             now = self.now_s()
-            if now - self.last_invalid_tof_log_time >= 1:
+            if self.needs_tof() and now - self.last_invalid_tof_log_time >= 1:
                 self.get_logger().info(f"Invalid tof data: rl={rl} fl={fl} rr={rr} fr={fr} valid_range={self.min_tof}-{self.max_tof} mm")
                 self.last_invalid_tof_log_time = now
             self.last_tof_stamp = self.get_clock().now()
@@ -219,6 +220,13 @@ class BenchTracker(Node):
     # -------- main functions --------
     def control_tick(self):
         if self.auto_state in ("manual", "idle"):
+            return
+
+        # Other state-specific controllers own /wheel_rpm_cmd outside these
+        # states. In particular, bench_changer is the sole publisher during
+        # bench_change_start; publishing a fallback zero here makes the motor
+        # driver alternate between its motion command and stop.
+        if self.auto_state not in CONTROL_STATES:
             return
 
         if self.eStop:

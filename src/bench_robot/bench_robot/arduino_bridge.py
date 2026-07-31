@@ -8,7 +8,13 @@ from rclpy.node import Node
 from std_msgs.msg import Float32, Int16MultiArray, String
 from std_srvs.srv import Trigger
 
-ACTIVE_TOF_STATES = ("bench_tracking_f", "bench_tracking_b", "yaw_correction", "align_center")
+ACTIVE_TOF_STATES = (
+    "bench_tracking_f",
+    "bench_tracking_b",
+    "yaw_correction",
+    "align_center",
+    "bench_change_start",
+)
 
 
 class ArduinoBridge(Node):

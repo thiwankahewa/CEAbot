@@ -61,6 +61,7 @@ class TopScanNode(Node):
         os.makedirs(self.save_dir, exist_ok=True)
 
         self.streams_cli = self.create_client(SetBool, self.streams_enable_service)
+        self.startup_stream_timer = self.create_timer(0.5, self.disable_streams_at_startup)
 
         self.location_sub = self.create_subscription(Int16MultiArray, "/robot_location", self.cb_location, 10)
         self.state_sub = self.create_subscription(String, "/auto_state", self.cb_auto_state, 10)
@@ -76,6 +77,17 @@ class TopScanNode(Node):
         self.pub_scan_depth = self.create_publisher(Image, self.top_scan_depth_topic, 10)
         self.pub_scan_camera_info = self.create_publisher(CameraInfo, self.top_scan_camera_info_topic, 10)
         self.pub_scan_run_dir = self.create_publisher(String, self.top_scan_run_dir_topic, 10)
+
+    def disable_streams_at_startup(self):
+        """Leave the camera idle until a top-view capture is requested."""
+        if not self.streams_cli.service_is_ready():
+            return
+
+        self.startup_stream_timer.cancel()
+        req = SetBool.Request()
+        req.data = False
+        future = self.streams_cli.call_async(req)
+        future.add_done_callback(self.on_streams_disabled)
 
     def _load_params(self):
         self.bench_height = self.get_parameter("bench_height").value

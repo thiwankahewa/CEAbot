@@ -38,6 +38,7 @@ class OrbbecTestScanNode(Node):
         self.get_logger().info('Waiting for /gemini336/set_streams_enable service...')
         self.streams_cli.wait_for_service()
         self.get_logger().info('Service available.')
+        self.startup_stream_timer = self.create_timer(0.5, self.disable_streams_at_startup)
 
         self.create_service(CaptureView,"/orbbec_test_scan/capture_view",self.cb_capture_view)
 
@@ -54,6 +55,17 @@ class OrbbecTestScanNode(Node):
         self.scan_done_pub = self.create_publisher(Bool, '/scan_done', 10)
 
     # ---------------- helper functions ----------------
+
+    def disable_streams_at_startup(self):
+        """Leave the camera idle until a plant-view capture is requested."""
+        if not self.streams_cli.service_is_ready():
+            return
+
+        self.startup_stream_timer.cancel()
+        req = SetBool.Request()
+        req.data = False
+        future = self.streams_cli.call_async(req)
+        future.add_done_callback(self.on_streams_disabled)
 
     def on_streams_enabled(self, future):
         try:

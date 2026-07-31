@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool, Float32MultiArray, Int16, Int16MultiArray, String
 from std_srvs.srv import Trigger
 
@@ -15,6 +16,11 @@ END_ROWS = [FIRST_ROW_ID, LAST_ROW_ID]
 TRACKING_STATES = ("bench_tracking_f", "bench_tracking_b")
 DETECTION_STATES = (*TRACKING_STATES, "aruco_centering")
 CAMERA_DEVICE = "/dev/v4l/by-id/usb-Arducam_Technology_Co.__Ltd._USB_2.0_Camera_SN0001-video-index0"
+ROBOT_LOCATION_QOS = QoSProfile(
+    depth=1,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    reliability=ReliabilityPolicy.RELIABLE,
+)
 
 
 class ArucoManager(Node):
@@ -73,7 +79,8 @@ class ArucoManager(Node):
         # ---------------- pubs ----------------
         self.pub_stop = self.create_publisher(Bool, '/aruco_stop_request', 10)
         self.pub_auto_state_cmd = self.create_publisher(String, '/auto_state_cmd', 10)
-        self.pub_location = self.create_publisher(Int16MultiArray, '/robot_location', 10)
+        self.pub_location = self.create_publisher(
+            Int16MultiArray, '/robot_location', ROBOT_LOCATION_QOS)
         self.pub_align_error = self.create_publisher(Float32MultiArray, '/aruco_target_error', 10)
 
         # ---------------- timer ----------------

@@ -56,11 +56,17 @@ def generate_launch_description():
         launch_arguments={
             "camera_name": "gemini335",
             "serial_number": "CP1L44P0002P",
+            "color_fps": "15",
+            "depth_fps": "15",
             "enable_colored_point_cloud": "false",
             "enable_point_cloud": "false",
             "depth_registration": "true",
-            "enable_ir": "false",
+            "align_mode": "SW",
+            "enable_left_ir": "false",
+            "enable_right_ir": "false",
             "publish_tf": "false",
+            "color.image_raw.enable_pub_plugins": '["image_transport/raw"]',
+            "depth.image_raw.enable_pub_plugins": '["image_transport/raw"]',
         }.items()
     )
 
@@ -75,11 +81,17 @@ def generate_launch_description():
         launch_arguments={
             "camera_name": "gemini336",
             "serial_number": "CP9KB530003R",
+            "color_fps": "15",
+            "depth_fps": "15",
             "enable_colored_point_cloud": "true",
             "enable_point_cloud": "false",
             "depth_registration": "true",
-            "enable_ir": "false",
+            "align_mode": "SW",
+            "enable_left_ir": "false",
+            "enable_right_ir": "false",
             "publish_tf": "false",
+            "color.image_raw.enable_pub_plugins": '["image_transport/raw"]',
+            "depth.image_raw.enable_pub_plugins": '["image_transport/raw"]',
         }.items()
     )
 
@@ -157,6 +169,7 @@ def generate_launch_description():
         Node(
             package="bench_robot",
             executable="bench_changer",
+            parameters=[bench_tracker_params],
             output="screen",),
         Node(
             package="bench_robot",
