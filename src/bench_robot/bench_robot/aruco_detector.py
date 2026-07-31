@@ -305,9 +305,34 @@ class ArucoManager(Node):
 
     # ---------------- callbacks ----------------
     def cb_auto_state(self, msg: String):
+        previous_state = self.auto_state
         self.auto_state = (msg.data or "").strip().lower()
         if self.auto_state not in TRACKING_STATES:
             self.goal_seen_count = 0
+
+        # bench_changer has physically entered the new bench. Commit the
+        # pending scan range before interpreting its row markers; otherwise a
+        # row marker would still be assigned to the old bench.
+        if (previous_state == "bench_change_start"
+                and self.auto_state in TRACKING_STATES
+                and self.routing_to_next_bench
+                and self.pending_next_plan_index is not None):
+            self.scan_plan_index = self.pending_next_plan_index
+            self.pending_next_plan_index = None
+            next_bench, next_from_row, next_to_row = self.scan_plan[self.scan_plan_index]
+            self.current_bench = next_bench
+            self.goal_bench = next_bench
+            self.goal_row = next_from_row
+            self.scan_start_bench = next_bench
+            self.scan_start_row = next_from_row
+            self.scan_end_bench = next_bench
+            self.scan_end_row = next_to_row
+            self.routing_to_next_bench = False
+            self.prev_selected_id = None
+            self.goal_seen_count = 0
+            self.get_logger().info(
+                f"Entered bench {next_bench}; continuing to scan row {next_from_row}")
+            self.request_tracking_direction()
 
     def cb_current_bench(self, msg: Int16):
         self.current_bench = int(msg.data)

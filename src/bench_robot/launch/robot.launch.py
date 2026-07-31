@@ -160,6 +160,10 @@ def generate_launch_description():
             output="screen",),
         Node(
             package="bench_robot",
+            executable="bench_marker_detector",
+            output="screen",),
+        Node(
+            package="bench_robot",
             executable="system_stats_publisher",
             name="system_stats_publisher",
             parameters=[{

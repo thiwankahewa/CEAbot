@@ -15,7 +15,7 @@ from arm_interfaces.srv import ExecutePlannedTrajectory, MoveToPose, PlanToPose
 
 
 REST_APPROACH = {"joint_1": -0.628,"joint_2": -2.23,"joint_3": 0.0521,"joint_4": 1.6613,"joint_5": 3.1415,"joint_6": -2.09,"joint_7": -0.0868,}
-POSE_1 = {"joint_1": -0.764,"joint_2": -2.04,"joint_3": 0.0521,"joint_4": 1.6613,"joint_5": 3.1415,"joint_6": -2.09,"joint_7": -0.0868,}
+POSE_1 = {"joint_1": -1.545,"joint_2": -1.925,"joint_3": 0.0,"joint_4": 1.375,"joint_5": 0.0,"joint_6": 1.435,"joint_7": 1.5708,}
 
 
 class ArmManager(MoveItArmHelper):
