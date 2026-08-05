@@ -19,7 +19,7 @@ class AutoStateManager(Node):
             "bench_tracking_f": {"manual", "idle", "yaw_correction", "bench_tracking_b", "align_center", "bench_change_start"},
             "bench_tracking_b": {"manual", "yaw_correction", "bench_tracking_f", "align_center", "bench_change_start"},
             "yaw_correction": {"manual", "idle", "align_center"},
-            "align_center": {"manual", "idle", "bench_tracking_f", "bench_tracking_b", "aruco_centering"},
+            "align_center": {"manual", "idle", "bench_tracking_f", "bench_tracking_b", "aruco_centering", "bench_change_start"},
             "aruco_centering": {"manual", "idle", "top_view_scan"},
             "top_view_scan": {"manual", "idle", "plant_row_coordinates", "bench_tracking_f", "bench_tracking_b"},
             "plant_row_coordinates": {"manual", "idle", "individual_plant_scan"},

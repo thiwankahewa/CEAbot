@@ -24,6 +24,8 @@ class BenchTracker(Node):
         self.bench_track_dir = "bench_tracking_f"
         self.aruco_stop_request = False
         self.aruco_stop_handled = False
+        self.bench_exit_align_request = False
+        self.bench_exit_align_handled = False
         # self.bench_change_start = False
 
         self.last_tof_stamp = None
@@ -85,6 +87,7 @@ class BenchTracker(Node):
         self.sub_auto_state = self.create_subscription(String, "/auto_state", self.cb_auto_state, 10)
         self.sub_estop = self.create_subscription(Bool, "/e_stop", self.cb_estop, 10)
         self.sub_aruco_stop = self.create_subscription(Bool, "/aruco_stop_request", self.cb_aruco_stop, 10)
+        self.sub_bench_exit_align = self.create_subscription(Bool, "/bench_exit_align_request", self.cb_bench_exit_align, 10)
         self.sub_aruco_error = self.create_subscription(Float32MultiArray, "/aruco_target_error", self.cb_aruco_error, 10)
 
         # -------- pubs --------
@@ -172,6 +175,14 @@ class BenchTracker(Node):
             self.aruco_stop_handled = False
         self.aruco_stop_request = new_req
 
+    def cb_bench_exit_align(self, msg: Bool):
+        new_request = bool(msg.data)
+        if new_request and not self.bench_exit_align_request:
+            self.bench_exit_align_handled = False
+        if not new_request:
+            self.bench_exit_align_handled = False
+        self.bench_exit_align_request = new_request
+
     def cb_aruco_error(self, msg: Float32MultiArray):
         data = list(msg.data)
         if len(data) < 2:
@@ -231,6 +242,14 @@ class BenchTracker(Node):
 
         if self.eStop:
             self.publish_rpm(0.0, 0.0)
+            return
+
+        if (self.bench_exit_align_request and not self.bench_exit_align_handled and self.auto_state in TRACKING_STATES):
+            self.publish_rpm(0.0, 0.0)
+            self.publish_steer(self.steer_track_deg)
+            self.set_state("yaw_correction")
+            self._yaw_ok = 0
+            self.get_logger().info("Starting ToF yaw and center alignment before bench change")
             return
 
         if self.aruco_stop_request and not self.aruco_stop_handled:
@@ -386,7 +405,12 @@ class BenchTracker(Node):
             if (t - (self.align_phase_start or t)) >= self.steer_settle_s:
                 self.align_phase = 0
                 self.align_phase_start = None
-                if self.aruco_stop_request:
+                if self.bench_exit_align_request:
+                    self.bench_exit_align_handled = True
+                    self.publish_rpm(0.0, 0.0)
+                    self.get_logger().info("Bench-exit yaw and center alignment complete")
+                    self.set_state("bench_change_start")
+                elif self.aruco_stop_request:
                     self._aruco_center_ok = 0
                     self.set_state("aruco_centering")
                 else:

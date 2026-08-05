@@ -46,6 +46,7 @@ class ArucoManager(Node):
         self.scan_plan_index = 0
         self.pending_next_plan_index = None
         self.routing_to_next_bench = False
+        self.bench_exit_alignment_pending = False
 
         self.goal_seen_count = 0
         self.prev_selected_id = None
@@ -78,6 +79,8 @@ class ArucoManager(Node):
 
         # ---------------- pubs ----------------
         self.pub_stop = self.create_publisher(Bool, '/aruco_stop_request', 10)
+        self.pub_bench_exit_align = self.create_publisher(
+            Bool, '/bench_exit_align_request', 10)
         self.pub_auto_state_cmd = self.create_publisher(String, '/auto_state_cmd', 10)
         self.pub_location = self.create_publisher(
             Int16MultiArray, '/robot_location', ROBOT_LOCATION_QOS)
@@ -217,9 +220,21 @@ class ArucoManager(Node):
         return response
 
     def request_tracking_direction(self):
+        if self.bench_exit_alignment_pending:
+            return
         if self.current_bench != self.goal_bench:
             if self.current_row in END_ROWS:
-                desired_state = "bench_change_start"
+                if not self.bench_exit_alignment_pending:
+                    self.publish_location(
+                        self.current_row, self.current_bench, self.current_row,
+                        self.goal_bench, self.goal_row)
+                    self.bench_exit_alignment_pending = True
+                    self.pub_bench_exit_align.publish(Bool(data=True))
+                    self.get_logger().info(
+                        f"Reached bench exit: current=({self.current_bench},{self.current_row}), "
+                        f"goal=({self.goal_bench},{self.goal_row}). "
+                        "Aligning yaw and center before bench change.")
+                return
             else:
                 # Move toward nearest bench end first
                 dist_to_first = abs(self.current_row - FIRST_ROW_ID)
@@ -316,6 +331,9 @@ class ArucoManager(Node):
         self.auto_state = (msg.data or "").strip().lower()
         if self.auto_state not in TRACKING_STATES:
             self.goal_seen_count = 0
+        if self.auto_state == "bench_change_start" and self.bench_exit_alignment_pending:
+            self.bench_exit_alignment_pending = False
+            self.pub_bench_exit_align.publish(Bool(data=False))
 
         # bench_changer has physically entered the new bench. Commit the
         # pending scan range before interpreting its row markers; otherwise a
@@ -357,6 +375,8 @@ class ArucoManager(Node):
         self.row_known = False
         self.stop_sent = False
         self.goal_seen_count = 0
+        self.bench_exit_alignment_pending = False
+        self.pub_bench_exit_align.publish(Bool(data=False))
         self.publish_stop(False)
 
         first_bench, first_from_row, first_to_row = self.scan_plan[0]
@@ -434,18 +454,28 @@ class ArucoManager(Node):
                 self.goal_row = self.scan_start_row
                 self.get_logger().info(f"Range start selected : "f"start=({self.goal_bench},{self.goal_row}), "f"end=({self.scan_end_bench},{self.scan_end_row})")
 
+                self.publish_location(
+                    selected_id, self.current_bench, self.current_row,
+                    self.goal_bench, self.goal_row)
+                self.prev_selected_id = selected_id
                 self.request_tracking_direction()
             return
 
         new_bench, new_row = self.marker_to_location(selected_id)
         self.current_bench = new_bench
         self.current_row = new_row
-        self.request_tracking_direction()
+
+        # Keep a current transient-local location sample available before any
+        # routing command. This also recovers cleanly after either node restarts.
+        self.publish_location(
+            selected_id, self.current_bench, self.current_row,
+            self.goal_bench, self.goal_row)
 
         if selected_id != self.prev_selected_id:
-            self.publish_location(selected_id, self.current_bench, self.current_row, self.goal_bench, self.goal_row)
             self.get_logger().info(f"marker={selected_id}, current=({self.current_bench},{self.current_row}), goal=({self.goal_bench},{self.goal_row})")
             self.prev_selected_id = selected_id
+
+        self.request_tracking_direction()
 
         frame_center_x = frame.shape[0] / 2.0
         center_error_px = self.marker_center_x(selected_corners) - frame_center_x
@@ -466,10 +496,15 @@ class ArucoManager(Node):
 
                 # Reached current bench exit row. Now start bench_changer.
                 if self.current_row in END_ROWS:
+                    if self.bench_exit_alignment_pending:
+                        return
                     self.goal_bench = next_bench
                     self.publish_location(selected_id, self.current_bench, self.current_row, self.goal_bench, self.goal_row)
-                    self.get_logger().info(f"Reached bench exit: current=({self.current_bench},{self.current_row}), next_bench={next_bench}. Starting bench change.")
-                    self.pub_auto_state_cmd.publish(String(data="bench_change_start"))
+                    self.bench_exit_alignment_pending = True
+                    self.pub_bench_exit_align.publish(Bool(data=True))
+                    self.get_logger().info(
+                        f"Reached bench exit: current=({self.current_bench},{self.current_row}), "
+                        f"next_bench={next_bench}. Aligning yaw and center before bench change.")
                     return
             return
 
