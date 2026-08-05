@@ -56,6 +56,8 @@ def generate_launch_description():
         launch_arguments={
             "camera_name": "gemini335",
             "serial_number": "CP1L44P0002P",
+            "color_width": "1280",
+            "color_height": "720",
             "color_fps": "15",
             "depth_fps": "15",
             "enable_colored_point_cloud": "false",

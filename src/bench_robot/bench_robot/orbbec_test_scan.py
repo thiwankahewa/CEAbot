@@ -38,7 +38,10 @@ class OrbbecTestScanNode(Node):
         self.get_logger().info('Waiting for /gemini336/set_streams_enable service...')
         self.streams_cli.wait_for_service()
         self.get_logger().info('Service available.')
-        self.startup_stream_timer = self.create_timer(0.5, self.disable_streams_at_startup)
+        # The Orbbec service is advertised before the driver performs its
+        # delayed, unconditional startStreams().  Wait past that startup
+        # window so this request stops the real running pipeline.
+        self.startup_stream_timer = self.create_timer(12.0, self.disable_streams_at_startup)
 
         self.create_service(CaptureView,"/orbbec_test_scan/capture_view",self.cb_capture_view)
 

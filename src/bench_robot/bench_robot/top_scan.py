@@ -61,7 +61,10 @@ class TopScanNode(Node):
         os.makedirs(self.save_dir, exist_ok=True)
 
         self.streams_cli = self.create_client(SetBool, self.streams_enable_service)
-        self.startup_stream_timer = self.create_timer(0.5, self.disable_streams_at_startup)
+        # The Orbbec service is advertised before the driver performs its
+        # delayed, unconditional startStreams().  Wait past that startup
+        # window so this request stops the real running pipeline.
+        self.startup_stream_timer = self.create_timer(12.0, self.disable_streams_at_startup)
 
         self.location_sub = self.create_subscription(Int16MultiArray, "/robot_location", self.cb_location, 10)
         self.state_sub = self.create_subscription(String, "/auto_state", self.cb_auto_state, 10)
