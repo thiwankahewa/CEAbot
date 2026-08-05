@@ -130,19 +130,26 @@ class BenchMarkerDetector(Node):
         self.dist_coeffs = np.asarray(msg.d, dtype=np.float64)
 
     def publish_marker(self, visible, bench=0, error_px=0.0, orientation_deg=0.0,
-                       distance_m=None):
+                       distance_m=None, perspective_x_deg=None,
+                       perspective_y_deg=None):
         distance_mm = -1 if distance_m is None else int(round(distance_m * 1000.0))
+        perspective_x_cdeg = (-32768 if perspective_x_deg is None else
+                              int(round(perspective_x_deg * 100.0)))
+        perspective_y_cdeg = (-32768 if perspective_y_deg is None else
+                              int(round(perspective_y_deg * 100.0)))
         self.publisher.publish(Int16MultiArray(data=[
             1 if visible else 0,
             int(bench),
             int(round(error_px)),
             int(round(orientation_deg)),
             distance_mm,
+            perspective_x_cdeg,
+            perspective_y_cdeg,
         ]))
 
-    def marker_distance_m(self, image_points):
+    def marker_pose(self, image_points):
         if self.camera_matrix is None or self.dist_coeffs is None:
-            return None
+            return None, None, None
         half_size = self.marker_size_m / 2.0
         object_points = np.asarray([
             [-half_size, half_size, 0.0],
@@ -150,7 +157,7 @@ class BenchMarkerDetector(Node):
             [half_size, -half_size, 0.0],
             [-half_size, -half_size, 0.0],
         ], dtype=np.float32)
-        success, _rvec, tvec = cv2.solvePnP(
+        success, rvec, tvec = cv2.solvePnP(
             object_points,
             np.asarray(image_points, dtype=np.float32),
             self.camera_matrix,
@@ -158,8 +165,17 @@ class BenchMarkerDetector(Node):
             flags=cv2.SOLVEPNP_IPPE_SQUARE,
         )
         if not success:
-            return None
-        return float(np.linalg.norm(tvec.reshape(3)))
+            return None, None, None
+
+        rotation_matrix, _ = cv2.Rodrigues(rvec)
+        marker_normal = rotation_matrix[:, 2]
+        # abs(z) removes the front/back normal ambiguity. Publish both axes
+        # because pose_1 rolls the camera relative to the chassis.
+        normal_z = max(abs(float(marker_normal[2])), 1e-6)
+        perspective_x_deg = float(np.degrees(np.arctan2(marker_normal[0], normal_z)))
+        perspective_y_deg = float(np.degrees(np.arctan2(marker_normal[1], normal_z)))
+        distance_m = float(np.linalg.norm(tvec.reshape(3)))
+        return distance_m, perspective_x_deg, perspective_y_deg
 
     def cb_image(self, msg):
         if self.auto_state != "bench_change_start":
@@ -209,8 +225,10 @@ class BenchMarkerDetector(Node):
         error_px = marker_center_y - frame.shape[0] / 2.0
         top_edge = points[1] - points[0]
         orientation_deg = float(np.degrees(np.arctan2(top_edge[1], top_edge[0])))
-        distance_m = self.marker_distance_m(points)
-        self.publish_marker(True, bench, error_px, orientation_deg, distance_m)
+        distance_m, perspective_x_deg, perspective_y_deg = self.marker_pose(points)
+        self.publish_marker(
+            True, bench, error_px, orientation_deg, distance_m,
+            perspective_x_deg, perspective_y_deg)
 
     def watchdog_tick(self):
         self.manage_stream()
