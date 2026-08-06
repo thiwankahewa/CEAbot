@@ -4,7 +4,7 @@ controller_manager:
     # The Gen3 low-level cyclic interface is designed for a 1 kHz command
     # stream. A slower loop can trip the robot watchdog and make a resumed
     # trajectory jump to a later setpoint after a missed UDP exchange.
-    update_rate: 250 # Hz
+    update_rate: 1000 # Hz
 
     joint_trajectory_controller:
       type: joint_trajectory_controller/JointTrajectoryController
