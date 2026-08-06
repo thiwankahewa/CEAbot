@@ -383,7 +383,7 @@ class PlantViewScanner(MoveItArmHelper):
     
     #------- Plant capture function ---------#
 
-    def call_arm_go_rest(self, timeout=30.0):
+    def call_arm_go_rest(self, timeout=120.0):
         if not self.go_rest_client.wait_for_service(timeout_sec=5.0):
             return False, "/arm/go_rest service not available"
 

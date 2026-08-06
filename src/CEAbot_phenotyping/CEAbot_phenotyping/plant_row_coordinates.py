@@ -47,6 +47,8 @@ class PlantCoordinateNode(Node):
         # convention: pot 1 is the rightmost pot and IDs increase to the left.
         self.declare_parameter("pot_count", 4)
         self.pot_count = int(self.get_parameter("pot_count").value)
+        if self.pot_count < 1:
+            raise ValueError("pot_count must be at least 1")
 
         self.pot_slot_x_fractions = tuple((self.pot_count - slot_index - 0.5) / self.pot_count
             for slot_index in range(self.pot_count))
@@ -91,6 +93,10 @@ class PlantCoordinateNode(Node):
 
         self.pub_auto_state_cmd = self.create_publisher(String, '/auto_state_cmd', 10)
         self.target_pub = self.create_publisher(PlantTargetArray,"/plant_row/targets",10)
+        # Scan targets remain limited to the selected crop.  Collision
+        # obstacles are detected in the complete top-camera image so MoveIt
+        # also sees plants in the neighbouring rows.
+        self.obstacle_pub = self.create_publisher(PlantTargetArray,"/plant_row/obstacles",10)
 
     # -------- Callbacks --------
 
@@ -228,6 +234,135 @@ class PlantCoordinateNode(Node):
 
         return float(np.median(top_depth_values))
 
+    def detect_full_frame_obstacles(self, img, depth, fx, fy, cx, cy,
+                                    selected_records, crop_bounds):
+        """Detect plant envelopes in the uncropped image.
+
+        Selected-row records are retained because their slot-wise segmentation
+        is more reliable when neighbouring foliage touches.  Extra contours
+        whose centres lie outside the crop supply adjacent-row obstacles.
+        """
+        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        green = cv2.inRange(hsv, self.lower_green, self.upper_green)
+        yellow = cv2.inRange(hsv, self.lower_yellow, self.upper_yellow)
+        valid_depth = (
+            np.isfinite(depth)
+            & (depth >= self.min_depth_mm)
+            & (depth <= self.max_depth_mm)
+        )
+        green[~valid_depth] = 0
+        yellow[~valid_depth] = 0
+
+        kernel = np.ones((self.kernel_size, self.kernel_size), np.uint8)
+        green = cv2.morphologyEx(green, cv2.MORPH_OPEN, kernel)
+        green = cv2.morphologyEx(green, cv2.MORPH_CLOSE, kernel)
+        yellow = cv2.morphologyEx(
+            yellow, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8)
+        )
+        measurement = cv2.bitwise_or(green, yellow)
+        grouping = cv2.morphologyEx(measurement, cv2.MORPH_CLOSE, kernel)
+        grouping = cv2.dilate(grouping, kernel, iterations=self.dilate_itr)
+        x1, y1, x2, y2 = crop_bounds
+        # Use the selected row's known pot spacing to split adjacent-row
+        # foliage before contour extraction.  Without these vertical strips,
+        # touching plants in an adjacent row become one very large obstacle.
+        slot_width = float(x2 - x1) / float(self.pot_count)
+        slot_edges = [x1]
+        while slot_edges[0] > 0:
+            slot_edges.insert(0, max(0, int(round(slot_edges[0] - slot_width))))
+        while slot_edges[-1] < img.shape[1]:
+            slot_edges.append(
+                min(img.shape[1], int(round(slot_edges[-1] + slot_width)))
+            )
+
+        contours = []
+        for zone_top, zone_bottom in ((0, y1), (y2, img.shape[0])):
+            if zone_bottom - zone_top < 2:
+                continue
+            for strip_left, strip_right in zip(slot_edges[:-1], slot_edges[1:]):
+                strip = grouping[zone_top:zone_bottom, strip_left:strip_right]
+                strip_contours, _ = cv2.findContours(
+                    strip, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                )
+                valid = [
+                    contour for contour in strip_contours
+                    if cv2.contourArea(contour) >= self.min_area
+                ]
+                if not valid:
+                    continue
+                contour = max(valid, key=cv2.contourArea).copy()
+                contour[:, 0, 0] += strip_left
+                contour[:, 0, 1] += zone_top
+                contours.append(contour)
+
+        obstacles = [dict(record) for record in selected_records]
+        overlay = img.copy()
+        for record in selected_records:
+            u = int(record["center_u_crop"] + x1)
+            v = int(record["center_v_crop"] + y1)
+            cv2.circle(overlay, (u, v), 7, (255, 0, 255), -1)
+
+        next_id = 1001
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if area < self.min_area:
+                continue
+            moments = cv2.moments(contour)
+            if moments["m00"] == 0:
+                continue
+
+            u = int(moments["m10"] / moments["m00"])
+            v = int(moments["m01"] / moments["m00"])
+            # The four selected plants already have better, slot-separated
+            # records.  Only add full-frame contour centres outside that ROI.
+            if x1 <= u < x2 and y1 <= v < y2:
+                continue
+
+            contour_mask = np.zeros(depth.shape[:2], dtype=np.uint8)
+            cv2.drawContours(contour_mask, [contour], -1, 255, -1)
+            plant_pixels = (
+                (contour_mask > 0)
+                & (measurement > 0)
+                & np.isfinite(depth)
+                & (depth > 0)
+            )
+            values = depth[plant_pixels]
+            if values.size == 0:
+                continue
+            threshold = np.percentile(values, self.top_percentile)
+            top_values = values[values <= threshold]
+            if top_values.size == 0:
+                continue
+            top_depth = float(np.median(top_values))
+            center_depth = self.get_depth_median_around_pixel(
+                depth, u, v, self.center_window_size
+            )
+            xy_depth = center_depth if center_depth is not None else top_depth
+            xyz = self.pixel_depth_to_3d(u, v, xy_depth, fx, fy, cx, cy)
+            radius_mm = self.calculate_contour_radius_mm(xy_depth, area, fx, fy)
+            if radius_mm is None:
+                continue
+
+            obstacles.append({
+                "plant_id": next_id,
+                "target_x": xyz[0],
+                "target_y": xyz[1],
+                "target_z": top_depth,
+                "radius_mm": radius_mm,
+            })
+            (circle_x, circle_y), circle_radius = cv2.minEnclosingCircle(contour)
+            cv2.circle(
+                overlay, (int(circle_x), int(circle_y)), int(circle_radius),
+                (0, 165, 255), 2
+            )
+            cv2.putText(
+                overlay, f"O{next_id}", (u, v), cv2.FONT_HERSHEY_SIMPLEX,
+                0.5, (0, 165, 255), 1, cv2.LINE_AA
+            )
+            next_id += 1
+
+        return obstacles, overlay
+
 
     # -------- Main Processing Function --------
 
@@ -264,22 +399,73 @@ class PlantCoordinateNode(Node):
             # measurements. Dilation below is used strictly to group fragmented
             # plant parts into one contour.
             measurement_mask = cv2.bitwise_or(green_clean, yellow_clean)
-            grouping_mask = cv2.morphologyEx(measurement_mask, cv2.MORPH_CLOSE, kernel)
-            grouping_mask = cv2.dilate(grouping_mask, kernel, iterations=self.dilate_itr)
-    
             segmented = cv2.bitwise_and(crop, crop, mask=measurement_mask)
-            contours, _ = cv2.findContours(grouping_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             detection = crop.copy()
-    
-            valid_contours = sorted(
-                (cnt for cnt in contours if cv2.contourArea(cnt) >= self.min_area),
-                key=cv2.contourArea,
-                reverse=True,
-            )
+
+            # Extract each plant inside its expected pot slot.  Processing the
+            # slots independently is important: foliage from adjacent plants can
+            # touch (or be joined by grouping dilation), but it must not turn the
+            # two plants into one connected component.
+            grouping_mask = np.zeros_like(measurement_mask)
+            slot_contours = []
+            slot_width = crop.shape[1] / float(self.pot_count)
+
+            for slot_index in range(self.pot_count):
+                slot_left = int(round(slot_index * slot_width))
+                slot_right = int(round((slot_index + 1) * slot_width))
+                if slot_index == self.pot_count - 1:
+                    slot_right = crop.shape[1]
+
+                slot_measurement = measurement_mask[:, slot_left:slot_right]
+                slot_grouping = cv2.morphologyEx(slot_measurement, cv2.MORPH_CLOSE, kernel)
+                slot_grouping = cv2.dilate(
+                    slot_grouping, kernel, iterations=self.dilate_itr
+                )
+                grouping_mask[:, slot_left:slot_right] = slot_grouping
+
+                if slot_right < crop.shape[1]:
+                    cv2.line(
+                        detection,
+                        (slot_right, 0),
+                        (slot_right, crop.shape[0] - 1),
+                        (255, 180, 0),
+                        1,
+                    )
+
+                contours, _ = cv2.findContours(
+                    slot_grouping, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                )
+                valid_contours = [
+                    contour
+                    for contour in contours
+                    if cv2.contourArea(contour) >= self.min_area
+                ]
+                if not valid_contours:
+                    continue
+
+                # Dilation normally joins the plant fragments within a slot. If
+                # small fragments remain, the largest component is the safest
+                # representation of the plant rather than including background
+                # objects between components.
+                contour = max(valid_contours, key=cv2.contourArea)
+                contour = contour.copy()
+                contour[:, 0, 0] += slot_left
+
+                # Pot IDs increase from right to left.
+                plant_id = self.pot_count - slot_index
+                slot_contours.append((plant_id, contour))
+
+
+            # Keep the saved diagnostic mask visually separated at slot
+            # boundaries as well. Contours above were already extracted from
+            # their individual slots.
+            for boundary_index in range(1, self.pot_count):
+                boundary_x = int(round(boundary_index * slot_width))
+                grouping_mask[:, max(0, boundary_x - 1):boundary_x + 1] = 0
     
             plant_records = []
     
-            for cnt in valid_contours:
+            for pot_slot_id, cnt in slot_contours:
                 area = cv2.contourArea(cnt)
                 M = cv2.moments(cnt)
     
@@ -292,11 +478,9 @@ class PlantCoordinateNode(Node):
                 center_x_full = center_x_crop + x1_clamped  # center of mass in the full image
                 center_y_full = center_y_crop + y1_clamped
     
-                pot_slot_id, pot_slot_error = self.assign_pot_slot(center_x_crop, crop.shape[1])
-    
-                if pot_slot_id is None:
-                    self.get_logger().warn("Ignoring plant contour because its center does not match "f"error={pot_slot_error:.3f}).")
-                    continue
+                expected_center_fraction = self.pot_slot_x_fractions[pot_slot_id - 1]
+                center_fraction = float(center_x_crop) / float(crop.shape[1])
+                pot_slot_error = abs(center_fraction - expected_center_fraction)
     
                 center_depth = self.get_depth_median_around_pixel(depth,center_x_full,center_y_full,self.center_window_size)
                 top_depth = self.get_top_depth_from_contour(depth,cnt,measurement_mask,x1_clamped,y1_clamped,x2_clamped,y2_clamped,)
@@ -305,6 +489,9 @@ class PlantCoordinateNode(Node):
     
                 x, y, bw, bh = cv2.boundingRect(cnt)
                 cv2.rectangle(detection, (x, y), (x + bw, y + bh), (0, 255, 0), 2)
+                (circle_x, circle_y), circle_radius = cv2.minEnclosingCircle(cnt)
+                cv2.circle(detection,(int(round(circle_x)), int(round(circle_y))),int(round(circle_radius)),(255, 0, 255),2, )
+                cv2.putText(detection,f"P{pot_slot_id}",(x, max(15, y - 5)),cv2.FONT_HERSHEY_SIMPLEX,0.5,(255, 0, 255), 1, cv2.LINE_AA,)
     
                 depth_for_center_xy = center_depth if center_depth is not None else top_depth
     
@@ -341,6 +528,8 @@ class PlantCoordinateNode(Node):
                     records_by_slot[slot_id] = row
     
             results = [records_by_slot[slot_id] for slot_id in sorted(records_by_slot)]
+
+            obstacle_records, obstacle_detection = self.detect_full_frame_obstacles(img, depth, fx, fy, cx_intr, cy_intr, results, (x1_clamped, y1_clamped, x2_clamped, y2_clamped), )
     
             #pot_interior_mask, soil_candidate_mask, pot_rim_detection = (self.build_soil_masks(crop, depth_crop, measurement_mask, results))
 
@@ -361,8 +550,23 @@ class PlantCoordinateNode(Node):
                 target_msg.targets.append(t)
     
             self.target_pub.publish(target_msg)
+
+            obstacle_msg = PlantTargetArray()
+            obstacle_msg.run_dir = target_msg.run_dir
+            for row in obstacle_records:
+                values = (row.get("target_x"), row.get("target_y"), row.get("target_z"))
+                if any(value is None for value in values):
+                    continue
+                obstacle = PlantTarget()
+                obstacle.plant_id = int(row["plant_id"])
+                obstacle.target_x = float(row["target_x"]) / 1000.0
+                obstacle.target_y = float(row["target_y"]) / 1000.0
+                obstacle.target_z = float(row["target_z"]) / 1000.0
+                obstacle.radius_m = (float(row["radius_mm"]) / 1000.0 if row.get("radius_mm") is not None else 0.05)
+                obstacle_msg.targets.append(obstacle)
+            self.obstacle_pub.publish(obstacle_msg)
             run_name = (output_dir.name if output_dir is not None else "current frame")
-            self.get_logger().info(f"{run_name}: detected {len(results)} plants")
+            self.get_logger().info(f"{run_name}: detected {len(results)} scan targets and " f"{len(obstacle_msg.targets)} full-frame plant obstacles")
             self.pub_auto_state_cmd.publish(String(data="individual_plant_scan"))
     
             if output_dir is not None:
@@ -375,6 +579,7 @@ class PlantCoordinateNode(Node):
                 #cv2.imwrite(str(output_dir / "soil_candidate_mask.png"), soil_candidate_mask)
                 #cv2.imwrite(str(output_dir / "pot_rim_detection.png"), pot_rim_detection)
                 cv2.imwrite(str(output_dir / "detection.png"), detection)
+                cv2.imwrite(str(output_dir / "full_obstacle_detection.png"),obstacle_detection,)
 
     def assign_pot_slot(self, center_x_crop, crop_width):
         """Return the fixed pot ID nearest to a detected plant center."""
@@ -589,6 +794,7 @@ class PlantCoordinateNode(Node):
                 "y_max_px": int(self.y2),
             },
             "shared": {
+                "pot_count": int(self.pot_count),
                 "minimum_depth_mm": float(self.min_depth_mm),
                 "maximum_depth_mm": float(self.max_depth_mm),
                 "minimum_contour_area_px": float(self.min_area),

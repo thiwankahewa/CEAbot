@@ -10,8 +10,13 @@ from std_srvs.srv import Trigger
 from controller_manager_msgs.srv import SwitchController
 from rclpy.callback_groups import ReentrantCallbackGroup
 from arm_controlling.moveit_arm_helper import MoveItArmHelper
+from geometry_msgs.msg import Pose
+from moveit_msgs.msg import CollisionObject, PlanningScene
+from moveit_msgs.srv import ApplyPlanningScene
+from shape_msgs.msg import SolidPrimitive
 
 from arm_interfaces.srv import ExecutePlannedTrajectory, MoveToPose, PlanToPose
+from arm_interfaces.msg import PlantTargetArray
 
 
 REST_APPROACH = {"joint_1": -0.628,"joint_2": -2.23,"joint_3": 0.0521,"joint_4": 1.6613,"joint_5": 3.1415,"joint_6": -2.09,"joint_7": -0.0868,}
@@ -30,9 +35,40 @@ class ArmManager(MoveItArmHelper):
 
         self.cb_group = ReentrantCallbackGroup()
 
+        self.declare_parameter("plant_obstacle_radius_margin", 0.03)
+        self.declare_parameter("plant_obstacle_min_radius", 0.04)
+        self.declare_parameter("plant_obstacle_max_radius", 0.30)
+        # Gemini optical Z points downward.  This should be the measured pot/soil
+        # depth, not the old end-effector path-constraint height.
+        self.declare_parameter("plant_obstacle_bottom_z", 0.95)
+        self.declare_parameter("rest_planning_time", 10.0)
+        self.declare_parameter("rest_planning_attempts", 30)
+        self.declare_parameter("rest_max_retries", 3)
+        self.plant_obstacle_radius_margin = float(
+            self.get_parameter("plant_obstacle_radius_margin").value)
+        self.plant_obstacle_min_radius = float(
+            self.get_parameter("plant_obstacle_min_radius").value)
+        self.plant_obstacle_max_radius = float(
+            self.get_parameter("plant_obstacle_max_radius").value)
+        self.plant_obstacle_bottom_z = float(
+            self.get_parameter("plant_obstacle_bottom_z").value)
+        self.plant_collision_ids = set()
+        self.pending_scene_future = None
+        self.rest_planning_time = float(
+            self.get_parameter("rest_planning_time").value)
+        self.rest_planning_attempts = int(
+            self.get_parameter("rest_planning_attempts").value)
+        self.rest_max_retries = int(
+            self.get_parameter("rest_max_retries").value)
+
         #--------- Services ---------#
 
         self.switch_controller_client = self.create_client(SwitchController,"/controller_manager/switch_controller",callback_group=self.cb_group,)
+        self.apply_scene_client = self.create_client(
+            ApplyPlanningScene, "/apply_planning_scene", callback_group=self.cb_group)
+        self.plant_obstacle_sub = self.create_subscription(
+            PlantTargetArray, "/plant_row/obstacles", self.cb_plant_obstacles,
+            10, callback_group=self.cb_group)
         self.srv_move_to_pose = self.create_service(MoveToPose,"/arm/move_to_pose",self.cb_move_to_pose,callback_group=self.cb_group,)
         self.srv_plan_to_pose = self.create_service(PlanToPose,"/arm/plan_to_pose",self.cb_plan_to_pose,callback_group=self.cb_group,)
         self.srv_execute_planned = self.create_service(ExecutePlannedTrajectory,"/arm/execute_planned_trajectory",self.cb_execute_planned_trajectory,callback_group=self.cb_group,)
@@ -43,8 +79,118 @@ class ArmManager(MoveItArmHelper):
 
     #--------- Callbacks ---------#
 
+    def cb_plant_obstacles(self, msg):
+        """Replace the previous row's plant cylinders in MoveIt's world."""
+        scene = PlanningScene()
+        scene.is_diff = True
+
+        new_ids = set()
+        for index, target in enumerate(msg.targets):
+            object_id = f"dynamic_plant_{index}"
+            top_z = float(target.target_z)
+            bottom_z = self.plant_obstacle_bottom_z
+            height = bottom_z - top_z
+            if height <= 0.01:
+                self.get_logger().warn(
+                    f"Skipping {object_id}: top z {top_z:.3f} is not above "
+                    f"obstacle bottom z {bottom_z:.3f}")
+                continue
+
+            new_ids.add(object_id)
+
+            radius = max(
+                self.plant_obstacle_min_radius,
+                min(
+                    self.plant_obstacle_max_radius,
+                    float(target.radius_m) + self.plant_obstacle_radius_margin,
+                ),
+            )
+            cylinder = SolidPrimitive()
+            cylinder.type = SolidPrimitive.CYLINDER
+            cylinder.dimensions = [height, radius]
+
+            pose = Pose()
+            pose.position.x = float(target.target_x)
+            pose.position.y = float(target.target_y)
+            pose.position.z = top_z + height / 2.0
+            pose.orientation.w = 1.0
+
+            collision = CollisionObject()
+            collision.header.frame_id = self.base_frame
+            collision.id = object_id
+            collision.primitives.append(cylinder)
+            collision.primitive_poses.append(pose)
+            collision.operation = CollisionObject.ADD
+            scene.world.collision_objects.append(collision)
+
+        for stale_id in self.plant_collision_ids - new_ids:
+            collision = CollisionObject()
+            collision.header.frame_id = self.base_frame
+            collision.id = stale_id
+            collision.operation = CollisionObject.REMOVE
+            scene.world.collision_objects.append(collision)
+
+        if not self.apply_scene_client.wait_for_service(timeout_sec=2.0):
+            self.get_logger().error(
+                "Cannot update plant obstacles: /apply_planning_scene unavailable")
+            return
+
+        request = ApplyPlanningScene.Request()
+        request.scene = scene
+        future = self.apply_scene_client.call_async(request)
+        self.pending_scene_future = future
+
+        def scene_applied(done_future):
+            try:
+                result = done_future.result()
+            except Exception as exc:
+                self.get_logger().error(f"Plant obstacle update failed: {exc}")
+                return
+            if not result.success:
+                self.get_logger().error("MoveIt rejected the plant obstacle update")
+                return
+            self.plant_collision_ids = new_ids
+            if self.pending_scene_future is done_future:
+                self.pending_scene_future = None
+            self.get_logger().info(
+                f"Applied {len(new_ids)} dynamic plant obstacles")
+
+        future.add_done_callback(scene_applied)
+
+    def wait_for_pending_scene(self, timeout=5.0):
+        future = self.pending_scene_future
+        if future is None:
+            return True
+        result = self.wait_future(future, timeout=timeout)
+        if result is None or not result.success:
+            self.get_logger().error("Dynamic plant obstacle scene is not ready")
+            return False
+        return True
+
     def cb_go_rest(self, request, response):
-        response.success, response.message = self.start_command("go_rest",self.move_to_rest,)
+        # Return the actual planning/execution result.  The scanner must not
+        # interpret "background command started" as "arm reached rest".
+        with self.command_lock:
+            if self.command_busy:
+                response.success = False
+                response.message = "Arm is busy. Wait until current command finishes."
+                return response
+            self.command_busy = True
+            self.stop_requested = False
+
+        try:
+            self.get_logger().info("Starting blocking command: go_rest")
+            response.success, response.message = self.move_to_rest()
+        except Exception as exc:
+            self.get_logger().error(f"Command go_rest crashed: {exc}")
+            response.success = False
+            response.message = str(exc)
+        finally:
+            with self.command_lock:
+                self.command_busy = False
+
+        self.get_logger().info(
+            f"Finished blocking command: go_rest (success={response.success})")
         return response
 
     def cb_pose_1(self, request, response):
@@ -148,6 +294,10 @@ class ArmManager(MoveItArmHelper):
             start_joint_map = dict(zip(request.start_joint_names, request.start_joint_positions))
 
         try:
+            if not self.wait_for_pending_scene():
+                response.success = False
+                response.message = "Dynamic plant obstacle update failed"
+                return response
             traj = self.plan_to_target(request.x,request.y,request.z,request.qx,request.qy,request.qz,request.qw,start_joint_map=start_joint_map,)
 
             if traj is None:
@@ -289,6 +439,9 @@ class ArmManager(MoveItArmHelper):
         if self.check_stop_requested():
             return False, "Stopped by user"
 
+        if not self.wait_for_pending_scene():
+            return False, "Dynamic plant obstacle update failed"
+
         traj = self.plan_to_target(target["x"],target["y"],target["z"],target["qx"],target["qy"],target["qz"],target["qw"],)
 
         if traj is None:
@@ -350,7 +503,41 @@ class ArmManager(MoveItArmHelper):
         if self.is_near_joint_pose(REST_APPROACH):
             return True, "Arm already at rest"
 
-        return self.move_to_joint_pose("rest", REST_APPROACH)
+        retry_count = max(1, self.rest_max_retries)
+        last_message = "Planning failed for rest"
+
+        for attempt in range(1, retry_count + 1):
+            if self.check_stop_requested():
+                return False, "Stopped by user"
+
+            self.get_logger().info(
+                f"Planning rest attempt {attempt}/{retry_count} "
+                f"(time={self.rest_planning_time:.1f}s, "
+                f"planning_attempts={self.rest_planning_attempts})")
+            trajectory = self.plan_to_joint_positions(
+                REST_APPROACH,
+                planning_time=self.rest_planning_time,
+                num_planning_attempts=self.rest_planning_attempts,
+            )
+            if trajectory is None:
+                last_message = f"Rest planning attempt {attempt} failed"
+                time.sleep(0.25)
+                continue
+
+            if not self.execute_trajectory(trajectory):
+                last_message = f"Rest execution attempt {attempt} failed"
+                self.wait_until_robot_stops(timeout=10.0)
+                continue
+
+            if self.wait_until_trajectory_finished(
+                trajectory, tolerance=0.008, timeout=40.0
+            ):
+                return True, f"Moved to rest on attempt {attempt}"
+
+            last_message = f"Rest attempt {attempt} did not reach the target"
+            self.wait_until_robot_stops(timeout=10.0)
+
+        return False, f"{last_message}; exhausted {retry_count} attempts"
 
 
     #--------- Stop and Reset functions ---------#
