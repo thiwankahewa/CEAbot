@@ -39,7 +39,7 @@ class MoveItArmHelper(Node):
         self.declare_parameter("pot_height", 0.15)
         self.declare_parameter("position_tolerance", 0.01)
         self.declare_parameter("orientation_tolerance", 0.01)
-        self.declare_parameter("velocity_scaling", 0.4)
+        self.declare_parameter("velocity_scaling", 0.3)
         self.declare_parameter("acceleration_scaling", 0.1)
         self.declare_parameter("planning_time", 2.0)
 
@@ -167,15 +167,17 @@ class MoveItArmHelper(Node):
         constraints.position_constraints.append(position_constraint)
         return constraints
 
-    def plan_to_joint_positions(self, joint_targets):
+    def plan_to_joint_positions(self, joint_targets, planning_time=None, num_planning_attempts=None):
         if not self.move_group_client.wait_for_server(timeout_sec=10.0):
             self.get_logger().error("/move_action server not ready")
             return None
 
         request = MotionPlanRequest()
         request.group_name = self.planning_group
-        request.num_planning_attempts = 10
-        request.allowed_planning_time = self.planning_time
+        effective_planning_time = (self.planning_time if planning_time is None else float(planning_time) )
+        effective_attempts = (10 if num_planning_attempts is None else int(num_planning_attempts))
+        request.num_planning_attempts = max(1, effective_attempts)
+        request.allowed_planning_time = max(0.1, effective_planning_time)
         request.max_velocity_scaling_factor = self.velocity_scaling
         request.max_acceleration_scaling_factor = self.acceleration_scaling
         request.start_state.is_diff = True
@@ -202,7 +204,7 @@ class MoveItArmHelper(Node):
             return None
 
         result_future = goal_handle.get_result_async()
-        result_wrap = self.wait_future(result_future, timeout=self.planning_time + 20.0)
+        result_wrap = self.wait_future( result_future, timeout=effective_planning_time + 20.0)
 
         if result_wrap is None:
             return None
