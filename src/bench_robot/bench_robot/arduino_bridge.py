@@ -5,7 +5,7 @@ import time
 import rclpy
 import serial
 from rclpy.node import Node
-from std_msgs.msg import Float32, Int16MultiArray, String
+from std_msgs.msg import Float32, Float32MultiArray, Int16MultiArray, String
 from std_srvs.srv import Trigger
 
 ACTIVE_TOF_STATES = (
@@ -41,6 +41,7 @@ class ArduinoBridge(Node):
 
         # -------- publishers --------
         self.pub_tof = self.create_publisher(Int16MultiArray, "/bench_robot/tof_raw", 10)
+        self.pub_scd41 = self.create_publisher(Float32MultiArray, "/bench_robot/scd41", 10)
 
         # -------- services --------
         self.srv_arduino_reconnect = self.create_service(Trigger, "/arduino_bridge/arduino_reconnect", self.on_arduino_reconnect)
@@ -125,13 +126,19 @@ class ArduinoBridge(Node):
             if not raw:
                 return
             line = raw.decode("utf-8", errors="replace").strip()
-            if not line.startswith("VL53") or self.auto_state not in ACTIVE_TOF_STATES:
+
+            if line.startswith("SCD41,"):
+                values = [float(value) for value in line.split(",")[1:4]]
+                if len(values) != 3 or any(value < 0.0 for value in values):
+                    return
+                self.pub_scd41.publish(Float32MultiArray(data=values))
                 return
 
-            values = [int(value) for value in line.split(",")[1:5]]
-            if len(values) != 4:
-                return
-            self.pub_tof.publish(Int16MultiArray(data=values))
+            if line.startswith("VL53,") and self.auto_state in ACTIVE_TOF_STATES:
+                values = [int(value) for value in line.split(",")[1:5]]
+                if len(values) != 4:
+                    return
+                self.pub_tof.publish(Int16MultiArray(data=values))
         except Exception as e:
             if not self.serial_error_reported:
                 self.get_logger().warn(f"Serial read error: {e}")
