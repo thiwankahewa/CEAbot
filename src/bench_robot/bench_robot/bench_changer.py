@@ -13,18 +13,14 @@ FIRST_ROW_ID = 11
 LAST_ROW_ID = 61
 WHEEL_DIAMETER_M = 0.2032
 WHEEL_CIRCUMFERENCE_M = math.pi * WHEEL_DIAMETER_M
-ROBOT_LOCATION_QOS = QoSProfile(
-    depth=1,
-    durability=DurabilityPolicy.TRANSIENT_LOCAL,
-    reliability=ReliabilityPolicy.RELIABLE,
-)
+ROBOT_LOCATION_QOS = QoSProfile( depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL, reliability=ReliabilityPolicy.RELIABLE,)
 
 
 class BenchChanger(Node):
-    """Move between benches using the arm camera, end markers, and ToF sensors."""
-
     def __init__(self):
         super().__init__("bench_changer")
+
+        # -------- States and variables --------
 
         self.auto_state = "idle"
         self.phase = "idle"
@@ -62,17 +58,31 @@ class BenchChanger(Node):
         self.marker_yaw_last_log_time = 0.0
         self.last_center_direction = 1.0
 
-        self.declare_parameter("arm_center_service", "/arm/pose_1")
-        self.declare_parameter("arm_move_timeout_s", 60.0)
-        self.declare_parameter("location_wait_timeout_s", 2.0)
-        self.declare_parameter("exit_clearance_m", 1.1)
-        self.declare_parameter("exit_edge_timeout_s", 30.0)
-        self.declare_parameter("marker_acquire_timeout_s", 40.0)
-        self.declare_parameter("marker_acquire_stable_cycles", 3)
-        self.declare_parameter("exit_timeout_s", 30.0)
-        self.declare_parameter("marker_exit_fallback_s", 5.0)
+        self.arm_move_timeout_s = 60.0
+        self.location_wait_timeout_s = 2.0
+        self.exit_clearance_m = 1.1
+        self.exit_edge_timeout_s = 30.0
+        self.marker_acquire_timeout_s = 40.0
+        self.marker_acquire_stable_cycles = 3
+        self.exit_timeout_s = 30.0
+        self.marker_exit_fallback_s = 5.0
+        self.marker_yaw_axis = "y"
+        self.marker_yaw_timeout_s = 10.0
+        self.steer_straight_deg = 0.0
+        self.steer_side_deg = 90.0
+        self.steer_settle_s = 2.0
+        self.marker_timeout_s = 0.6
+        self.marker_loss_stop_s = 1.0
+        self.side_search_timeout_s = 60.0
+        self.marker_reacquire_timeout_s = 10.0
+        self.marker_reacquire_sweep_s = 2.0
+        self.enter_timeout_s = 20.0
+        self.tof_timeout_s = 0.5
+        self.use_marker_orientation_for_side_polarity = True
+
+        # -------- params --------
+
         self.declare_parameter("exit_rpm", 4.0)
-        self.declare_parameter("marker_acquire_rpm", 4.0)
         self.declare_parameter("Kp_offset", 0.2)
         self.declare_parameter("Kp_offset_b", 0.2)
         self.declare_parameter("Kd_offset", 0.02)
@@ -80,70 +90,41 @@ class BenchChanger(Node):
         self.declare_parameter("base_rpm", 12.0)
         self.declare_parameter("max_rpm", 25.0)
         self.declare_parameter("track_width_m", 1.515)
-        self.declare_parameter("side_rpm", 4.0)
-        self.declare_parameter("side_direction_polarity", -1.0)
-        self.declare_parameter("enter_rpm", 5.0)
         self.declare_parameter("center_rpm", 2.0)
         self.declare_parameter("center_err_px", 8.0)
-        self.declare_parameter("center_stable_cycles", 3)
-        self.declare_parameter("marker_yaw_axis", "y")
         self.declare_parameter("marker_yaw_target_deg", 0.0)
         self.declare_parameter("marker_yaw_tolerance_deg", 2.0)
-        self.declare_parameter("marker_yaw_rpm", 1.5)
-        self.declare_parameter("marker_yaw_stable_cycles", 5)
-        self.declare_parameter("marker_yaw_timeout_s", 10.0)
-        self.declare_parameter("marker_yaw_correction_polarity", 1.0)
-        self.declare_parameter("steer_straight_deg", 0.0)
-        self.declare_parameter("steer_side_deg", 90.0)
-        self.declare_parameter("steer_settle_s", 2.0)
-        self.declare_parameter("marker_timeout_s", 0.6)
-        self.declare_parameter("marker_loss_stop_s", 1.0)
-        self.declare_parameter("side_search_timeout_s", 60.0)
-        self.declare_parameter("marker_reacquire_timeout_s", 10.0)
-        self.declare_parameter("marker_reacquire_rpm", 1.5)
-        self.declare_parameter("marker_reacquire_sweep_s", 2.0)
-        self.declare_parameter("enter_timeout_s", 20.0)
-        self.declare_parameter("tof_timeout_s", 0.5)
-        self.declare_parameter("use_marker_orientation_for_side_polarity", True)
         self.declare_parameter("min_tof", 25)
         self.declare_parameter("max_tof", 500)
 
-        for name in ("arm_move_timeout_s", "location_wait_timeout_s", "exit_clearance_m", "exit_edge_timeout_s", "marker_acquire_timeout_s",
-                     "exit_timeout_s", "marker_exit_fallback_s", "exit_rpm", "marker_acquire_rpm", "Kp_offset", "Kp_offset_b",
-                     "Kd_offset", "d_filter_t", "base_rpm", "max_rpm", "track_width_m", "side_rpm",
-                     "side_direction_polarity", "enter_rpm", "center_rpm",
-                     "center_err_px", "steer_straight_deg", "steer_side_deg", "steer_settle_s", "marker_timeout_s",
-                     "marker_loss_stop_s", "side_search_timeout_s", "enter_timeout_s", "tof_timeout_s",
-                     "marker_reacquire_timeout_s", "marker_reacquire_rpm", "marker_reacquire_sweep_s",
-                     "marker_yaw_target_deg", "marker_yaw_tolerance_deg", "marker_yaw_rpm",
-                     "marker_yaw_timeout_s", "marker_yaw_correction_polarity"):
-            setattr(self, name, float(self.get_parameter(name).value))
-        self.center_stable_cycles = int(self.get_parameter("center_stable_cycles").value)
-        self.marker_acquire_stable_cycles = int(
-            self.get_parameter("marker_acquire_stable_cycles").value)
-        self.marker_yaw_stable_cycles = int(
-            self.get_parameter("marker_yaw_stable_cycles").value)
-        self.marker_yaw_axis = str(self.get_parameter("marker_yaw_axis").value).lower()
-        if self.marker_yaw_axis not in ("x", "y"):
-            raise ValueError("marker_yaw_axis must be 'x' or 'y'")
+        for name in ( "exit_rpm", "Kp_offset", "Kp_offset_b", "Kd_offset", "d_filter_t", "base_rpm", "max_rpm", "track_width_m",
+                     "center_rpm", "center_err_px", "marker_yaw_target_deg", "marker_yaw_tolerance_deg", ): 
+                    setattr(self, name, float(self.get_parameter(name).value))
+
         self.min_tof = int(self.get_parameter("min_tof").value)
         self.max_tof = int(self.get_parameter("max_tof").value)
-        self.use_marker_orientation_for_side_polarity = bool(
-            self.get_parameter("use_marker_orientation_for_side_polarity").value)
+
+        # -------- subscriptions --------
 
         self.create_subscription(String, "/auto_state", self.cb_auto_state, 10)
-        self.create_subscription(
-            Int16MultiArray, "/robot_location", self.cb_robot_location,
-            ROBOT_LOCATION_QOS)
+        self.create_subscription( Int16MultiArray, "/robot_location", self.cb_robot_location, ROBOT_LOCATION_QOS)
         self.create_subscription(Int16MultiArray, "/bench_side_marker", self.cb_marker, 10)
         self.create_subscription(Int16MultiArray, "/bench_robot/tof_raw", self.cb_tof, 10)
+
+        # -------- publishers --------
 
         self.pub_auto_state_cmd = self.create_publisher(String, "/auto_state_cmd", 10)
         self.pub_rpm_cmd = self.create_publisher(Float32MultiArray, "/wheel_rpm_cmd", 10)
         self.pub_steer = self.create_publisher(Float32, "/steer_angle_deg", 10)
         self.pub_marker_target = self.create_publisher(Int16, "/bench_marker_target", 10)
-        self.arm_client = self.create_client(Trigger, str(self.get_parameter("arm_center_service").value))
+
+        # -------- clients --------
+        self.arm_client = self.create_client(Trigger, "/arm/pose_1")
+
+        # -------- timers --------
         self.timer = self.create_timer(0.05, self.control_tick)
+
+    # ------- helper functions -------
 
     def now_s(self):
         return self.get_clock().now().nanoseconds * 1e-9
@@ -188,6 +169,8 @@ class BenchChanger(Node):
         self.get_logger().error(f"Bench change stopped: {reason}")
         self.set_phase("fault")
 
+    # ------- callback functions -------
+
     def cb_auto_state(self, msg):
         previous = self.auto_state
         self.auto_state = (msg.data or "").strip().lower()
@@ -195,8 +178,7 @@ class BenchChanger(Node):
             if self.current_bench is None or self.goal_bench is None or self.exit_row not in (FIRST_ROW_ID, LAST_ROW_ID):
                 self.stop()
                 self.set_phase("wait_for_location")
-                self.get_logger().warn(
-                    "Bench change requested before robot location arrived; waiting for /robot_location")
+                self.get_logger().warn("Bench change requested before robot location arrived; waiting for /robot_location")
                 return
             self.start_bench_change()
         elif self.auto_state != "bench_change_start" and self.phase != "idle":
@@ -232,9 +214,6 @@ class BenchChanger(Node):
         self.marker_visible = bool(data[0])
         self.last_marker_time = self.now_s()
         if not self.marker_visible:
-            # Preserve the last valid observation. marker_fresh() applies the
-            # configured timeout so one dropped camera frame is not treated as
-            # an immediate marker loss.
             return
         self.marker_bench = int(data[1])
         self.marker_err_px = float(data[2])
@@ -302,10 +281,7 @@ class BenchChanger(Node):
     def control_tick(self):
         if self.auto_state != "bench_change_start":
             return
-        current_marker_phases = {
-            "position_arm", "follow_to_exit_edge", "acquire_current_marker",
-            "exit_current_bench",
-        }
+        current_marker_phases = {"position_arm", "follow_to_exit_edge", "acquire_current_marker", "exit_current_bench",}
         if self.phase in current_marker_phases and self.current_bench is not None:
             self.pub_marker_target.publish(Int16(data=int(self.current_bench)))
         elif self.goal_bench is not None:
@@ -434,7 +410,7 @@ class BenchChanger(Node):
             self.marker_acquire_ok_cycles = 0
             self.marker_acquire_last_counted_time = None
 
-        rpm = self.exit_sign() * self.marker_acquire_rpm
+        rpm = self.exit_sign() * self.exit_rpm
         self.publish_rpm(rpm, rpm)
         if self.now_s() - self.phase_start_time > self.marker_acquire_timeout_s:
             self.fail_safe("current bench marker was not acquired after crossing the ToF edge")
@@ -485,9 +461,7 @@ class BenchChanger(Node):
         # wheel polarity for that same physical direction is reversed.
         toward_larger = 1.0 if self.goal_bench > self.current_bench else -1.0
         end_polarity = self.side_end_polarity()
-        self.side_rpm_cmd = (
-            toward_larger * end_polarity * self.side_direction_polarity
-            * self.side_rpm)
+        self.side_rpm_cmd = -( toward_larger * end_polarity * self.exit_rpm)
         self.publish_steer(self.steer_side_deg)
         self.set_phase("settle_side_steering")
 
@@ -520,7 +494,7 @@ class BenchChanger(Node):
         if abs(self.marker_err_px) <= self.center_err_px:
             self.stop()
             self.center_ok_cycles += 1
-            if self.center_ok_cycles >= self.center_stable_cycles:
+            if self.center_ok_cycles >= self.marker_acquire_stable_cycles:
                 self.publish_steer(self.steer_straight_deg)
                 self.set_phase("settle_yaw_steering")
             return
@@ -547,7 +521,7 @@ class BenchChanger(Node):
         half_sweep = max(self.marker_reacquire_sweep_s / 2.0, 0.1)
         sweep_index = int(elapsed / half_sweep)
         direction = self.last_center_direction if sweep_index % 2 == 0 else -self.last_center_direction
-        rpm = direction * self.marker_reacquire_rpm
+        rpm = direction * self.exit_rpm #marker reacquire rpm
         self.publish_rpm(rpm, rpm)
 
     def run_settle_yaw_steering(self):
@@ -588,7 +562,7 @@ class BenchChanger(Node):
             if self.last_marker_time != self.marker_yaw_last_counted_time:
                 self.marker_yaw_ok_cycles += 1
                 self.marker_yaw_last_counted_time = self.last_marker_time
-            if self.marker_yaw_ok_cycles >= self.marker_yaw_stable_cycles:
+            if self.marker_yaw_ok_cycles >= self.marker_acquire_stable_cycles:
                 self.get_logger().info(
                     f"Goal bench yaw aligned: {self.marker_yaw_axis}={measured:.2f} deg, "
                     f"target={self.marker_yaw_target_deg:.2f} deg")
@@ -600,7 +574,7 @@ class BenchChanger(Node):
         self.marker_yaw_ok_cycles = 0
         self.marker_yaw_last_counted_time = None
         direction = 1.0 if error > 0.0 else -1.0
-        rpm = direction * self.marker_yaw_correction_polarity * self.marker_yaw_rpm
+        rpm = direction * self.center_rpm
         self.publish_rpm(-rpm, rpm)
         if now - self.phase_start_time > self.marker_yaw_timeout_s:
             self.fail_safe(
@@ -616,7 +590,7 @@ class BenchChanger(Node):
     def run_enter_target(self):
         self.publish_steer(self.steer_straight_deg)
         # Entry is the exact opposite of exiting at the selected end.
-        rpm = -self.exit_sign() * self.enter_rpm
+        rpm = -self.exit_sign() * self.exit_rpm
         if self.marker_fresh(self.goal_bench):
             correction = max(-0.5, min(0.5, self.marker_err_px / max(self.center_err_px * 8.0, 1.0)))
             self.publish_rpm(rpm * (1.0 - correction), rpm * (1.0 + correction))
@@ -643,7 +617,6 @@ class BenchChanger(Node):
         direction = "bench_tracking_f" if self.goal_row >= self.exit_row else "bench_tracking_b"
         self.pub_auto_state_cmd.publish(String(data=direction))
 
-
 def main(args=None):
     rclpy.init(args=args)
     node = BenchChanger()
@@ -655,7 +628,6 @@ def main(args=None):
         node.stop()
         node.destroy_node()
         rclpy.shutdown()
-
 
 if __name__ == "__main__":
     main()

@@ -52,8 +52,6 @@ class BenchTracker(Node):
         self.off_filt = 0.0
         self.prev_off_filt = None
 
-        self.track_width_m = 1.515
-
         # -------- params --------
         self.declare_parameter("min_tof", 25)
         self.declare_parameter("max_tof", 500)
@@ -71,6 +69,7 @@ class BenchTracker(Node):
         self.declare_parameter("corr_rpm", 2.0)
         self.declare_parameter("base_rpm", 12.0)
         self.declare_parameter("max_rpm", 25.0)
+        self.declare_parameter("track_width_m", 1.515)
 
         self.declare_parameter("aruco_center_done_norm", 5.0)
         self.declare_parameter("aruco_center_timeout_s", 0.30)
@@ -113,6 +112,7 @@ class BenchTracker(Node):
         self.corr_rpm = float(self.get_parameter("corr_rpm").value)
         self.base_rpm = float(self.get_parameter("base_rpm").value)
         self.max_rpm = float(self.get_parameter("max_rpm").value)
+        self.track_width_m = float(self.get_parameter("track_width_m").value)
         self.aruco_center_done_norm = float(self.get_parameter("aruco_center_done_norm").value)
         self.aruco_center_timeout_s = float(self.get_parameter("aruco_center_timeout_s").value)
         self.aruco_center_stable_cycles = int(self.get_parameter("aruco_center_stable_cycles").value)

@@ -30,16 +30,7 @@ class TopScanNode(Node):
         self.capture_timeout = 5.0
         self.fresh_wait_time = 2.0
 
-        self.color_topic = "/gemini335/color/image_raw"
-        self.depth_topic = "/gemini335/depth/image_raw"
-        self.rgb_camera_info_topic = "/gemini335/color/camera_info"
-        self.depth_camera_info_topic = "/gemini335/depth/camera_info"
         self.streams_enable_service = "/gemini335/set_streams_enable"
-
-        self.top_scan_color_topic = "/top_scan/color"
-        self.top_scan_depth_topic = "/top_scan/depth"
-        self.top_scan_camera_info_topic = "/top_scan/camera_info"
-        self.top_scan_run_dir_topic = "/top_scan/run_dir"
 
         self.latest_color_msg = None
         self.latest_depth_msg = None
@@ -73,19 +64,19 @@ class TopScanNode(Node):
         self.location_sub = self.create_subscription(Int16MultiArray, "/robot_location", self.cb_location, 10)
         self.state_sub = self.create_subscription(String, "/auto_state", self.cb_auto_state, 10)
 
-        self.color_sub = Subscriber(self, Image, self.color_topic)
-        self.depth_sub = Subscriber(self, Image, self.depth_topic)
-        self.rgb_info_sub = Subscriber(self, CameraInfo, self.rgb_camera_info_topic)
+        self.color_sub = Subscriber(self, Image, "/gemini335/color/image_raw")
+        self.depth_sub = Subscriber(self, Image, "/gemini335/depth/image_raw")
+        self.rgb_info_sub = Subscriber(self, CameraInfo, "/gemini335/color/camera_info")
         self.sync = ApproximateTimeSynchronizer([self.color_sub, self.depth_sub, self.rgb_info_sub], queue_size=20, slop=0.5)
         self.sync.registerCallback(self.synced_callback)
 
         # -------- publishers --------
 
         self.pub_auto_state_cmd = self.create_publisher(String, "/auto_state_cmd", 10)
-        self.pub_scan_color = self.create_publisher(Image, self.top_scan_color_topic, 10)
-        self.pub_scan_depth = self.create_publisher(Image, self.top_scan_depth_topic, 10)
-        self.pub_scan_camera_info = self.create_publisher(CameraInfo, self.top_scan_camera_info_topic, 10)
-        self.pub_scan_run_dir = self.create_publisher(String, self.top_scan_run_dir_topic, 10)
+        self.pub_scan_color = self.create_publisher(Image, "/top_scan/color", 10)
+        self.pub_scan_depth = self.create_publisher(Image, "/top_scan/depth", 10)
+        self.pub_scan_camera_info = self.create_publisher(CameraInfo, "/top_scan/camera_info", 10)
+        self.pub_scan_run_dir = self.create_publisher(String, "/top_scan/run_dir", 10)
 
     def _load_params(self):
         self.bench_height = self.get_parameter("bench_height").value
@@ -293,9 +284,7 @@ class TopScanNode(Node):
         if msg is None:
             return None
 
-        return {
-            "K": [float(x) for x in msg.k],
-        }
+        return { "K": [float(x) for x in msg.k],}
 
 
 def main(args=None):

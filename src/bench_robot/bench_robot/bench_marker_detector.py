@@ -99,6 +99,7 @@ class BenchMarkerDetector(Node):
         self.dist_coeffs = np.asarray(msg.d, dtype=np.float64)
 
     def cb_image(self, msg):
+        '''process image and publish bench marker info such as orientation and distance'''
         if self.auto_state != "bench_change_start":
             return
 
@@ -127,11 +128,7 @@ class BenchMarkerDetector(Node):
             return
 
         preferred_bench = (self.requested_bench if self.requested_bench is not None else self.goal_bench)
-        selected = next(
-            ((number, points) for number, points in candidates
-             if number == preferred_bench),
-            None,
-        )
+        selected = next(((number, points) for number, points in candidates if number == preferred_bench), None,)    #search for goal bench in candidates
         if selected is None:
             self.publish_marker(False, bench=preferred_bench or 0)
             return
