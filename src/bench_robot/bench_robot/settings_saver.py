@@ -11,6 +11,12 @@ TARGET_NODES = (
     "/motor_control_mux",
     "/hub_motor_driver_v2",
     "/plant_view_scanner",
+    "/top_scan",
+    "/bench_marker_detector",
+    "/bench_changer",
+    "/arm_manager",
+    "/plant_view_scanner",
+    "/plant_row_coordinate_node"
 )
 
 
@@ -20,8 +26,6 @@ class SettingsSaver(Node):
 
         # -------- services --------
         self.srv = self.create_service(Trigger, "/settings/save_all", self.on_save)
-
-    # -------- main functions --------
 
     def on_save(self, _request, response):
         failed = []

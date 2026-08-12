@@ -21,6 +21,8 @@ class TopScanNode(Node):
     def __init__(self):
         super().__init__("top_scan")
 
+        # -------- States and variables --------
+
         self.bridge = CvBridge()
 
         self.current_location = None
@@ -54,17 +56,19 @@ class TopScanNode(Node):
 
         self.declare_parameter("bench_height", 0.75)
         self.declare_parameter("pot_height", 0.15)
-
         self._load_params()
         self.add_on_set_parameters_callback(self.on_params)
+
         self.save_dir = os.path.expanduser("~/scan_data")
         os.makedirs(self.save_dir, exist_ok=True)
 
+        # -------- clients --------
         self.streams_cli = self.create_client(SetBool, self.streams_enable_service)
-        # The Orbbec service is advertised before the driver performs its
-        # delayed, unconditional startStreams().  Wait past that startup
-        # window so this request stops the real running pipeline.
+
+        # -------- timers --------
         self.startup_stream_timer = self.create_timer(12.0, self.disable_streams_at_startup)
+
+        # -------- subscriptions --------
 
         self.location_sub = self.create_subscription(Int16MultiArray, "/robot_location", self.cb_location, 10)
         self.state_sub = self.create_subscription(String, "/auto_state", self.cb_auto_state, 10)
@@ -75,11 +79,22 @@ class TopScanNode(Node):
         self.sync = ApproximateTimeSynchronizer([self.color_sub, self.depth_sub, self.rgb_info_sub], queue_size=20, slop=0.5)
         self.sync.registerCallback(self.synced_callback)
 
+        # -------- publishers --------
+
         self.pub_auto_state_cmd = self.create_publisher(String, "/auto_state_cmd", 10)
         self.pub_scan_color = self.create_publisher(Image, self.top_scan_color_topic, 10)
         self.pub_scan_depth = self.create_publisher(Image, self.top_scan_depth_topic, 10)
         self.pub_scan_camera_info = self.create_publisher(CameraInfo, self.top_scan_camera_info_topic, 10)
         self.pub_scan_run_dir = self.create_publisher(String, self.top_scan_run_dir_topic, 10)
+
+    def _load_params(self):
+        self.bench_height = self.get_parameter("bench_height").value
+        self.pot_height = self.get_parameter("pot_height").value
+
+    def on_params(self, params):
+        self._load_params()
+        os.makedirs(self.save_dir, exist_ok=True)
+        return SetParametersResult(successful=True)
 
     def disable_streams_at_startup(self):
         """Leave the camera idle until a top-view capture is requested."""
@@ -92,15 +107,8 @@ class TopScanNode(Node):
         future = self.streams_cli.call_async(req)
         future.add_done_callback(self.on_streams_disabled)
 
-    def _load_params(self):
-        self.bench_height = self.get_parameter("bench_height").value
-        self.pot_height = self.get_parameter("pot_height").value
-
-    def on_params(self, params):
-        self._load_params()
-        os.makedirs(self.save_dir, exist_ok=True)
-        return SetParametersResult(successful=True)
-
+    # ------- callback functions -------
+    
     def cb_location(self, msg: Int16MultiArray):
         if len(msg.data) >= 5:
             self.current_location = msg.data[1], msg.data[2]

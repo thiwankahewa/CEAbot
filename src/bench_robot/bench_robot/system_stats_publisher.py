@@ -13,19 +13,20 @@ class SystemStatsPublisher(Node):
     def __init__(self):
         super().__init__("system_stats_publisher")
 
-        self.declare_parameter("topic", "/system_stats")
-        self.declare_parameter("interval_ms", 1000)
-        self.declare_parameter("command", "tegrastats")
+        # -------- States and variables --------
 
-        self.topic = str(self.get_parameter("topic").value)
-        self.interval_ms = int(self.get_parameter("interval_ms").value)
-        self.command = str(self.get_parameter("command").value)
+        self.topic = "/system_stats"
+        self.interval_ms = 1000
+        self.command = "tegrastats"
 
-        self.pub_stats = self.create_publisher(String, self.topic, 10)
         self.proc = None
         self.reader_thread = None
         self.stop_event = threading.Event()
 
+        # -------- publishers --------
+        self.pub_stats = self.create_publisher(String, self.topic, 10)
+
+        # -------- initialization --------
         if shutil.which(self.command) is None:
             self.get_logger().warning(f"'{self.command}' not found. {self.topic} will not publish system stats.")
             return

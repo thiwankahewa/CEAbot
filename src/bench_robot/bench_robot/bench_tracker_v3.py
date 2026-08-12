@@ -26,7 +26,6 @@ class BenchTracker(Node):
         self.aruco_stop_handled = False
         self.bench_exit_align_request = False
         self.bench_exit_align_handled = False
-        # self.bench_change_start = False
 
         self.last_tof_stamp = None
         self.invalid_data_warned = False
@@ -82,7 +81,8 @@ class BenchTracker(Node):
         self._load_params()
         self.add_on_set_parameters_callback(self.on_params)
 
-        # -------- subs --------
+        # -------- subscriptions --------
+
         self.sub_tof = self.create_subscription(Int16MultiArray, "/bench_robot/tof_raw", self.dist_cb, 10)
         self.sub_auto_state = self.create_subscription(String, "/auto_state", self.cb_auto_state, 10)
         self.sub_estop = self.create_subscription(Bool, "/e_stop", self.cb_estop, 10)
@@ -90,7 +90,8 @@ class BenchTracker(Node):
         self.sub_bench_exit_align = self.create_subscription(Bool, "/bench_exit_align_request", self.cb_bench_exit_align, 10)
         self.sub_aruco_error = self.create_subscription(Float32MultiArray, "/aruco_target_error", self.cb_aruco_error, 10)
 
-        # -------- pubs --------
+        # -------- publishers --------
+
         self.pub_auto_state_cmd = self.create_publisher(String, "/auto_state_cmd", 10)
         self.pub_rpm_cmd = self.create_publisher(Float32MultiArray, "/wheel_rpm_cmd", 10)
         self.pub_steer = self.create_publisher(Float32, "/steer_angle_deg", 10)
@@ -153,7 +154,7 @@ class BenchTracker(Node):
     def needs_tof(self):
         return self.auto_state in TOF_STATES
 
-    # -------- callbacks --------
+    # -------- callbacks functions --------
 
     def cb_estop(self, msg: Bool):
         self.eStop = bool(msg.data)

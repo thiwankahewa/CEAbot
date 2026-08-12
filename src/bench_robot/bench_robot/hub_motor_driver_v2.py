@@ -61,12 +61,12 @@ class MotorDriverNode(Node):
         # -------- services --------
         self.srv_reconnect = self.create_service(Trigger, "/arduino_bridge/hub_servo_reconnect", self.on_reconnect)
 
-        # -------- subs --------
+        # -------- subscriptions --------
         self.sub_auto_state = self.create_subscription(String, "/auto_state", self.cb_auto_state, 10)
         self.sub_rpm = self.create_subscription(Float32MultiArray, "/wheel_rpm_cmd", self.cb_rpm_cmd, 10)
         self.sub_estop = self.create_subscription(Bool, "/e_stop", self.cb_estop, 10)
 
-        # -------- pubs --------
+        # -------- publishers --------
         self.power_pub = self.create_publisher(Float32MultiArray, "/drive_power", 10)
 
         # -------- timers --------
@@ -74,6 +74,7 @@ class MotorDriverNode(Node):
         self.watchdog_timer = self.create_timer(0.05, self.watchdog_tick)
         self.power_timer = self.create_timer(1.0, self.power_tick)
 
+        # -------- initialization --------
         self._load_params()
         self.add_on_set_parameters_callback(self.on_params)
         self.try_connect(init=True)
@@ -180,7 +181,7 @@ class MotorDriverNode(Node):
 
         self._profile_is_corr = corr
 
-    # ---- callbacks ----
+    # ------- callback functions -------
 
     def cb_estop(self, msg: Bool):
         self.eStop = bool(msg.data)
@@ -304,6 +305,7 @@ class MotorDriverNode(Node):
     # ---- power logging ----
 
     def _init_power_log(self):
+        #open a file for writing power log data
         self.power_log_path.parent.mkdir(parents=True, exist_ok=True)
 
         if not self.power_log_path.exists():
@@ -324,7 +326,19 @@ class MotorDriverNode(Node):
                     "energy_wh",
                 ])
 
+    def power_tick(self):
+        data = self.read_drive_power()
+        if data is None:
+            return
+
+        now = self.get_clock().now()
+        self.power_samples.append((now, data))
+
+        values = [float(data[key]) for key in ("total_power_w", "left_power_w", "right_power_w", "bus_v", "left_a", "right_a")]
+        self.power_pub.publish(Float32MultiArray(data=values))
+
     def read_drive_power(self):
+        #read voltage and current data from the hub motor driver for each wheel and calculate power
         if not self.ensure_connected():
             return None
 
@@ -354,17 +368,6 @@ class MotorDriverNode(Node):
             "right_power_w": right_power_w,
             "total_power_w": total_power_w,
         }
-
-    def power_tick(self):
-        data = self.read_drive_power()
-        if data is None:
-            return
-
-        now = self.get_clock().now()
-        self.power_samples.append((now, data))
-
-        values = [float(data[key]) for key in ("total_power_w", "left_power_w", "right_power_w", "bus_v", "left_a", "right_a")]
-        self.power_pub.publish(Float32MultiArray(data=values))
 
     def save_state_power_average(self, state_name: str):
         now = self.get_clock().now()

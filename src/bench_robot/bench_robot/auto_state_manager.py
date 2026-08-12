@@ -30,11 +30,11 @@ class AutoStateManager(Node):
         self.mode = "manual"
         self.auto_state = "idle"
 
-        # -------- subs --------
+        # -------- subscriptions --------
         self.sub_mode = self.create_subscription(String, "/mode", self.cb_mode, 10)
         self.sub_cmd = self.create_subscription(String, "/auto_state_cmd", self.cb_state_cmd, 10)
 
-        # -------- pubs --------
+        # -------- publishers --------
         self.pub_state = self.create_publisher(String, "/auto_state", qos_latched)
 
         # Publish initial state once
@@ -45,7 +45,7 @@ class AutoStateManager(Node):
     def publish_state(self):
         self.pub_state.publish(String(data=self.auto_state))
 
-    # ---------- Callbacks ----------
+    # ------- callback functions -------
 
     def cb_mode(self, msg: String):
         mode = (msg.data or "").strip().lower()
@@ -71,6 +71,7 @@ class AutoStateManager(Node):
     # -------- main function --------
 
     def set_state(self, new_state: str, reason: str = "") -> bool:
+        #change requested state if it's valid
         new_state = (new_state or "").strip().lower()
 
         if new_state not in self.allowed:

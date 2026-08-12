@@ -49,6 +49,8 @@ class ArduinoBridge(Node):
         # -------- timers --------
         self.timer = self.create_timer(0.01, self.read_serial)
 
+        # -------- initialization --------
+
         self.open_serial(initial=True)
 
     # ------- callback functions -------

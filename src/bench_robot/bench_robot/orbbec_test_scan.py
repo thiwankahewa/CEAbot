@@ -33,19 +33,19 @@ class OrbbecTestScanNode(Node):
         self.latest_color_msg = None
         self.latest_depth_msg = None
 
-        # ---------------- services ----------------
+        # ---------------- clients ----------------
         self.streams_cli = self.create_client(SetBool, '/gemini336/set_streams_enable')
         self.get_logger().info('Waiting for /gemini336/set_streams_enable service...')
         self.streams_cli.wait_for_service()
         self.get_logger().info('Service available.')
-        # The Orbbec service is advertised before the driver performs its
-        # delayed, unconditional startStreams().  Wait past that startup
-        # window so this request stops the real running pipeline.
+
+        # -------- timers --------
         self.startup_stream_timer = self.create_timer(12.0, self.disable_streams_at_startup)
 
+        # -------- services --------
         self.create_service(CaptureView,"/orbbec_test_scan/capture_view",self.cb_capture_view)
 
-        # ---------------- subs ----------------
+        # -------- subscriptions --------
 
         # Time-synchronized color + depth + point cloud
         self.color_sub = Subscriber(self, Image, '/gemini336/color/image_raw')
@@ -54,23 +54,13 @@ class OrbbecTestScanNode(Node):
         self.sync = ApproximateTimeSynchronizer([self.color_sub, self.depth_sub, self.cloud_sub],queue_size=20,slop=0.25)
         self.sync.registerCallback(self.synced_callback)
         
-        # ---------------- pubs ----------------
+        # -------- publishers --------
         self.scan_done_pub = self.create_publisher(Bool, '/scan_done', 10)
 
-    # ---------------- helper functions ----------------
-
-    def disable_streams_at_startup(self):
-        """Leave the camera idle until a plant-view capture is requested."""
-        if not self.streams_cli.service_is_ready():
-            return
-
-        self.startup_stream_timer.cancel()
-        req = SetBool.Request()
-        req.data = False
-        future = self.streams_cli.call_async(req)
-        future.add_done_callback(self.on_streams_disabled)
+    # ------- helper functions -------
 
     def on_streams_enabled(self, future):
+        '''enable camera data streams and start capture'''
         try:
             resp = future.result()
         except Exception as e:
@@ -98,6 +88,7 @@ class OrbbecTestScanNode(Node):
         self.get_logger().info('Waiting for next synchronized color + depth + point cloud set...')
 
     def on_streams_disabled(self, future):
+        '''disable camera data streams'''
         try:
             resp = future.result()
         except Exception as e:
@@ -112,6 +103,17 @@ class OrbbecTestScanNode(Node):
 
     
     # ---------------- callbacks functions ----------------
+
+    def disable_streams_at_startup(self):
+        """Leave the camera idle until a plant-view capture is requested."""
+        if not self.streams_cli.service_is_ready():
+            return
+
+        self.startup_stream_timer.cancel()
+        req = SetBool.Request()
+        req.data = False
+        future = self.streams_cli.call_async(req)
+        future.add_done_callback(self.on_streams_disabled)
 
     def cb_capture_view(self, request, response):
         if self.capture_requested or self.pending_capture is not None or self.capture_timer is not None:
@@ -128,8 +130,6 @@ class OrbbecTestScanNode(Node):
         future = self.streams_cli.call_async(req)
         future.add_done_callback(self.on_streams_enabled)
 
-        # This simple service returns after request accepted.
-        # If you want true blocking until saved, use an action instead.
         response.success = True
         response.message = "Orbbec capture request accepted"
         return response
@@ -165,7 +165,6 @@ class OrbbecTestScanNode(Node):
         msg = Bool()
         msg.data = True
         self.scan_done_pub.publish(msg)
-
         self.get_logger().info('Disabling all streams after capture...')
         req = SetBool.Request()
         req.data = False
@@ -211,9 +210,6 @@ class OrbbecTestScanNode(Node):
             'cloud_timestamp':{'sec': int(cloud_stamp.sec),'nanosec': int(cloud_stamp.nanosec),},
             'color_shape': list(self.latest_color.shape),
             'depth_shape': list(self.latest_depth.shape),
-            # cloud_xyzrgb.npy contains points expressed in the PointCloud2
-            # header frame. Reconstruction must transform that frame, rather
-            # than assuming it is identical to the color image frame.
             'frame_id': self.latest_cloud_msg.header.frame_id,
             'color_frame_id': self.latest_color_msg.header.frame_id,
             'depth_frame_id': self.latest_depth_msg.header.frame_id,

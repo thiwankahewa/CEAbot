@@ -21,14 +21,15 @@ class MotorControlMux(Node):
             "stop":     (0, 0),
         }
 
-        # -------- subs --------
+        # -------- subscriptions --------
         self.sub_man_rpm = self.create_subscription(String, '/wheel_rpm_manual', self.cb_manual_RPM, 10)
         self.sub_man_steer = self.create_subscription(Float32, '/steer_manual', self.cb_manual_steer, 10)
 
-        # -------- pubs --------
+        # -------- publishers --------
         self.pub_RPM = self.create_publisher(Float32MultiArray, '/wheel_rpm_cmd', 10)
         self.pub_steer = self.create_publisher(Float32, '/steer_angle_deg', 10)
 
+        # -------- initialization --------
         self._rebuild_cmd_map()
         self.add_on_set_parameters_callback(self.on_params)
 
@@ -39,8 +40,6 @@ class MotorControlMux(Node):
                 self._rebuild_cmd_map()
                 self.get_logger().info(f"[Settings] manual_rpm={self.MANUAL_RPM}")
         return SetParametersResult(successful=True)
-    
-    # -------- Helpers --------``
 
     def _rebuild_cmd_map(self):
         r = float(self.MANUAL_RPM)
@@ -52,7 +51,7 @@ class MotorControlMux(Node):
             "stop":     (0, 0),
         }
      
-    # -------- callbacks --------
+    # ------- callback functions -------
 
     def cb_manual_RPM(self, msg: String):
         cmd = msg.data.strip().lower()
