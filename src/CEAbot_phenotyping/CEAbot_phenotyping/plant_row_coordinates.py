@@ -2,11 +2,9 @@
 
 from pathlib import Path
 from datetime import datetime
-
 import cv2
 import numpy as np
 import yaml
-
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import String
@@ -14,11 +12,12 @@ from sensor_msgs.msg import Image, CameraInfo
 from cv_bridge import CvBridge
 from arm_interfaces.msg import PlantTarget, PlantTargetArray
 
-
 class PlantCoordinateNode(Node):
     def __init__(self):
         super().__init__("plant_row_coordinate_node")
 
+        # -------- States and variables --------
+        
         self.bridge = CvBridge()
 
         self.latest_color_msg = None
@@ -27,16 +26,18 @@ class PlantCoordinateNode(Node):
         self.latest_run_dir = None
         self.pending_process = False
 
+        # tuned using src/CEAbot_phenotyping/test/crop_selector.py
         self.x1 = 176
         self.y1 = 379
         self.x2 = 1124
         self.y2 = 631
 
+        # tuned using src/CEAbot_phenotyping/test/plant_segmentation_tuner.py
         self.lower_green = np.array([35, 27, 10])
         self.upper_green = np.array([95, 255, 255])
         self.lower_yellow = np.array([20, 80, 100])
         self.upper_yellow = np.array([38, 255, 255])
-        self.min_area = 3000
+        self.min_area = 2000
         self.kernel_size = 4
         self.top_percentile = 5.0
         self.center_window_size = 9
@@ -50,55 +51,24 @@ class PlantCoordinateNode(Node):
         if self.pot_count < 1:
             raise ValueError("pot_count must be at least 1")
 
-        self.pot_slot_x_fractions = tuple((self.pot_count - slot_index - 0.5) / self.pot_count
-            for slot_index in range(self.pot_count))
+        # divide the plant row length to create pot slots 
+        self.pot_slot_x_fractions = tuple((self.pot_count - slot_index - 0.5) / self.pot_count for slot_index in range(self.pot_count))
 
-        self.max_pot_slot_error_fraction = 0.45 / self.pot_count
+         # -------- Subscriptions --------
 
-        # Dynamic pot-rim localization and conservative soil segmentation.
-        # Fractions below are relative to one expected pot-slot width.
-        self.declare_parameter("pot_ransac_iterations", 800)
-        self.declare_parameter("pot_radius_min_fraction", 0.34)
-        self.declare_parameter("pot_radius_max_fraction", 0.50)
-        self.declare_parameter("pot_radius_expected_fraction", 0.42)
-        self.declare_parameter("pot_inner_radius_fraction", 0.75)
-        self.declare_parameter("pot_center_penalty", 10.0)
-        self.declare_parameter("soil_plant_exclusion_px", 3)
-        self.declare_parameter("soil_min_pixels", 380)
-        self.declare_parameter("soil_max_depth_mad_mm", 10.0)
-        self.declare_parameter("soil_min_depth_mm", 773.0)
-        self.declare_parameter("soil_max_depth_mm", 942.0)
-
-        self.pot_ransac_iterations = int(self.get_parameter("pot_ransac_iterations").value)
-        self.pot_radius_min_fraction = float(self.get_parameter("pot_radius_min_fraction").value)
-        self.pot_radius_max_fraction = float(self.get_parameter("pot_radius_max_fraction").value)
-        self.pot_radius_expected_fraction = float(self.get_parameter("pot_radius_expected_fraction").value)
-        self.pot_inner_radius_fraction = float(self.get_parameter("pot_inner_radius_fraction").value)
-        self.pot_center_penalty = float(self.get_parameter("pot_center_penalty").value)
-        self.soil_plant_exclusion_px = int(self.get_parameter("soil_plant_exclusion_px").value)
-        self.soil_min_pixels = int(self.get_parameter("soil_min_pixels").value)
-        self.soil_max_depth_mad_mm = float(self.get_parameter("soil_max_depth_mad_mm").value)
-        self.soil_min_depth_mm = float(self.get_parameter("soil_min_depth_mm").value)
-        self.soil_max_depth_mm = float(self.get_parameter("soil_max_depth_mm").value)
-
-        self.lower_soil = np.array([0, 0, 0])
-        self.upper_soil = np.array([89, 255, 210])
-
-         # -------- Subscriptions and publishers --------
         self.state_sub = self.create_subscription(String,"/auto_state",self.cb_auto_state,10,)
         self.color_sub = self.create_subscription(Image,"/top_scan/color",self.cb_color,10)
         self.depth_sub = self.create_subscription(Image,"/top_scan/depth",self.cb_depth,10)
         self.camera_info_sub = self.create_subscription(CameraInfo,"/top_scan/camera_info",self.cb_camera_info,10)
         self.run_dir_sub = self.create_subscription(String,"/top_scan/run_dir",self.cb_run_dir,10)
 
+        # -------- publishers --------
+
         self.pub_auto_state_cmd = self.create_publisher(String, '/auto_state_cmd', 10)
         self.target_pub = self.create_publisher(PlantTargetArray,"/plant_row/targets",10)
-        # Scan targets remain limited to the selected crop.  Collision
-        # obstacles are detected in the complete top-camera image so MoveIt
-        # also sees plants in the neighbouring rows.
         self.obstacle_pub = self.create_publisher(PlantTargetArray,"/plant_row/obstacles",10)
 
-    # -------- Callbacks --------
+    # -------- Callback functions --------
 
     def cb_auto_state(self, msg: String):
         state = msg.data.strip().lower()
@@ -234,31 +204,24 @@ class PlantCoordinateNode(Node):
 
         return float(np.median(top_depth_values))
 
-    def detect_full_frame_obstacles(self, img, depth, fx, fy, cx, cy,
-                                    selected_records, crop_bounds):
+    def detect_full_frame_obstacles(self, img, depth, fx, fy, cx, cy, selected_records, crop_bounds):
         """Detect plant envelopes in the uncropped image.
-
         Selected-row records are retained because their slot-wise segmentation
         is more reliable when neighbouring foliage touches.  Extra contours
         whose centres lie outside the crop supply adjacent-row obstacles.
         """
+
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
         green = cv2.inRange(hsv, self.lower_green, self.upper_green)
         yellow = cv2.inRange(hsv, self.lower_yellow, self.upper_yellow)
-        valid_depth = (
-            np.isfinite(depth)
-            & (depth >= self.min_depth_mm)
-            & (depth <= self.max_depth_mm)
-        )
+        valid_depth = ( np.isfinite(depth) & (depth >= self.min_depth_mm) & (depth <= self.max_depth_mm))
         green[~valid_depth] = 0
         yellow[~valid_depth] = 0
 
         kernel = np.ones((self.kernel_size, self.kernel_size), np.uint8)
         green = cv2.morphologyEx(green, cv2.MORPH_OPEN, kernel)
         green = cv2.morphologyEx(green, cv2.MORPH_CLOSE, kernel)
-        yellow = cv2.morphologyEx(
-            yellow, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8)
-        )
+        yellow = cv2.morphologyEx( yellow, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
         measurement = cv2.bitwise_or(green, yellow)
         grouping = cv2.morphologyEx(measurement, cv2.MORPH_CLOSE, kernel)
         grouping = cv2.dilate(grouping, kernel, iterations=self.dilate_itr)
@@ -271,9 +234,7 @@ class PlantCoordinateNode(Node):
         while slot_edges[0] > 0:
             slot_edges.insert(0, max(0, int(round(slot_edges[0] - slot_width))))
         while slot_edges[-1] < img.shape[1]:
-            slot_edges.append(
-                min(img.shape[1], int(round(slot_edges[-1] + slot_width)))
-            )
+            slot_edges.append( min(img.shape[1], int(round(slot_edges[-1] + slot_width))))
 
         contours = []
         for zone_top, zone_bottom in ((0, y1), (y2, img.shape[0])):
@@ -281,9 +242,7 @@ class PlantCoordinateNode(Node):
                 continue
             for strip_left, strip_right in zip(slot_edges[:-1], slot_edges[1:]):
                 strip = grouping[zone_top:zone_bottom, strip_left:strip_right]
-                strip_contours, _ = cv2.findContours(
-                    strip, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-                )
+                strip_contours, _ = cv2.findContours(strip, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                 valid = [
                     contour for contour in strip_contours
                     if cv2.contourArea(contour) >= self.min_area
@@ -320,12 +279,7 @@ class PlantCoordinateNode(Node):
 
             contour_mask = np.zeros(depth.shape[:2], dtype=np.uint8)
             cv2.drawContours(contour_mask, [contour], -1, 255, -1)
-            plant_pixels = (
-                (contour_mask > 0)
-                & (measurement > 0)
-                & np.isfinite(depth)
-                & (depth > 0)
-            )
+            plant_pixels = ( (contour_mask > 0) & (measurement > 0) & np.isfinite(depth) & (depth > 0))
             values = depth[plant_pixels]
             if values.size == 0:
                 continue
@@ -334,9 +288,7 @@ class PlantCoordinateNode(Node):
             if top_values.size == 0:
                 continue
             top_depth = float(np.median(top_values))
-            center_depth = self.get_depth_median_around_pixel(
-                depth, u, v, self.center_window_size
-            )
+            center_depth = self.get_depth_median_around_pixel( depth, u, v, self.center_window_size)
             xy_depth = center_depth if center_depth is not None else top_depth
             xyz = self.pixel_depth_to_3d(u, v, xy_depth, fx, fy, cx, cy)
             radius_mm = self.calculate_contour_radius_mm(xy_depth, area, fx, fy)
@@ -351,14 +303,8 @@ class PlantCoordinateNode(Node):
                 "radius_mm": radius_mm,
             })
             (circle_x, circle_y), circle_radius = cv2.minEnclosingCircle(contour)
-            cv2.circle(
-                overlay, (int(circle_x), int(circle_y)), int(circle_radius),
-                (0, 165, 255), 2
-            )
-            cv2.putText(
-                overlay, f"O{next_id}", (u, v), cv2.FONT_HERSHEY_SIMPLEX,
-                0.5, (0, 165, 255), 1, cv2.LINE_AA
-            )
+            cv2.circle( overlay, (int(circle_x), int(circle_y)), int(circle_radius), (0, 165, 255), 2)
+            cv2.putText( overlay, f"O{next_id}", (u, v), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1, cv2.LINE_AA)
             next_id += 1
 
         return obstacles, overlay
@@ -367,6 +313,7 @@ class PlantCoordinateNode(Node):
     # -------- Main Processing Function --------
 
     def process_live_frame(self, img, depth, fx, fy, cx_intr, cy_intr, output_dir=None):
+            # crop images
             h, w = img.shape[:2]
             x1_clamped = max(0, min(self.x1, w))
             x2_clamped = max(0, min(self.x2, w))
@@ -395,17 +342,9 @@ class PlantCoordinateNode(Node):
             yellow_kernel = np.ones((2, 2), np.uint8)
             yellow_clean = cv2.morphologyEx(yellow_mask, cv2.MORPH_OPEN, yellow_kernel)
     
-            # This conservative mask is the only mask allowed to contribute depth
-            # measurements. Dilation below is used strictly to group fragmented
-            # plant parts into one contour.
             measurement_mask = cv2.bitwise_or(green_clean, yellow_clean)
             segmented = cv2.bitwise_and(crop, crop, mask=measurement_mask)
             detection = crop.copy()
-
-            # Extract each plant inside its expected pot slot.  Processing the
-            # slots independently is important: foliage from adjacent plants can
-            # touch (or be joined by grouping dilation), but it must not turn the
-            # two plants into one connected component.
             grouping_mask = np.zeros_like(measurement_mask)
             slot_contours = []
             slot_width = crop.shape[1] / float(self.pot_count)
@@ -418,23 +357,13 @@ class PlantCoordinateNode(Node):
 
                 slot_measurement = measurement_mask[:, slot_left:slot_right]
                 slot_grouping = cv2.morphologyEx(slot_measurement, cv2.MORPH_CLOSE, kernel)
-                slot_grouping = cv2.dilate(
-                    slot_grouping, kernel, iterations=self.dilate_itr
-                )
+                slot_grouping = cv2.dilate( slot_grouping, kernel, iterations=self.dilate_itr)
                 grouping_mask[:, slot_left:slot_right] = slot_grouping
 
                 if slot_right < crop.shape[1]:
-                    cv2.line(
-                        detection,
-                        (slot_right, 0),
-                        (slot_right, crop.shape[0] - 1),
-                        (255, 180, 0),
-                        1,
-                    )
+                    cv2.line(detection, (slot_right, 0), (slot_right, crop.shape[0] - 1), (255, 180, 0), 1, )
 
-                contours, _ = cv2.findContours(
-                    slot_grouping, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-                )
+                contours, _ = cv2.findContours( slot_grouping, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE )
                 valid_contours = [
                     contour
                     for contour in contours
@@ -443,10 +372,6 @@ class PlantCoordinateNode(Node):
                 if not valid_contours:
                     continue
 
-                # Dilation normally joins the plant fragments within a slot. If
-                # small fragments remain, the largest component is the safest
-                # representation of the plant rather than including background
-                # objects between components.
                 contour = max(valid_contours, key=cv2.contourArea)
                 contour = contour.copy()
                 contour[:, 0, 0] += slot_left
@@ -530,8 +455,6 @@ class PlantCoordinateNode(Node):
             results = [records_by_slot[slot_id] for slot_id in sorted(records_by_slot)]
 
             obstacle_records, obstacle_detection = self.detect_full_frame_obstacles(img, depth, fx, fy, cx_intr, cy_intr, results, (x1_clamped, y1_clamped, x2_clamped, y2_clamped), )
-    
-            #pot_interior_mask, soil_candidate_mask, pot_rim_detection = (self.build_soil_masks(crop, depth_crop, measurement_mask, results))
 
             target_msg = PlantTargetArray()
             target_msg.run_dir = str(output_dir) if output_dir is not None else ""
@@ -575,204 +498,8 @@ class PlantCoordinateNode(Node):
                 cv2.imwrite(str(output_dir / "segmented_result.png"), segmented)
                 cv2.imwrite(str(output_dir / "measurement_mask.png"), measurement_mask)
                 cv2.imwrite(str(output_dir / "grouping_mask.png"), grouping_mask)
-                #cv2.imwrite(str(output_dir / "pot_interior_mask.png"), pot_interior_mask)
-                #cv2.imwrite(str(output_dir / "soil_candidate_mask.png"), soil_candidate_mask)
-                #cv2.imwrite(str(output_dir / "pot_rim_detection.png"), pot_rim_detection)
                 cv2.imwrite(str(output_dir / "detection.png"), detection)
                 cv2.imwrite(str(output_dir / "full_obstacle_detection.png"),obstacle_detection,)
-
-    def assign_pot_slot(self, center_x_crop, crop_width):
-        """Return the fixed pot ID nearest to a detected plant center."""
-
-        center_fraction = float(center_x_crop) / float(crop_width)
-        errors = [abs(center_fraction - slot_fraction) for slot_fraction in self.pot_slot_x_fractions]
-        slot_index = int(np.argmin(errors))
-        slot_error = float(errors[slot_index])
-
-        if slot_error > self.max_pot_slot_error_fraction:
-            return None, slot_error
-
-        return slot_index + 1, slot_error
-
-    @staticmethod
-    def circle_from_three_points(points):
-        """Return (center_x, center_y, radius) for three non-collinear points."""
-        p1, p2, p3 = points.astype(np.float64)
-        matrix = 2.0 * np.array((p2 - p1, p3 - p1))
-        vector = np.array((np.dot(p2, p2) - np.dot(p1, p1),np.dot(p3, p3) - np.dot(p1, p1),))
-        try:
-            center = np.linalg.solve(matrix, vector)
-        except np.linalg.LinAlgError:
-            return None
-
-        radius = float(np.linalg.norm(p1 - center))
-        if not np.isfinite(radius):
-            return None
-        return float(center[0]), float(center[1]), radius
-
-    def detect_pot_rim_ransac(self, edge_mask, expected_x, expected_y, slot_width, seed):
-        """Fit a pot rim near an expected location using constrained circle RANSAC."""
-        height, width = edge_mask.shape
-        search_radius = 0.55 * slot_width
-        x1 = max(0, int(expected_x - search_radius))
-        x2 = min(width, int(expected_x + search_radius) + 1)
-        y1 = max(0, int(expected_y - search_radius))
-        y2 = min(height, int(expected_y + search_radius) + 1)
-
-        ys, xs = np.where(edge_mask[y1:y2, x1:x2] > 0)
-        edge_points = np.column_stack((xs + x1, ys + y1))
-        if edge_points.shape[0] < 3:
-            return None
-
-        radius_min = self.pot_radius_min_fraction * slot_width
-        radius_max = self.pot_radius_max_fraction * slot_width
-        expected_radius = self.pot_radius_expected_fraction * slot_width
-        max_center_error = 0.45 * slot_width
-        rng = np.random.default_rng(seed)
-        best = None
-
-        for _ in range(max(1, self.pot_ransac_iterations)):
-            sample_indices = rng.choice(edge_points.shape[0], 3, replace=False)
-            circle = self.circle_from_three_points(edge_points[sample_indices])
-            if circle is None:
-                continue
-
-            center_x, center_y, radius = circle
-            if not radius_min <= radius <= radius_max:
-                continue
-            if (abs(center_x - expected_x) > max_center_error or abs(center_y - expected_y) > max_center_error):
-                continue
-
-            radial_error = np.abs(np.hypot(edge_points[:, 0] - center_x,edge_points[:, 1] - center_y,) - radius)
-            supporters = radial_error <= 2.5
-            support_count = int(np.count_nonzero(supporters))
-            if support_count == 0:
-                continue
-
-            angles = np.arctan2(edge_points[supporters, 1] - center_y,edge_points[supporters, 0] - center_x,)
-            angle_bins = np.clip(((angles + np.pi) / (2.0 * np.pi) * 36).astype(int),0,35,)
-            covered_bins = int(np.unique(angle_bins).size)
-            coverage = covered_bins / 36.0
-            score = ( support_count + covered_bins * 8.0 - 3.0 * abs(radius - expected_radius) - self.pot_center_penalty * np.hypot(center_x - expected_x, center_y - expected_y))
-
-            if best is None or score > best["score"]:
-                best = {"center_x": center_x,"center_y": center_y,"radius": radius,"support_count": support_count,"coverage": coverage,"score": score,}
-
-        if best is None:
-            return None
-
-        # A partial rim is acceptable, but random leaf and mesh edges should
-        # not be promoted into a high-confidence pot localization.
-        best["confidence"] = (
-            "high"
-            if best["coverage"] >= 0.65 and best["support_count"] >= 120
-            else "medium"
-            if best["coverage"] >= 0.40 and best["support_count"] >= 70
-            else "low"
-        )
-        return best
-
-    def build_soil_masks(self, crop, depth_crop, measurement_mask, results):
-        """Localize pot interiors and produce a conservative soil candidate mask."""
-        height, width = crop.shape[:2]
-        pot_interior_mask = np.zeros((height, width), dtype=np.uint8)
-        soil_mask = np.zeros((height, width), dtype=np.uint8)
-        rim_overlay = crop.copy()
-
-        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-        gray = cv2.GaussianBlur(gray, (5, 5), 1.2)
-        edge_mask = cv2.Canny(gray, 50, 130)
-        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-        soil_color_mask = cv2.inRange(hsv, self.lower_soil, self.upper_soil)
-        valid_depth = (np.isfinite(depth_crop) & (depth_crop >= self.soil_min_depth_mm) & (depth_crop <= self.soil_max_depth_mm))
-
-        exclusion_size = max(1, self.soil_plant_exclusion_px)
-        exclusion_kernel = np.ones((exclusion_size, exclusion_size), dtype=np.uint8)
-        plant_exclusion = cv2.dilate(measurement_mask, exclusion_kernel, iterations=1)
-        slot_width = width / float(self.pot_count)
-
-        for row in results:
-            plant_id = int(row["plant_id"])
-            expected_x = float(row["center_u_crop"])
-            expected_y = float(row["center_v_crop"])
-            rim = self.detect_pot_rim_ransac(edge_mask,expected_x,expected_y,slot_width,seed=plant_id,)
-
-            if rim is None or rim["confidence"] == "low":
-                center_x = expected_x
-                center_y = expected_y
-                radius = self.pot_radius_expected_fraction * slot_width
-                method = "plant_center_fallback"
-                rim_confidence = "low"
-            else:
-                center_x = rim["center_x"]
-                center_y = rim["center_y"]
-                radius = rim["radius"]
-                method = "circle_ransac"
-                rim_confidence = rim["confidence"]
-
-            inner_radius = max(1, int(round(radius * self.pot_inner_radius_fraction)))
-            individual_pot_mask = np.zeros_like(pot_interior_mask)
-            cv2.circle(individual_pot_mask,(int(round(center_x)), int(round(center_y))),inner_radius,255,-1,)
-            pot_interior_mask = cv2.bitwise_or(pot_interior_mask, individual_pot_mask)
-
-            individual_soil = ((individual_pot_mask > 0)& (plant_exclusion == 0)& (soil_color_mask > 0)& valid_depth )
-            soil_values = depth_crop[individual_soil]
-            soil_median_depth = None
-            soil_depth_mad = None
-            soil_confidence = "insufficient"
-
-            if soil_values.size > 0:
-                soil_median_depth = float(np.median(soil_values))
-                soil_depth_mad = float(np.median(np.abs(soil_values - soil_median_depth)))
-                depth_inliers = (np.abs(depth_crop - soil_median_depth) <= max(3.0 * soil_depth_mad, 5.0))
-                individual_soil &= depth_inliers
-                soil_values = depth_crop[individual_soil]
-
-                if soil_values.size >= self.soil_min_pixels:
-                    soil_confidence = (
-                        "high"
-                        if soil_depth_mad <= self.soil_max_depth_mad_mm
-                        and rim_confidence != "low"
-                        else "medium"
-                    )
-
-            soil_mask[individual_soil] = 255
-            row["pot_rim"] = {
-                "center_u_crop": round(center_x, 2),
-                "center_v_crop": round(center_y, 2),
-                "radius_px": round(radius, 2),
-                "method": method,
-                "confidence": rim_confidence,
-                "coverage": (round(float(rim["coverage"]), 3) if rim is not None else None),
-            }
-            row["soil"] = {
-                "visible_pixels": int(soil_values.size),
-                "median_camera_depth_mm": (
-                    round(float(np.median(soil_values)), 2)
-                    if soil_values.size > 0
-                    else None
-                ),
-                "depth_mad_mm": (
-                    round(soil_depth_mad, 2)
-                    if soil_depth_mad is not None
-                    else None
-                ),
-                "confidence": soil_confidence,
-            }
-
-            color = (
-                (0, 255, 0)
-                if rim_confidence == "high"
-                else (0, 200, 255)
-                if rim_confidence == "medium"
-                else (0, 0, 255)
-            )
-            cv2.circle( rim_overlay, (int(round(center_x)), int(round(center_y))), int(round(radius)), color, 2,)
-            cv2.putText(rim_overlay,f"P{plant_id} {rim_confidence}",(int(round(center_x)) - 35, int(round(center_y))),cv2.FONT_HERSHEY_SIMPLEX,0.45,color, 1,cv2.LINE_AA,)
-
-        soil_kernel = np.ones((3, 3), dtype=np.uint8)
-        soil_mask = cv2.morphologyEx(soil_mask, cv2.MORPH_OPEN, soil_kernel)
-        return pot_interior_mask, soil_mask, rim_overlay
 
     def save_plant_results_to_metadata(self, output_dir, results):
 
@@ -815,8 +542,6 @@ class PlantCoordinateNode(Node):
         metadata["plants"] = [
             {
                 "plant_id": int(row["plant_id"]),
-                "pot_rim": row.get("pot_rim"),
-                "soil": row.get("soil"),
                 "area_px": (
                     float(row["area_px"])
                     if row["area_px"] is not None
