@@ -45,11 +45,6 @@ class TopScanNode(Node):
         self.scan_request_time = None
         self.capture_timer = None
 
-        self.declare_parameter("bench_height", 0.75)
-        self.declare_parameter("pot_height", 0.15)
-        self._load_params()
-        self.add_on_set_parameters_callback(self.on_params)
-
         self.save_dir = os.path.expanduser("~/scan_data")
         os.makedirs(self.save_dir, exist_ok=True)
 
@@ -77,15 +72,6 @@ class TopScanNode(Node):
         self.pub_scan_depth = self.create_publisher(Image, "/top_scan/depth", 10)
         self.pub_scan_camera_info = self.create_publisher(CameraInfo, "/top_scan/camera_info", 10)
         self.pub_scan_run_dir = self.create_publisher(String, "/top_scan/run_dir", 10)
-
-    def _load_params(self):
-        self.bench_height = self.get_parameter("bench_height").value
-        self.pot_height = self.get_parameter("pot_height").value
-
-    def on_params(self, params):
-        self._load_params()
-        os.makedirs(self.save_dir, exist_ok=True)
-        return SetParametersResult(successful=True)
 
     def disable_streams_at_startup(self):
         """Leave the camera idle until a top-view capture is requested."""

@@ -22,6 +22,7 @@ from arm_interfaces.msg import PlantTargetArray
 REST_APPROACH = {"joint_1": -0.628,"joint_2": -2.23,"joint_3": 0.0521,"joint_4": 1.6613,"joint_5": 3.1415,"joint_6": -2.09,"joint_7": -0.0868,}
 POSE_1 = {"joint_1": -1.545,"joint_2": -1.877,"joint_3": 0.0,"joint_4": 1.792,"joint_5": 0.0,"joint_6": 0.87,"joint_7": 3.142,}
 
+ROBOT_HEIGHT = 1.85
 
 class ArmManager(MoveItArmHelper):
     def __init__(self):
@@ -33,42 +34,37 @@ class ArmManager(MoveItArmHelper):
         self.stop_requested = False
         self.command_lock = threading.Lock()
 
+        self.plant_collision_ids = set()
+        self.pending_scene_future = None
+
         self.cb_group = ReentrantCallbackGroup()
 
-        self.declare_parameter("plant_obstacle_radius_margin", 0.03)
+        #--------- Parameters ---------#
+        self.declare_parameter("bench_height", 0.75)
+        self.declare_parameter("pot_height", 0.15)
+        self.declare_parameter("plant_obstacle_radius_margin", 0.02)
         self.declare_parameter("plant_obstacle_min_radius", 0.04)
         self.declare_parameter("plant_obstacle_max_radius", 0.30)
-        # Gemini optical Z points downward.  This should be the measured pot/soil
-        # depth, not the old end-effector path-constraint height.
-        self.declare_parameter("plant_obstacle_bottom_z", 0.95)
         self.declare_parameter("rest_planning_time", 10.0)
         self.declare_parameter("rest_planning_attempts", 30)
         self.declare_parameter("rest_max_retries", 3)
-        self.plant_obstacle_radius_margin = float(
-            self.get_parameter("plant_obstacle_radius_margin").value)
-        self.plant_obstacle_min_radius = float(
-            self.get_parameter("plant_obstacle_min_radius").value)
-        self.plant_obstacle_max_radius = float(
-            self.get_parameter("plant_obstacle_max_radius").value)
-        self.plant_obstacle_bottom_z = float(
-            self.get_parameter("plant_obstacle_bottom_z").value)
-        self.plant_collision_ids = set()
-        self.pending_scene_future = None
-        self.rest_planning_time = float(
-            self.get_parameter("rest_planning_time").value)
-        self.rest_planning_attempts = int(
-            self.get_parameter("rest_planning_attempts").value)
-        self.rest_max_retries = int(
-            self.get_parameter("rest_max_retries").value)
+        self.bench_height = float(self.get_parameter("bench_height").value)
+        self.pot_height = float(self.get_parameter("pot_height").value)
+        self.plant_obstacle_radius_margin = float( self.get_parameter("plant_obstacle_radius_margin").value)
+        self.plant_obstacle_min_radius = float( self.get_parameter("plant_obstacle_min_radius").value)
+        self.plant_obstacle_max_radius = float( self.get_parameter("plant_obstacle_max_radius").value)
+        self.rest_planning_time = float( self.get_parameter("rest_planning_time").value)
+        self.rest_planning_attempts = int( self.get_parameter("rest_planning_attempts").value)
+        self.rest_max_retries = int( self.get_parameter("rest_max_retries").value)
+
+        #--------- Clients ---------#
+        self.switch_controller_client = self.create_client(SwitchController,"/controller_manager/switch_controller",callback_group=self.cb_group,)
+        self.apply_scene_client = self.create_client( ApplyPlanningScene, "/apply_planning_scene", callback_group=self.cb_group)
+
+        #--------- Subscriptions ---------#
+        self.plant_obstacle_sub = self.create_subscription( PlantTargetArray, "/plant_row/obstacles", self.cb_plant_obstacles, 10, callback_group=self.cb_group)
 
         #--------- Services ---------#
-
-        self.switch_controller_client = self.create_client(SwitchController,"/controller_manager/switch_controller",callback_group=self.cb_group,)
-        self.apply_scene_client = self.create_client(
-            ApplyPlanningScene, "/apply_planning_scene", callback_group=self.cb_group)
-        self.plant_obstacle_sub = self.create_subscription(
-            PlantTargetArray, "/plant_row/obstacles", self.cb_plant_obstacles,
-            10, callback_group=self.cb_group)
         self.srv_move_to_pose = self.create_service(MoveToPose,"/arm/move_to_pose",self.cb_move_to_pose,callback_group=self.cb_group,)
         self.srv_plan_to_pose = self.create_service(PlanToPose,"/arm/plan_to_pose",self.cb_plan_to_pose,callback_group=self.cb_group,)
         self.srv_execute_planned = self.create_service(ExecutePlannedTrajectory,"/arm/execute_planned_trajectory",self.cb_execute_planned_trajectory,callback_group=self.cb_group,)
@@ -88,23 +84,15 @@ class ArmManager(MoveItArmHelper):
         for index, target in enumerate(msg.targets):
             object_id = f"dynamic_plant_{index}"
             top_z = float(target.target_z)
-            bottom_z = self.plant_obstacle_bottom_z
+            bottom_z = ROBOT_HEIGHT - self.pot_height - self.bench_height
             height = bottom_z - top_z
             if height <= 0.01:
-                self.get_logger().warn(
-                    f"Skipping {object_id}: top z {top_z:.3f} is not above "
-                    f"obstacle bottom z {bottom_z:.3f}")
+                self.get_logger().warn(f"Skipping {object_id}: top z {top_z:.3f} is not above " f"obstacle bottom z {bottom_z:.3f}")
                 continue
 
             new_ids.add(object_id)
 
-            radius = max(
-                self.plant_obstacle_min_radius,
-                min(
-                    self.plant_obstacle_max_radius,
-                    float(target.radius_m) + self.plant_obstacle_radius_margin,
-                ),
-            )
+            radius = max(self.plant_obstacle_min_radius, min( self.plant_obstacle_max_radius, float(target.radius_m) + self.plant_obstacle_radius_margin, ),)
             cylinder = SolidPrimitive()
             cylinder.type = SolidPrimitive.CYLINDER
             cylinder.dimensions = [height, radius]
@@ -131,8 +119,7 @@ class ArmManager(MoveItArmHelper):
             scene.world.collision_objects.append(collision)
 
         if not self.apply_scene_client.wait_for_service(timeout_sec=2.0):
-            self.get_logger().error(
-                "Cannot update plant obstacles: /apply_planning_scene unavailable")
+            self.get_logger().error("Cannot update plant obstacles: /apply_planning_scene unavailable")
             return
 
         request = ApplyPlanningScene.Request()
@@ -152,8 +139,7 @@ class ArmManager(MoveItArmHelper):
             self.plant_collision_ids = new_ids
             if self.pending_scene_future is done_future:
                 self.pending_scene_future = None
-            self.get_logger().info(
-                f"Applied {len(new_ids)} dynamic plant obstacles")
+            self.get_logger().info( f"Applied {len(new_ids)} dynamic plant obstacles")
 
         future.add_done_callback(scene_applied)
 
@@ -625,7 +611,6 @@ def main(args=None):
 
     node.destroy_node()
     rclpy.shutdown()
-
 
 if __name__ == "__main__":
     main()

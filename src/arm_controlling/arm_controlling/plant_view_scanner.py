@@ -79,7 +79,7 @@ class PlantViewScanner(MoveItArmHelper):
         self.state_sub = self.create_subscription(String,"/auto_state",self.cb_auto_state,10)
         self.target_sub = self.create_subscription(PlantTargetArray,"/plant_row/targets",self.cb_targets,10)
         self.pub_auto_state_cmd = self.create_publisher(String, "/auto_state_cmd", 10)
-        self.pub_top_scan_done = self.create_publisher(Bool, "/top_scan/scan_done", 10)
+        self.pub_top_scan_done = self.create_publisher(Bool, "/individual_scan_done", 10)
 
     #-------- Callbacks functions ---------#
     def _load_scanner_params(self):

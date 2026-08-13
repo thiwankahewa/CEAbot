@@ -41,7 +41,7 @@ ros2 topic pub /robot_location std_msgs/msg/Int16MultiArray "{data: [0, 1, 15, 1
 
 
 #plant_segmentation tuner
-python3 plant_segmentation_tuner.py /path/to/scan_folder
+python3 /home/thiwa/CEAbot/src/CEAbot_phenotyping/test/plant_segmentation_tuner.py /path/to/scan_folder
 
 
 python3 ~/CEAbot/src/bench_robot/Test/publish_zed_top_scan_folder.py /home/thiwa/scan_data_zed/b1_r15_20260608_133520 --trigger

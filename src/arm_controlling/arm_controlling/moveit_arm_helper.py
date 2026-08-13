@@ -26,6 +26,8 @@ class MoveItArmHelper(Node):
     def __init__(self, node_name):
         super().__init__(node_name)
 
+        # -------- States and variables --------
+
         self.moveit_cb_group = ReentrantCallbackGroup()
 
         self.planning_group = "arm"
@@ -35,6 +37,7 @@ class MoveItArmHelper(Node):
         self.current_joint_state = None
         self.active_execute_goal = None
 
+        # -------- params --------
         self.declare_parameter("bench_height", 0.75)
         self.declare_parameter("pot_height", 0.15)
         self.declare_parameter("position_tolerance", 0.01)
@@ -43,33 +46,18 @@ class MoveItArmHelper(Node):
         self.declare_parameter("acceleration_scaling", 0.1)
         self.declare_parameter("planning_time", 2.0)
 
-        self.joint_state_sub = self.create_subscription(
-            JointState,
-            "/joint_states",
-            self.joint_state_callback,
-            10,
-            callback_group=self.moveit_cb_group,
-        )
-
         self._load_arm_params()
         self.add_on_set_parameters_callback(self.on_params)
 
-        self.move_group_client = ActionClient(
-            self,
-            MoveGroup,
-            "/move_action",
-            callback_group=self.moveit_cb_group,
-        )
-        self.execute_client = ActionClient(
-            self,
-            ExecuteTrajectory,
-            "/execute_trajectory",
-            callback_group=self.moveit_cb_group,
-        )
+        # -------- subscriptions --------
+        self.joint_state_sub = self.create_subscription( JointState, "/joint_states", self.joint_state_callback, 10, callback_group=self.moveit_cb_group,)
+        
+        # -------- clients --------
+        self.move_group_client = ActionClient( self, MoveGroup, "/move_action", callback_group=self.moveit_cb_group,)
+        self.execute_client = ActionClient( self, ExecuteTrajectory, "/execute_trajectory", callback_group=self.moveit_cb_group,)
 
-    # -------------------------
-    # Parameter callbacks
-    # -------------------------
+    # -------- callback functions --------
+
     def _load_arm_params(self):
         self.bench_height = self.get_parameter("bench_height").value
         self.pot_height = self.get_parameter("pot_height").value
@@ -112,6 +100,7 @@ class MoveItArmHelper(Node):
     # MoveIt helper functions
     # -------------------------
     def get_current_joint_map(self, timeout=5.0):
+        '''Get the current joint positions as a dictionary.'''
         start = time.time()
 
         while rclpy.ok() and self.current_joint_state is None:
@@ -142,32 +131,8 @@ class MoveItArmHelper(Node):
         joint_state.position = [float(joint_map[name]) for name in joint_state.name]
         return joint_state
 
-    def make_min_z_path_constraints(self):
-        box = SolidPrimitive()
-        box.type = SolidPrimitive.BOX
-        box.dimensions = [5.0, 5.0, 5.0]
-
-        # With z increasing downward in this setup, place the box so its
-        # allowed range ends at the bench height rather than extending below it.
-        box_pose = Pose()
-        box_pose.position = Point(x=0.0, y=0.0, z=self.bench_height - 2.5)
-        box_pose.orientation = Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
-
-        region = BoundingVolume()
-        region.primitives.append(box)
-        region.primitive_poses.append(box_pose)
-
-        position_constraint = PositionConstraint()
-        position_constraint.header.frame_id = self.base_frame
-        position_constraint.link_name = self.ee_link
-        position_constraint.constraint_region = region
-        position_constraint.weight = 1.0
-
-        constraints = Constraints()
-        constraints.position_constraints.append(position_constraint)
-        return constraints
-
     def plan_to_joint_positions(self, joint_targets, planning_time=None, num_planning_attempts=None):
+        '''plan trajectory to a given pose with joint angles'''
         if not self.move_group_client.wait_for_server(timeout_sec=10.0):
             self.get_logger().error("/move_action server not ready")
             return None
@@ -182,7 +147,6 @@ class MoveItArmHelper(Node):
         request.max_acceleration_scaling_factor = self.acceleration_scaling
         request.start_state.is_diff = True
         request.goal_constraints.append(self.make_joint_goal(joint_targets))
-        #request.path_constraints = self.make_min_z_path_constraints()
 
         options = PlanningOptions()
         options.plan_only = True
@@ -218,6 +182,7 @@ class MoveItArmHelper(Node):
         return result.planned_trajectory
 
     def plan_to_target(self, x, y, z, qx, qy, qz, qw, start_joint_map=None):
+        '''plan trajectory with given end effector pose'''
         if not self.move_group_client.wait_for_server(timeout_sec=10.0):
             self.get_logger().error("/move_action server not ready")
             return None
@@ -234,7 +199,6 @@ class MoveItArmHelper(Node):
             request.start_state.joint_state = self.make_start_state(start_joint_map)
             request.start_state.is_diff = True
         request.goal_constraints.append(self.make_pose_goal(x, y, z, qx, qy, qz, qw))
-        #request.path_constraints = self.make_min_z_path_constraints()
 
         options = PlanningOptions()
         options.plan_only = True
@@ -270,50 +234,8 @@ class MoveItArmHelper(Node):
 
         return result.planned_trajectory
 
-    def trajectory_joint_cost(self, trajectory):
-        points = trajectory.joint_trajectory.points
-        joint_names = trajectory.joint_trajectory.joint_names
-
-        if len(points) < 2:
-            return 0.0
-
-        total = 0.0
-        previous = points[0].positions
-
-        for point in points[1:]:
-            current = point.positions
-            for i, _joint_name in enumerate(joint_names):
-                if len(previous) > i and len(current) > i:
-                    total += abs(self.angle_error(current[i], previous[i]))
-
-            previous = current
-
-        return total
-
-    def trajectory_duration(self, trajectory):
-        """Return the planned trajectory duration in seconds."""
-        points = trajectory.joint_trajectory.points
-        if not points:
-            return float("inf")
-
-        end_time = points[-1].time_from_start
-        return float(end_time.sec) + float(end_time.nanosec) * 1e-9
-
-    def trajectory_final_joint_map(self, trajectory):
-        points = trajectory.joint_trajectory.points
-        joint_names = trajectory.joint_trajectory.joint_names
-
-        if not points:
-            return {}
-
-        final_positions = points[-1].positions
-        return {
-            joint_name: float(final_positions[i])
-            for i, joint_name in enumerate(joint_names)
-            if len(final_positions) > i
-        }
-
     def make_pose_goal(self, x, y, z, qx, qy, qz, qw):
+        '''make constraint for end-effector pose goal'''
         target_pose = Pose()
         target_pose.position = Point(x=x, y=y, z=z)
         target_pose.orientation = Quaternion(x=qx, y=qy, z=qz, w=qw)
@@ -348,6 +270,7 @@ class MoveItArmHelper(Node):
         return constraints
 
     def execute_trajectory(self, trajectory):
+        '''Execute a planned trajectory.'''
         goal_msg = ExecuteTrajectory.Goal()
         goal_msg.trajectory = trajectory
 
@@ -378,14 +301,6 @@ class MoveItArmHelper(Node):
 
             if result.error_code.val != MoveItErrorCodes.SUCCESS:
                 self.get_logger().error(f"Execution failed. MoveIt error code: {result.error_code.val}")
-
-                # ExecuteTrajectory can time out while the lower-level
-                # FollowJointTrajectory controller is still RUNNING.  Do not
-                # immediately return and allow a fallback trajectory to start
-                # from a moving/stale robot state.  Observe the original goal
-                # through its expected duration and accept it if the endpoint
-                # is reached; otherwise wait for the arm to stop before the
-                # caller replans.
                 planned_duration = self.trajectory_duration(trajectory)
                 recovery_timeout = max(5.0, planned_duration + 5.0)
                 self.get_logger().warn("Execution action failed; waiting up to "f"{recovery_timeout:.1f}s for the active controller motion")
@@ -404,22 +319,9 @@ class MoveItArmHelper(Node):
 
         finally:
             self.active_execute_goal = None
-    
-    def cancel_active_execution(self, timeout=0.5):
-        if self.active_execute_goal is None:
-            return False, "No active trajectory goal"
-
-        cancel_future = self.active_execute_goal.cancel_goal_async()
-        cancel_response = self.wait_future(cancel_future, timeout=timeout)
-
-        self.active_execute_goal = None
-
-        if cancel_response is None:
-            return False, "Cancel request timeout"
-
-        return True, "Active trajectory cancel requested"
 
     def wait_until_robot_stops(self, velocity_tolerance=0.005, timeout=10.0, stable_duration=0.5):
+        '''verify that the robot has stopped moving'''
         start_time = time.time()
         stable_since = None
 
@@ -449,10 +351,8 @@ class MoveItArmHelper(Node):
 
             time.sleep(0.05)
 
-    def angle_error(self, target, current):
-        return math.atan2(math.sin(target - current), math.cos(target - current))
-
     def wait_until_trajectory_finished(self, trajectory, tolerance=0.03, timeout=10.0):
+        '''verify that the robot has reached the final trajectory point'''
         if not trajectory.joint_trajectory.points:
             return False
 
@@ -496,3 +396,66 @@ class MoveItArmHelper(Node):
                     return True
 
             time.sleep(0.05)
+
+    def trajectory_joint_cost(self, trajectory):
+        '''Calculate the total joint movement cost for a trajectory.'''
+        points = trajectory.joint_trajectory.points
+        joint_names = trajectory.joint_trajectory.joint_names
+
+        if len(points) < 2:
+            return 0.0
+
+        total = 0.0
+        previous = points[0].positions
+
+        for point in points[1:]:
+            current = point.positions
+            for i, _joint_name in enumerate(joint_names):
+                if len(previous) > i and len(current) > i:
+                    total += abs(self.angle_error(current[i], previous[i]))
+
+            previous = current
+
+        return total
+
+    def angle_error(self, target, current):
+        return math.atan2(math.sin(target - current), math.cos(target - current))
+
+
+    def trajectory_duration(self, trajectory):
+        '''Return the planned trajectory duration in seconds.'''
+        points = trajectory.joint_trajectory.points
+        if not points:
+            return float("inf")
+
+        end_time = points[-1].time_from_start
+        return float(end_time.sec) + float(end_time.nanosec) * 1e-9
+
+    def trajectory_final_joint_map(self, trajectory):
+        '''Return the final joint positions as a dictionary.'''
+        points = trajectory.joint_trajectory.points
+        joint_names = trajectory.joint_trajectory.joint_names
+
+        if not points:
+            return {}
+
+        final_positions = points[-1].positions
+        return {
+            joint_name: float(final_positions[i])
+            for i, joint_name in enumerate(joint_names)
+            if len(final_positions) > i
+        }
+
+    def cancel_active_execution(self, timeout=0.5):
+        if self.active_execute_goal is None:
+            return False, "No active trajectory goal"
+
+        cancel_future = self.active_execute_goal.cancel_goal_async()
+        cancel_response = self.wait_future(cancel_future, timeout=timeout)
+
+        self.active_execute_goal = None
+
+        if cancel_response is None:
+            return False, "Cancel request timeout"
+
+        return True, "Active trajectory cancel requested"
