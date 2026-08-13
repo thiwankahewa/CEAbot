@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import csv
 import threading
 import math
 import os
@@ -32,6 +33,8 @@ class PlantViewScanner(MoveItArmHelper):
         self.base_frame = "gemini335_color_optical_frame"
         self.reconstruction_frame = "base_link"
         self.ee_link = "gemini336_color_optical_frame"
+
+        self.scd41_csv_path = os.path.expanduser("~/scan_data/scd41_data.csv")
 
         self.declare_parameter("z_offset", 0.25)              # meters above target
         self.declare_parameter("circle_radius_offset", 0.06)   # distance from top view to side-view circle
@@ -727,6 +730,9 @@ class PlantViewScanner(MoveItArmHelper):
             }
             if self.scan_end_time is not None:
                 metadata["scan_end_time"] = self.scan_end_time
+                scd41_summary = self.summarize_scd41_interval(metadata)
+                if scd41_summary is not None:
+                    metadata["scd41"] = scd41_summary
 
             results = list(self.scan_results.values())
             reached = sum(r["motion_status"] == "reached" for r in results)
@@ -786,6 +792,58 @@ class PlantViewScanner(MoveItArmHelper):
             self.get_logger().info(f"Saved plant scan summary to {metadata_path}")
         except Exception as exc:
             self.get_logger().error(f"Could not save plant scan metadata: {exc}")
+
+    def summarize_scd41_interval(self, metadata):
+        """Summarize CSV samples captured during this complete row scan."""
+        start_text = metadata.get("top_scan_timestamp")
+        end_text = metadata.get("scan_end_time")
+        if not start_text or not end_text:
+            self.get_logger().warn( "Cannot summarize SCD41 data without top_scan_timestamp and scan_end_time")
+            return None
+        if not os.path.exists(self.scd41_csv_path):
+            self.get_logger().warn(f"SCD41 CSV does not exist: {self.scd41_csv_path}")
+            return { "sample_count": 0,}
+
+        try:
+            start_time = datetime.strptime(str(start_text), "%Y%m%d_%H%M%S")
+            end_time = datetime.strptime(str(end_text), "%Y%m%d_%H%M%S")
+            start_epoch = start_time.timestamp()
+            end_epoch = end_time.timestamp()
+        except ValueError as exc:
+            self.get_logger().warn(f"Invalid row scan timestamp: {exc}")
+            return None
+
+        samples = []
+        try:
+            with open(self.scd41_csv_path, "r", newline="", encoding="utf-8") as stream:
+                for row in csv.DictReader(stream):
+                    try:
+                        sample_time = float(row["unix_time_s"])
+                        if start_epoch <= sample_time <= end_epoch + 0.999:
+                            samples.append(
+                                {
+                                    "co2_ppm": float(row["co2_ppm"]),
+                                    "temperature_c": float(row["temperature_c"]),
+                                    "relative_humidity_percent": float(row["relative_humidity_percent"]),
+                                })
+                    except (KeyError, TypeError, ValueError):
+                        continue
+        except OSError as exc:
+            self.get_logger().warn(f"Could not read SCD41 CSV: {exc}")
+            return None
+
+        summary = {"sample_count": len(samples)}
+        if not samples:
+            return summary
+
+        for field in ( "co2_ppm", "temperature_c", "relative_humidity_percent",):
+            values = [sample[field] for sample in samples]
+            summary[field] = {
+                "minimum": round(min(values), 3),
+                "maximum": round(max(values), 3),
+                "average": round(sum(values) / len(values), 3),
+            }
+        return summary
 
     def select_next_scan_item(self, remaining, step, batch_index, batch_count):
         start_joint_map = self.get_current_joint_map(timeout=5.0)

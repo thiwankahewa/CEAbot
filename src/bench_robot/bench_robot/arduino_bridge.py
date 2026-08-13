@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 
+import csv
+import os
 import time
+from datetime import datetime
 
 import rclpy
 import serial
@@ -29,6 +32,9 @@ class ArduinoBridge(Node):
         self.ser = None
         self.connected = False
         self.serial_error_reported = False
+        self.scd41_log_error_reported = False
+
+        self.scd41_csv_path = os.path.expanduser("~/scan_data/scd41_data.csv")
 
         self.send_period = 10.0
         self.send_delta = 1
@@ -133,6 +139,7 @@ class ArduinoBridge(Node):
                 values = [float(value) for value in line.split(",")[1:4]]
                 if len(values) != 3 or any(value < 0.0 for value in values):
                     return
+                self.append_scd41_reading(values)
                 self.pub_scd41.publish(Float32MultiArray(data=values))
                 return
 
@@ -147,6 +154,26 @@ class ArduinoBridge(Node):
                 self.serial_error_reported = True
 
     # ------- helper functions -------
+
+    def append_scd41_reading(self, values):
+        """Append one CO2, temperature, and humidity sample to the csv log."""
+        try:
+            timestamp = datetime.now().astimezone()
+            directory = os.path.dirname(self.scd41_csv_path)
+            if directory:
+                os.makedirs(directory, exist_ok=True)
+
+            needs_header = not os.path.exists(self.scd41_csv_path) or os.path.getsize( self.scd41_csv_path) == 0
+            with open( self.scd41_csv_path, "a", newline="", encoding="utf-8") as stream:
+                writer = csv.writer(stream)
+                if needs_header:
+                    writer.writerow([ "timestamp", "unix_time_s", "co2_ppm", "temperature_c", "relative_humidity",] )
+                writer.writerow([ timestamp.isoformat(timespec="milliseconds"),f"{timestamp.timestamp():.3f}", *values,])
+            self.scd41_log_error_reported = False
+        except OSError as exc:
+            if not self.scd41_log_error_reported:
+                self.get_logger().error(f"Could not append SCD41 CSV: {exc}")
+                self.scd41_log_error_reported = True
 
     def send_line(self, line: str):
     # Send a commands to the Arduino
