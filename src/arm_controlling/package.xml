@@ -7,6 +7,12 @@
   <maintainer email="thiwankahewavitharana@gmail.com">thiwa</maintainer>
   <license>TODO: License declaration</license>
 
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
+
+  <depend>kortex_api</depend>
+  <depend>kortex_driver</depend>
+  <depend>rclcpp</depend>
   <depend>rclpy</depend>
   <depend>rcl_interfaces</depend>
   <depend>std_msgs</depend>
@@ -26,6 +32,6 @@
   <test_depend>python3-pytest</test_depend>
 
   <export>
-    <build_type>ament_python</build_type>
+    <build_type>ament_cmake</build_type>
   </export>
 </package>

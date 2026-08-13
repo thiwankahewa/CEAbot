@@ -88,6 +88,20 @@ def launch_setup(context, *args, **kwargs):
         output="screen",
     )
 
+    kinova_power_logger_node = Node(
+        package="arm_controlling",
+        executable="kinova_power_logger_node",
+        name="kinova_power_logger",
+        parameters=[{
+            "robot_ip": ip_val,
+            "username": context.perform_substitution(username),
+            "password": context.perform_substitution(password),
+            "log_path": "/home/thiwa/CEAbot/power_logs/arm_power_log.csv",
+            "sample_period_s": 1.0,
+        }],
+        output="screen",
+    )
+
     joint_state_broadcaster_spawner = Node(
         package="controller_manager",
         executable="spawner",
@@ -189,6 +203,9 @@ def launch_setup(context, *args, **kwargs):
 
     # --- Execution Logic ---
     nodes_to_start = [robot_state_publisher_node]
+
+    if is_real_robot:
+        nodes_to_start.append(kinova_power_logger_node)
 
     if is_sim:
 

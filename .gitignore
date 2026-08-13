@@ -4,7 +4,8 @@ log/
 __pycache__/
 *.py[cod]
 *$py.class
-/.vscode
+/.vscode/*
+!/.vscode/settings.json
 mobile_sam.pt
 sam2.1_b.pt
 /runs
