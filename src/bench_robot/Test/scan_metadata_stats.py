@@ -15,6 +15,8 @@ import yaml
 
 TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"
 FOLDER_TIMESTAMP_PATTERN = re.compile(r"(\d{8}_\d{6})$")
+ROW_FOLDER_PATTERN = re.compile(r"^(?P<section>.+)_r(?P<row>\d+)_\d{8}_\d{6}$")
+CONTINUOUS_SCAN_INTERVAL_SECONDS = 15 * 60
 
 
 def load_yaml(path: Path) -> dict:
@@ -101,6 +103,11 @@ def find_scans(root: Path, start: datetime | None, end: datetime | None) -> tupl
                 {
                     "path": metadata_path.parent,
                     "timestamp": timestamp,
+                    "end_timestamp": (
+                        parse_timestamp(metadata["scan_end_time"])
+                        if metadata.get("scan_end_time")
+                        else None
+                    ),
                     "plants": len(metadata.get("plants") or []),
                     "requested": int(plant_scan["requested_poses"]),
                     "reached": int(plant_scan["reached_poses"]),
@@ -114,6 +121,46 @@ def find_scans(root: Path, start: datetime | None, end: datetime | None) -> tupl
         except (OSError, TypeError, ValueError, yaml.YAMLError) as exc:
             skipped.append(f"{metadata_path.parent.name}: {exc}")
     return scans, skipped
+
+
+def find_row_transition_times(scans: list[dict]) -> tuple[list[float], list[str]]:
+    """Return end-to-start times for adjacent rows in continuous scan runs."""
+    transitions = []
+    warnings = []
+    ordered_scans = sorted(scans, key=lambda scan: scan["timestamp"])
+
+    for previous, current in zip(ordered_scans, ordered_scans[1:]):
+        previous_match = ROW_FOLDER_PATTERN.match(previous["path"].name)
+        current_match = ROW_FOLDER_PATTERN.match(current["path"].name)
+        if not previous_match or not current_match:
+            continue
+        if previous_match.group("section") != current_match.group("section"):
+            continue
+
+        previous_row = int(previous_match.group("row"))
+        current_row = int(current_match.group("row"))
+        if abs(current_row - previous_row) != 1:
+            continue
+
+        start_interval = (current["timestamp"] - previous["timestamp"]).total_seconds()
+        if start_interval < 0 or start_interval > CONTINUOUS_SCAN_INTERVAL_SECONDS:
+            continue
+        if previous["end_timestamp"] is None:
+            warnings.append(
+                f"{previous['path'].name} -> {current['path'].name}: previous scan has no end time"
+            )
+            continue
+
+        transition = (current["timestamp"] - previous["end_timestamp"]).total_seconds()
+        if transition < 0:
+            warnings.append(
+                f"{previous['path'].name} -> {current['path'].name}: scans overlap by "
+                f"{-transition:.1f} s"
+            )
+            continue
+        transitions.append(transition)
+
+    return transitions, warnings
 
 
 def find_view_durations(scans: list[dict]) -> tuple[list[float], list[str]]:
@@ -144,7 +191,14 @@ def percentage(amount: int | float, denominator: int | float) -> float:
     return 100.0 * amount / denominator if denominator else 0.0
 
 
-def print_report(root: Path, scans: list[dict], view_durations: list[float], start, end) -> None:
+def print_report(
+    root: Path,
+    scans: list[dict],
+    view_durations: list[float],
+    row_transition_times: list[float],
+    start,
+    end,
+) -> None:
     total_plants = sum(scan["plants"] for scan in scans)
     requested = sum(scan["requested"] for scan in scans)
     reached = sum(scan["reached"] for scan in scans)
@@ -213,6 +267,16 @@ def print_report(root: Path, scans: list[dict], view_durations: list[float], sta
         print(f"Minimum:               {min(view_durations):.2f} s")
         print(f"Maximum:               {max(view_durations):.2f} s")
 
+    print("\nAdjacent-row transition timing")
+    print("-" * 64)
+    print("Definition: adjacent rows, same section, scan starts within 15 min")
+    print(f"Transitions:           {len(row_transition_times)}")
+    if row_transition_times:
+        print(f"Average:               {statistics.mean(row_transition_times):.2f} s")
+        print(f"Median:                {statistics.median(row_transition_times):.2f} s")
+        print(f"Minimum:               {min(row_transition_times):.2f} s")
+        print(f"Maximum:               {max(row_transition_times):.2f} s")
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -245,9 +309,10 @@ def main() -> None:
     if not scans:
         parser.error("no complete row-scan metadata found in the selected time range")
     view_durations, view_warnings = find_view_durations(scans)
-    print_report(root, scans, view_durations, start, end)
+    row_transition_times, transition_warnings = find_row_transition_times(scans)
+    print_report(root, scans, view_durations, row_transition_times, start, end)
 
-    warnings = scan_warnings + view_warnings
+    warnings = scan_warnings + view_warnings + transition_warnings
     if warnings:
         print(f"\nWarnings ({len(warnings)})")
         print("-" * 64)
