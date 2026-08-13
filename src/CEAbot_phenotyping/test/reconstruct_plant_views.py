@@ -2,6 +2,8 @@
 
 from pathlib import Path
 import argparse
+from datetime import datetime
+import re
 import numpy as np
 import yaml
 
@@ -31,6 +33,8 @@ EXPECTED_POSE_FRAME = "base_link"
 EXPECTED_POSE_CHILD_FRAME = "gemini336_color_optical_frame"
 LEGACY_POSE_CHILD_FRAME = "camera_color_optical_frame"
 EXPECTED_CLOUD_FRAME = "gemini336_color_optical_frame"
+SCAN_TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"
+SIDE_VIEW_PATTERN = re.compile(r"^view_\d+_(-?\d+(?:\.\d+)?)deg$")
 
 
 def parse_meta_yaml(path: Path) -> dict:
@@ -161,8 +165,41 @@ def recolor_cloud(points: np.ndarray, color_index: int) -> np.ndarray:
     return recolored
 
 
-def reconstruct_plant(scan_dir: Path,plant_dir: Path,output_dir: Path,voxel_size: float,color_by_view: bool,minimum_depth: float,maximum_depth: float,crop_margin: float,crop_below: float,crop_above: float,):
-    view_dirs = sorted(path for path in plant_dir.iterdir() if path.is_dir())
+def circular_angle_distance(first: float, second: float) -> float:
+    """Return the shortest distance between two angles in degrees."""
+    return abs((first - second + 180.0) % 360.0 - 180.0)
+
+
+def select_view_dirs(plant_dir: Path, number_of_side_views: int | None) -> list[Path]:
+    """Select evenly spaced side views and always include the top view."""
+    all_view_dirs = sorted(path for path in plant_dir.iterdir() if path.is_dir())
+    top_views = [path for path in all_view_dirs if path.name == "top"]
+    side_views = []
+
+    for path in all_view_dirs:
+        match = SIDE_VIEW_PATTERN.match(path.name)
+        if match:
+            side_views.append((float(match.group(1)) % 360.0, path))
+
+    if number_of_side_views is None or number_of_side_views >= len(side_views):
+        selected_sides = [path for _, path in sorted(side_views)]
+    elif number_of_side_views == 0:
+        selected_sides = []
+    else:
+        remaining = list(side_views)
+        anchor_angle, anchor_path = min(remaining, key=lambda item: (circular_angle_distance(item[0], 0.0), item[0], item[1].name),)
+        selected_sides = [anchor_path]
+        remaining.remove((anchor_angle, anchor_path))
+        targets = [(anchor_angle + index * 360.0 / number_of_side_views) % 360.0 for index in range(1, number_of_side_views)]
+        for target in targets:
+            angle, path = min(remaining, key=lambda item: (circular_angle_distance(item[0], target), item[0], item[1].name))
+            selected_sides.append(path)
+            remaining.remove((angle, path))
+
+    return top_views + selected_sides
+
+def reconstruct_plant(scan_dir: Path,plant_dir: Path,output_dir: Path,voxel_size: float,color_by_view: bool,minimum_depth: float,maximum_depth: float,crop_margin: float,crop_below: float,crop_above: float,number_of_side_views: int | None,):
+    view_dirs = select_view_dirs(plant_dir, number_of_side_views)
     transformed_views = []
 
     first_meta_path = next((view / "meta.yaml" for view in view_dirs if (view / "meta.yaml").exists()),None,)
@@ -172,7 +209,9 @@ def reconstruct_plant(scan_dir: Path,plant_dir: Path,output_dir: Path,voxel_size
 
     plant_center, detected_radius = get_plant_crop(scan_dir, plant_dir)
     crop_radius = detected_radius + crop_margin
-    print(f"\n{plant_dir.name}: found {len(view_dirs)} view folders")
+    print(f"\n{plant_dir.name}: using {len(view_dirs)} views: " + ", ".join(view.name for view in view_dirs))
+    if not any(view.name == "top" for view in view_dirs):
+        print("  warning: top view is unavailable for this plant")
 
     for view_index, view_dir in enumerate(view_dirs):
         meta_path = view_dir / "meta.yaml"
@@ -220,8 +259,11 @@ def reconstruct_plant(scan_dir: Path,plant_dir: Path,output_dir: Path,voxel_size
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("scan_dir", type=Path, help="Folder containing plant_XX/view folders")
+    parser.add_argument("input_dir", type=Path, help="A scan folder, or a parent folder containing timestamped scans")
     parser.add_argument("--output-dir", type=Path, default=None, help="Output directory for merged PLY files")
+    parser.add_argument("--views", type=int, default=None, help="Number of evenly spaced side views to use; the top view is always added when available")
+    parser.add_argument("--start-time", type=parse_cli_timestamp, default=None, help="Inclusive start: YYYYMMDD_HHMMSS or YYYY-MM-DD[ HH:MM[:SS]]")
+    parser.add_argument("--end-time", type=parse_cli_timestamp, default=None, help="Inclusive end: YYYYMMDD_HHMMSS or YYYY-MM-DD[ HH:MM[:SS]]")
     parser.add_argument("--voxel-size", type=float, default=0, help="Voxel size in meters. Use 0 to disable.")
     parser.add_argument("--color-by-view", action="store_true", help="Override RGB so each view has a unique debug color.")
     parser.add_argument("--min-depth", type=float, default=0.15, help="Minimum camera-frame depth in metres.")
@@ -231,15 +273,80 @@ def main():
     parser.add_argument("--crop-above", type=float, default=0.30)
     args = parser.parse_args()
 
-    scan_dir = args.scan_dir.expanduser()
-    output_dir = args.output_dir.expanduser() if args.output_dir else scan_dir / "reconstruction"
-    plant_dirs = sorted(path for path in scan_dir.glob("plant_*") if path.is_dir())
+    if args.views is not None and args.views < 0:
+        parser.error("--views must be zero or greater")
+    if args.start_time and args.end_time and args.start_time > args.end_time:
+        parser.error("--start-time must not be later than --end-time")
 
-    if not plant_dirs:
-        raise RuntimeError(f"No plant folders found in {scan_dir}")
+    input_dir = args.input_dir.expanduser()
+    if not input_dir.is_dir():
+        parser.error(f"input directory does not exist: {input_dir}")
 
-    for plant_dir in plant_dirs:
-        reconstruct_plant(scan_dir,plant_dir,output_dir,args.voxel_size,args.color_by_view,args.min_depth,args.max_depth,args.crop_margin,args.crop_below,args.crop_above,)
+    scan_dirs = find_scan_dirs(input_dir, args.start_time, args.end_time)
+    if not scan_dirs:
+        raise RuntimeError(f"No scan folders found in {input_dir} for the requested date/time range")
+
+    multiple_scans = len(scan_dirs) > 1 or scan_dirs[0] != input_dir
+    output_root = args.output_dir.expanduser() if args.output_dir else None
+    for scan_dir in scan_dirs:
+        print(f"\nProcessing scan: {scan_dir.name}")
+        if output_root is None:
+            output_dir = scan_dir / "reconstruction"
+        elif multiple_scans:
+            output_dir = output_root / scan_dir.name
+        else:
+            output_dir = output_root
+
+        plant_dirs = sorted(path for path in scan_dir.glob("plant_*") if path.is_dir())
+        for plant_dir in plant_dirs:
+            reconstruct_plant(scan_dir,plant_dir,output_dir,args.voxel_size,args.color_by_view,args.min_depth,args.max_depth,args.crop_margin,args.crop_below,args.crop_above,args.views,)
+
+def find_scan_dirs(input_dir: Path, start_time: datetime | None, end_time: datetime | None) -> list[Path]:
+    """Find one explicit scan or timestamped scans immediately below a root."""
+    if any(path.is_dir() for path in input_dir.glob("plant_*")):
+        candidates = [input_dir]
+    else:
+        candidates = [path for path in input_dir.iterdir() if path.is_dir()]
+
+    selected = []
+    for candidate in candidates:
+        timestamp = scan_timestamp(candidate)
+        if timestamp is None:
+            continue
+        if start_time is not None and timestamp < start_time:
+            continue
+        if end_time is not None and timestamp > end_time:
+            continue
+        if any(path.is_dir() for path in candidate.glob("plant_*")):
+            selected.append(candidate)
+    return sorted(selected, key=lambda path: (scan_timestamp(path), path.name))
+
+def scan_timestamp(scan_dir: Path) -> datetime | None:
+    metadata_path = scan_dir / "metadata.yaml"
+    if metadata_path.exists():
+        try:
+            value = parse_meta_yaml(metadata_path).get("top_scan_timestamp")
+            if value:
+                return datetime.strptime(str(value), SCAN_TIMESTAMP_FORMAT)
+        except (OSError, ValueError, TypeError):
+            pass
+
+    match = re.search(r"(\d{8}_\d{6})$", scan_dir.name)
+    if match:
+        return datetime.strptime(match.group(1), SCAN_TIMESTAMP_FORMAT)
+    return None
+
+def parse_cli_timestamp(value: str) -> datetime:
+    """Accept scan timestamps and common ISO-style date/time values."""
+    normalized = value.strip().replace("T", " ")
+    formats = ( SCAN_TIMESTAMP_FORMAT, "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d",)
+    for timestamp_format in formats:
+        try:
+            return datetime.strptime(normalized, timestamp_format)
+        except ValueError:
+            pass
+    raise argparse.ArgumentTypeError(f"invalid date/time {value!r}; use YYYYMMDD_HHMMSS or YYYY-MM-DD[ HH:MM[:SS]]")
+
 
 if __name__ == "__main__":
     main()
