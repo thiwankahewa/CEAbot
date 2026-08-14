@@ -204,8 +204,8 @@ def launch_setup(context, *args, **kwargs):
     # --- Execution Logic ---
     nodes_to_start = [robot_state_publisher_node]
 
-    if is_real_robot:
-        nodes_to_start.append(kinova_power_logger_node)
+    '''if is_real_robot:
+        nodes_to_start.append(kinova_power_logger_node)'''
 
     if is_sim:
 

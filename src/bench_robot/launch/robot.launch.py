@@ -177,14 +177,14 @@ def generate_launch_description():
             package="bench_robot",
             executable="bench_marker_detector",
             output="screen",),
-        Node(
-            package="bench_robot",
-            executable="system_stats_publisher",
-            name="system_stats_publisher",
-            parameters=[{
-                "topic": "/system_stats",
-                "interval_ms": 2000,
-            }],
-            output="screen",)
+        #Node(
+            #package="bench_robot",
+            #executable="system_stats_publisher",
+            #name="system_stats_publisher",
+            #parameters=[{
+              #  "topic": "/system_stats",
+             #   "interval_ms": 2000,
+            #}],
+            #output="screen",)
         
     ])

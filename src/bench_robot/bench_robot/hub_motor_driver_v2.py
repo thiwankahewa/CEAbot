@@ -72,7 +72,7 @@ class MotorDriverNode(Node):
         # -------- timers --------
         self.write_timer = self.create_timer(0.05, self.write_tick)
         self.watchdog_timer = self.create_timer(0.05, self.watchdog_tick)
-        self.power_timer = self.create_timer(1.0, self.power_tick)
+        #self.power_timer = self.create_timer(1.0, self.power_tick)
 
         # -------- initialization --------
         self._load_params()

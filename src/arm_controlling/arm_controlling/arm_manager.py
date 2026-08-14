@@ -40,8 +40,6 @@ class ArmManager(MoveItArmHelper):
         self.cb_group = ReentrantCallbackGroup()
 
         #--------- Parameters ---------#
-        self.declare_parameter("bench_height", 0.75)
-        self.declare_parameter("pot_height", 0.15)
         self.declare_parameter("plant_obstacle_radius_margin", 0.02)
         self.declare_parameter("plant_obstacle_min_radius", 0.04)
         self.declare_parameter("plant_obstacle_max_radius", 0.30)
