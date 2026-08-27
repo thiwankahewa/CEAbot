@@ -429,7 +429,7 @@ class PlantViewScanner(MoveItArmHelper):
 
             time.sleep(0.2)
 
-    def call_orbbec_capture(self, run_dir, plant_id, view_label, timeout=20.0):
+    def call_orbbec_capture(self, run_dir, plant_id, view_label, timeout=150.0):
         if not self.orbbec_capture_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().error("/orbbec_test_scan/capture_view service not available")
             return False

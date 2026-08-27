@@ -28,6 +28,7 @@ setup(
         'plant_view_scanner = arm_controlling.plant_view_scanner:main',
         'arm_manager = arm_controlling.arm_manager:main',
         'joint_rotation_monitor = arm_controlling.joint_rotation_monitor:main',
+        'remote_orbbec_capture = arm_controlling.remote_orbbec_capture:main',
     ],
 },
 )
