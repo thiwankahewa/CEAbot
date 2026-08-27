@@ -1,0 +1,16 @@
+[Unit]
+Description=CEAbot Kinova Expansion Ethernet Configuration
+Wants=network-online.target
+After=network-online.target
+Before=orbbec-camera.service ceabot-capture.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/env ethtool -s eth0 speed 100 duplex full autoneg off
+ExecStart=/usr/sbin/ip link set dev eth0 up
+ExecStart=/usr/sbin/ip address replace 10.20.0.200/24 dev eth0
+ExecStart=/usr/sbin/ip route replace 192.168.1.0/24 via 10.20.0.1 dev eth0
+
+[Install]
+WantedBy=multi-user.target

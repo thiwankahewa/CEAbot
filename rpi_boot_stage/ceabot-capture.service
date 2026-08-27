@@ -1,0 +1,17 @@
+[Unit]
+Description=CEAbot Orbbec Capture Server
+After=network-online.target ceabot-expansion-network.service orbbec-camera.service
+Wants=network-online.target ceabot-expansion-network.service orbbec-camera.service
+
+[Service]
+Type=simple
+User=thiwa
+WorkingDirectory=/home/thiwa/CEAbot_Rpi
+Environment=HOME=/home/thiwa
+EnvironmentFile=-/etc/ceabot-capture.env
+ExecStart=/bin/bash -lc 'source /home/thiwa/CEAbot_Rpi/systemd_boot_setup/ros_jazzy.bash && exec /usr/bin/python3 /home/thiwa/CEAbot_Rpi/rpi_orbbec_capture_server.py --bind 10.20.0.200 --spool-dir /var/lib/ceabot-captures'
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

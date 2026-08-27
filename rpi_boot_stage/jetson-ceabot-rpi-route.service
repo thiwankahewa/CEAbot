@@ -1,0 +1,12 @@
+[Unit]
+Description=Route Jetson traffic to the CEAbot Raspberry Pi through Kinova
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/ip route replace 10.20.0.0/24 via 192.168.1.10 dev enP1p1s0
+
+[Install]
+WantedBy=multi-user.target
