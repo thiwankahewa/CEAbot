@@ -112,6 +112,7 @@ class RemoteOrbbecCapture(Node):
             self.last_status = f"spooled {run_id}/{acknowledgement['archive_id']}"
             response.success = True
             response.message = f"Capture compressed on Pi: {acknowledgement['archive_id']}"
+            self._resume_transfer("capture complete")
         except urllib.error.HTTPError as exc:
             detail = exc.read(2048).decode("utf-8", errors="replace")
             response.success = False
