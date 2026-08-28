@@ -6,6 +6,8 @@ After=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+ExecStart=/usr/sbin/ip link set dev enP1p1s0 up
+ExecStart=/usr/sbin/ip address replace 192.168.1.2/24 dev enP1p1s0
 ExecStart=/usr/sbin/ip route replace 10.20.0.0/24 via 192.168.1.10 dev enP1p1s0
 
 [Install]
