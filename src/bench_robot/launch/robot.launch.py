@@ -3,7 +3,7 @@ from launch.actions import IncludeLaunchDescription, GroupAction, SetEnvironment
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
-from launch.substitutions import PathJoinSubstitution
+from launch.substitutions import EnvironmentVariable, PathJoinSubstitution
 from ament_index_python.packages import get_package_share_directory
 import os
 
@@ -101,7 +101,6 @@ def generate_launch_description():
     return LaunchDescription([
         #orbbec_launch,
         gemini335_launch,
-        gemini336_launch,
         #zed_launch,
 
         Node(
@@ -160,10 +159,24 @@ def generate_launch_description():
             package="bench_robot",
             executable="top_scan",
             output="screen",),
+        #Node(
+            #package="bench_robot",
+            #executable="orbbec_test_scan",
+            #output="screen",),
         Node(
-            package="bench_robot",
-            executable="orbbec_test_scan",
-            output="screen",),
+            package="arm_controlling",
+            executable="remote_orbbec_capture",
+            name="remote_orbbec_capture",
+            parameters=[{
+                "rpi_url": "http://10.20.0.200:8080",
+                "auth_token": EnvironmentVariable(
+                    "CEABOT_CAPTURE_TOKEN",
+                    default_value="",
+                ),
+                "chunk_bytes": 1048576,
+            }],
+            output="screen",
+        ),
         Node(
             package="CEAbot_phenotyping",
             executable="plant_row_coordinates",
