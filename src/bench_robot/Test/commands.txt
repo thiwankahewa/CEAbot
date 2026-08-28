@@ -35,6 +35,46 @@ ros2 launch bench_robot full_robot.launch.py robot_ip:=192.168.1.10 use_rviz:=fa
 ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zedm
 ros2 run orbbec_camera list_devices_node
 
+#---Gemini 305 end-effector capture pipeline test
+# Run the following block on the Raspberry Pi. Stop the boot services before a
+# manual launch so that two processes do not try to control the camera.
+sudo systemctl stop ceabot-capture.service
+sudo systemctl stop orbbec-camera.service
+pkill -f component_container
+source /home/thiwa/CEAbot_Rpi/systemd_boot_setup/ros_jazzy.bash
+ros2 pkg xml orbbec_camera | grep '<version>'
+ros2 run orbbec_camera list_devices_node
+ros2 launch orbbec_camera gemini_301_series.launch.py \
+  camera_name:=gemini336 \
+  depth_registration:=true \
+  align_mode:=SW \
+  enable_point_cloud:=false \
+  enable_colored_point_cloud:=true
+
+# In another Raspberry Pi terminal, verify all inputs required by the capture
+# server. Stop the manual launch with Ctrl+C before restarting systemd services.
+source /home/thiwa/CEAbot_Rpi/systemd_boot_setup/ros_jazzy.bash
+ros2 topic hz /gemini336/color/image_raw
+ros2 topic hz /gemini336/depth/image_raw
+ros2 topic hz /gemini336/depth_registered/points
+
+# Restore the normal Pi boot pipeline after the manual camera test.
+sudo systemctl start orbbec-camera.service
+sudo systemctl start ceabot-capture.service
+systemctl --no-pager --full status orbbec-camera.service ceabot-capture.service
+
+# Run on the Jetson to test the Pi HTTP capture and resumable transfer node.
+source /home/thiwa/CEAbot/install/setup.bash
+ros2 run arm_controlling remote_orbbec_capture --ros-args \
+  -p rpi_url:=http://10.20.0.200:8080 \
+  -p auth_token:="$CEABOT_CAPTURE_TOKEN"
+
+# In another Jetson terminal, request one capture through the existing API.
+source /home/thiwa/CEAbot/install/setup.bash
+ros2 service call /orbbec_test_scan/capture_view \
+  arm_interfaces/srv/CaptureView \
+  "{run_dir: '/home/thiwa/scan_data/orbbec_pipeline_test', plant_id: 1, view_label: 'test_view'}"
+
 
 
 ros2 topic pub /robot_location std_msgs/msg/Int16MultiArray "{data: [0, 1, 15, 1, 15]}" --once
