@@ -75,6 +75,28 @@ ros2 service call /orbbec_test_scan/capture_view \
   arm_interfaces/srv/CaptureView \
   "{run_dir: '/home/thiwa/scan_data/orbbec_pipeline_test', plant_id: 1, view_label: 'test_view'}"
 
+# The remote_orbbec_capture node automatically starts/resumes downloading the
+# compressed archive from the Pi after a successful capture. Check progress:
+ros2 service call /remote_orbbec_transfer/status std_srvs/srv/Trigger '{}'
+
+# Manually start/resume the transfer if it was paused or interrupted:
+ros2 service call /remote_orbbec_transfer/start std_srvs/srv/Trigger '{}'
+
+# Confirm that the RGB, depth, cloud, and metadata arrived on the Jetson.
+# meta.yaml should contain: remote_archive_pending: false
+find /home/thiwa/scan_data/orbbec_pipeline_test/plant_01/test_view \
+  -maxdepth 1 -type f -printf '%f\n' | sort
+grep "remote_archive_pending" \
+  /home/thiwa/scan_data/orbbec_pipeline_test/plant_01/test_view/meta.yaml
+
+# Check transfer progress
+ros2 service call /remote_orbbec_transfer/status \
+  std_srvs/srv/Trigger '{}'
+
+# Manually start or resume an interrupted transfer
+ros2 service call /remote_orbbec_transfer/start \
+  std_srvs/srv/Trigger '{}'
+
 
 
 ros2 topic pub /robot_location std_msgs/msg/Int16MultiArray "{data: [0, 1, 15, 1, 15]}" --once
