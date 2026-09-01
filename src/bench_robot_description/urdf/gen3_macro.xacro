@@ -464,8 +464,12 @@
       <origin xyz="0.0133 0 0.012" rpy="0 -1.5708 0"/>
     </joint>-->
 
-    <!-- Local copy fixes the upstream gemini336_link visual/collision mismatch. -->
+    <!-- Active end-effector camera: Orbbec Gemini 305. -->
+    <xacro:include filename="$(find bench_robot_description)/urdf/gemini_305.urdf.xacro" />
+
+    <!-- Gemini 336 retained for an easy future camera swap.
     <xacro:include filename="$(find bench_robot_description)/urdf/gemini_335_336_aligned.urdf.xacro" />
+    -->
 
     <!--
       The centered bracket STL is in millimetres and has its bounding-box
@@ -477,7 +481,7 @@
         <origin xyz="0 0 0" rpy="0 0 0"/>
         <geometry>
           <mesh
-            filename="package://bench_robot_description/meshes/EE_camera_bracket_centered.stl"
+            filename="package://bench_robot_description/meshes/EE_camera_bracket_v3_centered.stl"
             scale="0.001 0.001 0.001"/>
         </geometry>
         <material name="ee_camera_bracket_material">
@@ -488,7 +492,7 @@
         <origin xyz="0 0 0" rpy="0 0 0"/>
         <geometry>
           <mesh
-            filename="package://bench_robot_description/meshes/EE_camera_bracket_centered.stl"
+            filename="package://bench_robot_description/meshes/EE_camera_bracket_v3_centered.stl"
             scale="0.001 0.001 0.001"/>
         </geometry>
       </collision>
@@ -497,14 +501,22 @@
     <joint name="${prefix}ee_camera_bracket_joint" type="fixed">
       <parent link="${prefix}end_effector_link"/>
       <child link="${prefix}ee_camera_bracket_link"/>
-      <origin xyz="0 0.0085 -0.012" rpy="0 0 0"/>
+      <origin xyz="0 0.0 0" rpy="0 0 0"/>
     </joint>
 
     <joint name="${prefix}orbbec_mount_joint" type="fixed">
       <parent link="${prefix}ee_camera_bracket_link"/>
+      <child link="gemini305_link"/>
+      <origin xyz="0.0 0.062 -0.003" rpy="-1.5708 -1.5708 0"/>
+    </joint>
+
+    <!-- Gemini 336 mount retained with its previous transform.
+    <joint name="${prefix}orbbec_336_mount_joint" type="fixed">
+      <parent link="${prefix}ee_camera_bracket_link"/>
       <child link="gemini336_link"/>
       <origin xyz="0.024 0.046 0.014" rpy="-1.5708 -1.5708 0"/>
     </joint>
+    -->
     
   </xacro:macro>
 </robot>

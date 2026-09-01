@@ -1,0 +1,98 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://ros.org/wiki/xacro" name="gemini_305">
+  <!--
+    Lightweight Gemini 305 model for the robot description.
+    Body dimensions and mass are from the Orbbec Gemini 305 specification.
+    Sensor offsets are placeholders; the camera driver publishes calibrated
+    transforms when publish_tf is enabled.
+  -->
+
+  <link name="gemini305_link">
+    <inertial>
+      <origin xyz="-0.0115 0 0" rpy="0 0 0"/>
+      <mass value="0.068"/>
+      <inertia
+        ixx="1.9992e-05" ixy="0" ixz="0"
+        iyy="1.2997e-05" iyz="0" izz="1.2997e-05"/>
+    </inertial>
+    <!-- The link origin is on the front sensor plane; the housing extends backward. -->
+    <visual name="housing">
+      <origin xyz="-0.0115 0 0" rpy="0 0 0"/>
+      <geometry>
+        <!-- Depth x width x height: 23 x 42 x 42 mm. -->
+        <box size="0.023 0.042 0.042"/>
+      </geometry>
+      <material name="gemini305_body_material">
+        <color rgba="0.12 0.12 0.12 1"/>
+      </material>
+    </visual>
+    <visual name="front_panel">
+      <origin xyz="0.00025 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.0005 0.038 0.038"/>
+      </geometry>
+      <material name="gemini305_front_material">
+        <color rgba="0.025 0.025 0.025 1"/>
+      </material>
+    </visual>
+    <visual name="left_stereo_lens">
+      <origin xyz="0.001 0.009 0" rpy="0 1.57079632679 0"/>
+      <geometry>
+        <cylinder radius="0.005" length="0.002"/>
+      </geometry>
+      <material name="gemini305_lens_material">
+        <color rgba="0.04 0.08 0.13 1"/>
+      </material>
+    </visual>
+    <visual name="right_stereo_lens">
+      <origin xyz="0.001 -0.009 0" rpy="0 1.57079632679 0"/>
+      <geometry>
+        <cylinder radius="0.005" length="0.002"/>
+      </geometry>
+      <material name="gemini305_lens_material"/>
+    </visual>
+    <visual name="center_sensor">
+      <origin xyz="0.001 0 0.011" rpy="0 1.57079632679 0"/>
+      <geometry>
+        <cylinder radius="0.003" length="0.002"/>
+      </geometry>
+      <material name="gemini305_center_sensor_material">
+        <color rgba="0.08 0.08 0.08 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="-0.0115 0 0" rpy="0 0 0"/>
+      <geometry>
+        <box size="0.023 0.042 0.042"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <link name="gemini305_depth_frame"/>
+  <joint name="gemini305_depth_joint" type="fixed">
+    <parent link="gemini305_link"/>
+    <child link="gemini305_depth_frame"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <link name="gemini305_depth_optical_frame"/>
+  <joint name="gemini305_depth_optical_joint" type="fixed">
+    <parent link="gemini305_depth_frame"/>
+    <child link="gemini305_depth_optical_frame"/>
+    <origin xyz="0 0 0" rpy="-1.57079632679 0 -1.57079632679"/>
+  </joint>
+
+  <link name="gemini305_color_frame"/>
+  <joint name="gemini305_color_joint" type="fixed">
+    <parent link="gemini305_link"/>
+    <child link="gemini305_color_frame"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <link name="gemini305_color_optical_frame"/>
+  <joint name="gemini305_color_optical_joint" type="fixed">
+    <parent link="gemini305_color_frame"/>
+    <child link="gemini305_color_optical_frame"/>
+    <origin xyz="0 0 0" rpy="-1.57079632679 0 -1.57079632679"/>
+  </joint>
+</robot>
