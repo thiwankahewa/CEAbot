@@ -291,7 +291,7 @@ def reconstruct_plant(scan_dir: Path,plant_dir: Path,output_dir: Path,voxel_size
             meta = parse_meta_yaml(meta_path)
             pose_frame = meta.get("pose_frame", "unknown")
             pose_child_frame = meta.get("pose_child_frame", "unknown")
-            cloud_frame = meta.get("frame_id", "unknown")
+            cloud_frame = meta.get("camera_frame", meta.get("frame_id", "unknown"))
 
             if pose_frame not in {EXPECTED_POSE_FRAME}:
                 raise ValueError(f"unsupported pose_frame {pose_frame!r}; "f"expected {EXPECTED_POSE_FRAME} "f"(or legacy {LEGACY_POSE_FRAME})")
@@ -335,7 +335,7 @@ def main():
     parser.add_argument("--end-time", type=parse_cli_timestamp, default=None, help="Inclusive end: YYYYMMDD_HHMMSS or YYYY-MM-DD[ HH:MM[:SS]]")
     parser.add_argument("--voxel-size", type=float, default=0, help="Voxel size in meters. Use 0 to disable.")
     parser.add_argument("--color-by-view", action="store_true", help="Override RGB so each view has a unique debug color.")
-    parser.add_argument("--cloud-source",choices=("original", "rgbd"),default="original",help="Input per view: original cloud_xyzrgb.npy (default), or rgbd_reconstructed.ply",)
+    parser.add_argument("--cloud-source",choices=("original", "rgbd"),default="rgbd",help="Input per view: RGB-D reconstructed PLY (default), or a legacy original cloud_xyzrgb.npy",)
     parser.add_argument("--min-depth", type=float, default=0.15, help="Minimum camera-frame depth in metres.")
     parser.add_argument("--max-depth", type=float, default=0.70, help="Maximum camera-frame depth in metres.")
     parser.add_argument("--crop-margin",type=float,default=0.05,help="Horizontal margin added to detected plant radius in metres.",)

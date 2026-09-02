@@ -495,18 +495,18 @@ class PlantViewScanner(MoveItArmHelper):
             time.sleep(0.1)
 
     @staticmethod
-    def point_cloud_time_from_meta(meta_path):
+    def capture_time_from_meta(meta_path):
         with open(meta_path, "r", encoding="utf-8") as f:
             metadata = yaml.safe_load(f) or {}
 
-        stamp = metadata.get("cloud_timestamp")
+        stamp = metadata.get("capture_timestamp")
         if not isinstance(stamp, dict):
-            raise ValueError("Capture metadata is missing cloud_timestamp")
+            raise ValueError("Capture metadata is missing capture_timestamp")
 
         sec = int(stamp["sec"])
         nanosec = int(stamp["nanosec"])
         if sec < 0 or not 0 <= nanosec < 1_000_000_000:
-            raise ValueError(f"Invalid point-cloud timestamp: sec={sec}, nanosec={nanosec}")
+            raise ValueError(f"Invalid capture timestamp: sec={sec}, nanosec={nanosec}")
 
         return Time(seconds=sec, nanoseconds=nanosec)
 
@@ -578,7 +578,7 @@ class PlantViewScanner(MoveItArmHelper):
         meta_path,
         commanded_pose,
         transform,
-        cloud_frame,
+        camera_frame,
         start_time,
         end_time,
     ):
@@ -591,10 +591,11 @@ class PlantViewScanner(MoveItArmHelper):
         metadata.update(
             {
                 "pose_frame": self.reconstruction_frame,
-                # The numeric transform applies to points in the saved cloud.
-                # Keep its declared child consistent with frame_id even when
+                # The numeric transform applies to RGB-D points reconstructed
+                # in the camera frame. Keep its child consistent with
+                # camera_frame even when
                 # the robot-description TF link uses a differently named alias.
-                "pose_child_frame": cloud_frame,
+                "pose_child_frame": camera_frame,
                 "start_time": start_time,
                 "end_time": end_time,
                 "commanded_x": round(commanded_pose["x"], 6),
@@ -624,7 +625,7 @@ class PlantViewScanner(MoveItArmHelper):
         plant_id,
         target_command,
         base_from_command,
-        cloud_time,
+        capture_time,
     ):
         """Save a detected plant center in the same frame as reconstructed clouds."""
         if plant_id in self.saved_base_targets:
@@ -663,8 +664,8 @@ class PlantViewScanner(MoveItArmHelper):
             "z_m": round(target_base["z"], 6),
             "source_frame": self.base_frame,
             "tf_timestamp": {
-                "sec": int(cloud_time.nanoseconds // 1_000_000_000),
-                "nanosec": int(cloud_time.nanoseconds % 1_000_000_000),
+                "sec": int(capture_time.nanoseconds // 1_000_000_000),
+                "nanosec": int(capture_time.nanoseconds % 1_000_000_000),
             },
         }
 
@@ -1119,37 +1120,37 @@ class PlantViewScanner(MoveItArmHelper):
                 meta_path = self.wait_for_capture_meta(self.latest_run_dir,plant_id,pose["label"],capture_started_at,)
                 if meta_path is not None:
                     try:
-                        cloud_time = self.point_cloud_time_from_meta(meta_path)
+                        capture_time = self.capture_time_from_meta(meta_path)
                         lookup_timeout = Duration(seconds=2.0)
 
                         with open(meta_path, "r", encoding="utf-8") as meta_file:
                             capture_metadata = yaml.safe_load(meta_file) or {}
-                        cloud_frame = str(capture_metadata.get("frame_id", "")).strip()
-                        if not cloud_frame:
-                            raise ValueError("Capture metadata is missing frame_id")
+                        camera_frame = str(capture_metadata.get("camera_frame", "")).strip()
+                        if not camera_frame:
+                            raise ValueError("Capture metadata is missing camera_frame")
 
                         # Reconstruction pose: base_link <- camera optical frame,
-                        # sampled at the exact PointCloud2 timestamp.
+                        # sampled at the synchronized RGB-D capture timestamp.
                         transform = self.tf_buffer.lookup_transform(
                             self.reconstruction_frame,
                             self.camera_tf_frame,
-                            cloud_time,
+                            capture_time,
                             timeout=lookup_timeout,
                         )
 
-                        base_to_command_frame = self.tf_buffer.lookup_transform(self.reconstruction_frame,self.base_frame,cloud_time,timeout=lookup_timeout,)
+                        base_to_command_frame = self.tf_buffer.lookup_transform(self.reconstruction_frame,self.base_frame,capture_time,timeout=lookup_timeout,)
                         commanded_pose_in_base = self.compose_commanded_pose(base_to_command_frame,pose,)
                         self.save_plant_target_in_reconstruction_frame(
                             plant_id,
                             item["target_command"],
                             base_to_command_frame,
-                            cloud_time,
+                            capture_time,
                         )
 
                         t = transform.transform.translation
                         r = transform.transform.rotation
                         self.get_logger().info(
-                            f"Plant {plant_id} - point-cloud-time pose "
+                            f"Plant {plant_id} - capture-time pose "
                             f"{j}/{pose_count} [{pose['label']}]: "
                             f"x={t.x:.4f}, y={t.y:.4f}, z={t.z:.4f}, "
                             f"q=({r.x:.4f}, {r.y:.4f}, {r.z:.4f}, {r.w:.4f})"
@@ -1162,7 +1163,7 @@ class PlantViewScanner(MoveItArmHelper):
                             meta_path,
                             commanded_pose_in_base,
                             transform,
-                            cloud_frame,
+                            camera_frame,
                             item["planning_started_at"],
                             capture_end_time,
                         )

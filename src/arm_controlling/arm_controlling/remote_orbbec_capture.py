@@ -20,9 +20,7 @@ from std_msgs.msg import Bool
 from std_srvs.srv import Trigger
 
 
-ARCHIVE_MEMBERS = {
-    "color.png", "depth.npy", "cloud_xyzrgb.npy", "meta.yaml"
-}
+ARCHIVE_MEMBERS = { "color.png", "depth.npy", "meta.yaml"}
 
 
 class RemoteOrbbecCapture(Node):
