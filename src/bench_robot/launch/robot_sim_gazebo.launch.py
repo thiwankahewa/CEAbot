@@ -146,39 +146,6 @@ def launch_setup(context, *args, **kwargs):
         condition=IfCondition(use_rviz),
     )
 
-    '''marker_422_left = Node(
-        package='tf2_ros',
-        executable='static_transform_publisher',
-        arguments=[
-            '--x', '-0.792', '--y', '0', '--z', '-0.452', # 422mm down from beam
-            '--frame-id', 'top_beam_link', 
-            '--child-frame-id', 'marker_422_left',
-            "--ros-args", "--log-level", "warn"
-        ],
-    )
-
-    marker_722_left = Node(
-        package='tf2_ros',
-        executable='static_transform_publisher',
-        arguments=[
-            '--x', '-0.792', '--y', '0', '--z', '-0.752', 
-            '--frame-id', 'top_beam_link', 
-            '--child-frame-id', 'marker_722_left',
-            "--ros-args", "--log-level", "warn"
-        ],
-    )
-
-    marker_bench_center = Node(
-        package='tf2_ros',
-        executable='static_transform_publisher',
-        arguments=[
-            '--x', '0', '--y', '0', '--z', '-1.202', 
-            '--frame-id', 'top_beam_link', 
-            '--child-frame-id', 'marker_bench_center',
-            "--ros-args", "--log-level", "warn"
-        ],
-    )'''
-
     arm_manager_node = Node(
         package="arm_controlling",
         executable="arm_manager",
