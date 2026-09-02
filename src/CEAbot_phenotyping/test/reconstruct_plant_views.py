@@ -87,14 +87,82 @@ def voxel_downsample_xyzrgb(points: np.ndarray, voxel_size: float) -> np.ndarray
     return points[keep_indices]
 
 
-def load_cloud_xyzrgb(view_dir: Path,minimum_depth: float,maximum_depth: float,) -> np.ndarray:
-    cloud_path = view_dir / "cloud_xyzrgb.npy"
-    if not cloud_path.exists():
-        raise FileNotFoundError(f"missing {cloud_path}")
+def load_binary_color_ply(path: Path) -> np.ndarray:
+    """Load the binary XYZRGB PLY written by reconstruct_rgbd_color_ply.py."""
+    expected_properties = [
+        "property float x",
+        "property float y",
+        "property float z",
+        "property uchar red",
+        "property uchar green",
+        "property uchar blue",
+    ]
+    with path.open("rb") as stream:
+        first_line = stream.readline()
+        if first_line != b"ply\n":
+            raise ValueError(f"{path} is not a PLY file")
 
-    cloud = np.load(cloud_path)
-    if cloud.ndim != 2 or cloud.shape[1] < 6:
-        raise ValueError(f"{cloud_path} must have shape Nx6 or larger")
+        vertex_count = None
+        properties = []
+        for _ in range(100):
+            raw_line = stream.readline()
+            if not raw_line:
+                raise ValueError(f"{path} has an incomplete PLY header")
+            try:
+                line = raw_line.decode("ascii").strip()
+            except UnicodeDecodeError as exc:
+                raise ValueError(f"{path} has a non-ASCII PLY header") from exc
+            if line == "format binary_little_endian 1.0":
+                pass
+            elif line.startswith("format "):
+                raise ValueError(f"{path} must use binary_little_endian PLY format")
+            elif line.startswith("element vertex "):
+                vertex_count = int(line.rsplit(" ", 1)[1])
+            elif line.startswith("property "):
+                properties.append(line)
+            elif line == "end_header":
+                break
+        else:
+            raise ValueError(f"{path} PLY header is too long")
+
+        if vertex_count is None or vertex_count < 0:
+            raise ValueError(f"{path} has no valid vertex count")
+        if properties != expected_properties:
+            raise ValueError(
+                f"{path} must contain x, y, z, red, green, blue vertex properties"
+            )
+
+        vertex_dtype = np.dtype([
+            ("x", "<f4"), ("y", "<f4"), ("z", "<f4"),
+            ("red", "u1"), ("green", "u1"), ("blue", "u1"),
+        ])
+        vertices = np.fromfile(stream, dtype=vertex_dtype, count=vertex_count)
+        if len(vertices) != vertex_count:
+            raise ValueError(
+                f"{path} is truncated: expected {vertex_count} vertices, found {len(vertices)}"
+            )
+
+    return np.column_stack([
+        vertices["x"], vertices["y"], vertices["z"],
+        vertices["red"], vertices["green"], vertices["blue"],
+    ])
+
+
+def load_cloud_xyzrgb(view_dir: Path,minimum_depth: float,maximum_depth: float,cloud_source: str,) -> np.ndarray:
+    if cloud_source == "original":
+        cloud_path = view_dir / "cloud_xyzrgb.npy"
+        if not cloud_path.exists():
+            raise FileNotFoundError(f"missing {cloud_path}")
+        cloud = np.load(cloud_path, allow_pickle=False)
+        if cloud.ndim != 2 or cloud.shape[1] < 6:
+            raise ValueError(f"{cloud_path} must have shape Nx6 or larger")
+    else:
+        cloud_path = view_dir / "rgbd_reconstructed.ply"
+        if not cloud_path.exists():
+            raise FileNotFoundError(
+                f"missing {cloud_path}; run reconstruct_rgbd_color_ply.py first"
+            )
+        cloud = load_binary_color_ply(cloud_path)
 
     cloud = cloud[:, :6].astype(np.float64, copy=False)
     valid = np.isfinite(cloud[:, 0]) & np.isfinite(cloud[:, 1]) & np.isfinite(cloud[:, 2])
@@ -198,7 +266,7 @@ def select_view_dirs(plant_dir: Path, number_of_side_views: int | None) -> list[
 
     return top_views + selected_sides
 
-def reconstruct_plant(scan_dir: Path,plant_dir: Path,output_dir: Path,voxel_size: float,color_by_view: bool,minimum_depth: float,maximum_depth: float,crop_margin: float,crop_below: float,crop_above: float,number_of_side_views: int | None,):
+def reconstruct_plant(scan_dir: Path,plant_dir: Path,output_dir: Path,voxel_size: float,color_by_view: bool,minimum_depth: float,maximum_depth: float,crop_margin: float,crop_below: float,crop_above: float,number_of_side_views: int | None,cloud_source: str,):
     view_dirs = select_view_dirs(plant_dir, number_of_side_views)
     transformed_views = []
 
@@ -234,7 +302,7 @@ def reconstruct_plant(scan_dir: Path,plant_dir: Path,output_dir: Path,voxel_size
 
             transform_world_camera = pose_to_matrix(meta)
 
-            cloud = load_cloud_xyzrgb(view_dir,minimum_depth,maximum_depth,)
+            cloud = load_cloud_xyzrgb(view_dir,minimum_depth,maximum_depth,cloud_source,)
             cloud[:, :3] = transform_points(cloud[:, :3], transform_world_camera)
             cloud = crop_world_points(cloud,plant_center,crop_radius,crop_below,crop_above,)
             if color_by_view:
@@ -252,7 +320,8 @@ def reconstruct_plant(scan_dir: Path,plant_dir: Path,output_dir: Path,voxel_size
     before_downsample = len(merged)
     merged = voxel_downsample_xyzrgb(merged, voxel_size)
 
-    output_path = output_dir / f"{plant_dir.name}_merged.ply"
+    output_suffix = "_merged.ply" if cloud_source == "original" else "_merged_rgbd.ply"
+    output_path = output_dir / f"{plant_dir.name}{output_suffix}"
     save_binary_ply(output_path, merged)
     print(f"({before_downsample} -> {len(merged)} points, voxel={voxel_size} m)")
 
@@ -266,6 +335,7 @@ def main():
     parser.add_argument("--end-time", type=parse_cli_timestamp, default=None, help="Inclusive end: YYYYMMDD_HHMMSS or YYYY-MM-DD[ HH:MM[:SS]]")
     parser.add_argument("--voxel-size", type=float, default=0, help="Voxel size in meters. Use 0 to disable.")
     parser.add_argument("--color-by-view", action="store_true", help="Override RGB so each view has a unique debug color.")
+    parser.add_argument("--cloud-source",choices=("original", "rgbd"),default="original",help="Input per view: original cloud_xyzrgb.npy (default), or rgbd_reconstructed.ply",)
     parser.add_argument("--min-depth", type=float, default=0.15, help="Minimum camera-frame depth in metres.")
     parser.add_argument("--max-depth", type=float, default=0.70, help="Maximum camera-frame depth in metres.")
     parser.add_argument("--crop-margin",type=float,default=0.05,help="Horizontal margin added to detected plant radius in metres.",)
@@ -299,7 +369,7 @@ def main():
 
         plant_dirs = sorted(path for path in scan_dir.glob("plant_*") if path.is_dir())
         for plant_dir in plant_dirs:
-            reconstruct_plant(scan_dir,plant_dir,output_dir,args.voxel_size,args.color_by_view,args.min_depth,args.max_depth,args.crop_margin,args.crop_below,args.crop_above,args.views,)
+            reconstruct_plant(scan_dir,plant_dir,output_dir,args.voxel_size,args.color_by_view,args.min_depth,args.max_depth,args.crop_margin,args.crop_below,args.crop_above,args.views,args.cloud_source,)
 
 def find_scan_dirs(input_dir: Path, start_time: datetime | None, end_time: datetime | None) -> list[Path]:
     """Find one explicit scan or timestamped scans immediately below a root."""
