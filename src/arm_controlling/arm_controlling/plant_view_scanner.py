@@ -585,28 +585,6 @@ class PlantViewScanner(MoveItArmHelper):
         t = transform.transform.translation
         r = transform.transform.rotation
 
-        translation_error_mm = (math.sqrt(
-            (t.x - commanded_pose["x"]) ** 2
-            + (t.y - commanded_pose["y"]) ** 2
-            + (t.z - commanded_pose["z"]) ** 2
-        )) * 1000.0
-
-        commanded_quaternion = [commanded_pose["qx"],commanded_pose["qy"],commanded_pose["qz"],commanded_pose["qw"],]
-        actual_quaternion = [r.x,r.y,r.z,r.w,]
-        commanded_norm = math.sqrt(sum(value ** 2 for value in commanded_quaternion))
-        actual_norm = math.sqrt(sum(value ** 2 for value in actual_quaternion))
-        if commanded_norm < 1e-12 or actual_norm < 1e-12:
-            raise ValueError("Cannot calculate angular error from a zero-length quaternion")
-
-        quaternion_dot = sum(
-            commanded * actual
-            for commanded, actual in zip(
-                commanded_quaternion, actual_quaternion
-            )
-        ) / (commanded_norm * actual_norm)
-        quaternion_dot = max(-1.0, min(1.0, quaternion_dot))
-        angular_error_rad = 2.0 * math.acos(abs(quaternion_dot))
-
         with open(meta_path, "r", encoding="utf-8") as f:
             metadata = yaml.safe_load(f) or {}
 
@@ -617,12 +595,6 @@ class PlantViewScanner(MoveItArmHelper):
                 # Keep its declared child consistent with frame_id even when
                 # the robot-description TF link uses a differently named alias.
                 "pose_child_frame": cloud_frame,
-                "tf_lookup_child_frame": self.camera_tf_frame,
-                "pose_timestamp": {
-                    "sec": int(transform.header.stamp.sec),
-                    "nanosec": int(transform.header.stamp.nanosec),
-                },
-                "command_frame": self.base_frame,
                 "start_time": start_time,
                 "end_time": end_time,
                 "commanded_x": round(commanded_pose["x"], 6),
@@ -639,8 +611,6 @@ class PlantViewScanner(MoveItArmHelper):
                 "actual_qy": round(r.y, 6),
                 "actual_qz": round(r.z, 6),
                 "actual_qw": round(r.w, 6),
-                "translation_error_mm": round(translation_error_mm, 6),
-                "angular_error_deg": round(math.degrees(angular_error_rad), 6),
             }
         )
 
