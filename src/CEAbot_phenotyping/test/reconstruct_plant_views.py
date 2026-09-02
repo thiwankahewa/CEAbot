@@ -4,6 +4,7 @@ from pathlib import Path
 import argparse
 from datetime import datetime
 import re
+import cv2
 import numpy as np
 import yaml
 
@@ -87,65 +88,45 @@ def voxel_downsample_xyzrgb(points: np.ndarray, voxel_size: float) -> np.ndarray
     return points[keep_indices]
 
 
-def load_binary_color_ply(path: Path) -> np.ndarray:
-    """Load the binary XYZRGB PLY written by reconstruct_rgbd_color_ply.py."""
-    expected_properties = [
-        "property float x",
-        "property float y",
-        "property float z",
-        "property uchar red",
-        "property uchar green",
-        "property uchar blue",
-    ]
-    with path.open("rb") as stream:
-        first_line = stream.readline()
-        if first_line != b"ply\n":
-            raise ValueError(f"{path} is not a PLY file")
+def create_rgbd_cloud(view_dir: Path) -> np.ndarray:
+    """Create camera-frame XYZRGB points in memory from depth and color data."""
+    depth_path = view_dir / "depth.npy"
+    color_path = view_dir / "color.png"
+    meta_path = view_dir / "meta.yaml"
+    missing = [path.name for path in (depth_path, color_path, meta_path) if not path.exists()]
+    if missing:
+        raise FileNotFoundError(f"missing required files: {', '.join(missing)}")
 
-        vertex_count = None
-        properties = []
-        for _ in range(100):
-            raw_line = stream.readline()
-            if not raw_line:
-                raise ValueError(f"{path} has an incomplete PLY header")
-            try:
-                line = raw_line.decode("ascii").strip()
-            except UnicodeDecodeError as exc:
-                raise ValueError(f"{path} has a non-ASCII PLY header") from exc
-            if line == "format binary_little_endian 1.0":
-                pass
-            elif line.startswith("format "):
-                raise ValueError(f"{path} must use binary_little_endian PLY format")
-            elif line.startswith("element vertex "):
-                vertex_count = int(line.rsplit(" ", 1)[1])
-            elif line.startswith("property "):
-                properties.append(line)
-            elif line == "end_header":
-                break
-        else:
-            raise ValueError(f"{path} PLY header is too long")
+    meta = parse_meta_yaml(meta_path)
+    camera_info = meta.get("color_camera_info")
+    matrix = camera_info.get("k") if isinstance(camera_info, dict) else None
+    if not isinstance(matrix, list) or len(matrix) != 9:
+        raise ValueError("color_camera_info.k must contain 9 values")
+    fx, fy, cx, cy = map(float, (matrix[0], matrix[4], matrix[2], matrix[5]))
+    if not np.all(np.isfinite([fx, fy, cx, cy])) or fx <= 0.0 or fy <= 0.0:
+        raise ValueError("invalid color camera intrinsics")
 
-        if vertex_count is None or vertex_count < 0:
-            raise ValueError(f"{path} has no valid vertex count")
-        if properties != expected_properties:
-            raise ValueError(
-                f"{path} must contain x, y, z, red, green, blue vertex properties"
-            )
+    scale = float(meta.get("depth_scale_m_per_unit", 0.001))
+    if not np.isfinite(scale) or scale <= 0.0:
+        raise ValueError("invalid depth_scale_m_per_unit")
+    depth = np.load(depth_path, allow_pickle=False)
+    color_bgr = cv2.imread(str(color_path), cv2.IMREAD_COLOR)
+    if depth.ndim != 2:
+        raise ValueError(f"depth.npy must be HxW, got {depth.shape}")
+    if color_bgr is None:
+        raise ValueError("could not read color.png")
+    if color_bgr.shape[:2] != depth.shape:
+        raise ValueError(f"color/depth size mismatch: {color_bgr.shape[:2]} and {depth.shape}")
 
-        vertex_dtype = np.dtype([
-            ("x", "<f4"), ("y", "<f4"), ("z", "<f4"),
-            ("red", "u1"), ("green", "u1"), ("blue", "u1"),
-        ])
-        vertices = np.fromfile(stream, dtype=vertex_dtype, count=vertex_count)
-        if len(vertices) != vertex_count:
-            raise ValueError(
-                f"{path} is truncated: expected {vertex_count} vertices, found {len(vertices)}"
-            )
-
-    return np.column_stack([
-        vertices["x"], vertices["y"], vertices["z"],
-        vertices["red"], vertices["green"], vertices["blue"],
-    ])
+    depth_m = depth.astype(np.float32) * np.float32(scale)
+    rows, columns = np.nonzero(np.isfinite(depth_m) & (depth_m > 0.0))
+    z = depth_m[rows, columns]
+    cloud = np.empty((len(z), 6), dtype=np.float32)
+    cloud[:, 0] = (columns.astype(np.float32) - cx) * z / fx
+    cloud[:, 1] = (rows.astype(np.float32) - cy) * z / fy
+    cloud[:, 2] = z
+    cloud[:, 3:6] = color_bgr[rows, columns, ::-1]
+    return cloud
 
 
 def load_cloud_xyzrgb(view_dir: Path,minimum_depth: float,maximum_depth: float,cloud_source: str,) -> np.ndarray:
@@ -157,12 +138,7 @@ def load_cloud_xyzrgb(view_dir: Path,minimum_depth: float,maximum_depth: float,c
         if cloud.ndim != 2 or cloud.shape[1] < 6:
             raise ValueError(f"{cloud_path} must have shape Nx6 or larger")
     else:
-        cloud_path = view_dir / "rgbd_reconstructed.ply"
-        if not cloud_path.exists():
-            raise FileNotFoundError(
-                f"missing {cloud_path}; run reconstruct_rgbd_color_ply.py first"
-            )
-        cloud = load_binary_color_ply(cloud_path)
+        cloud = create_rgbd_cloud(view_dir)
 
     cloud = cloud[:, :6].astype(np.float64, copy=False)
     valid = np.isfinite(cloud[:, 0]) & np.isfinite(cloud[:, 1]) & np.isfinite(cloud[:, 2])
@@ -335,7 +311,7 @@ def main():
     parser.add_argument("--end-time", type=parse_cli_timestamp, default=None, help="Inclusive end: YYYYMMDD_HHMMSS or YYYY-MM-DD[ HH:MM[:SS]]")
     parser.add_argument("--voxel-size", type=float, default=0, help="Voxel size in meters. Use 0 to disable.")
     parser.add_argument("--color-by-view", action="store_true", help="Override RGB so each view has a unique debug color.")
-    parser.add_argument("--cloud-source",choices=("original", "rgbd"),default="rgbd",help="Input per view: RGB-D reconstructed PLY (default), or a legacy original cloud_xyzrgb.npy",)
+    parser.add_argument("--cloud-source",choices=("original", "rgbd"),default="rgbd",help="Input per view: RGB-D converted in memory (default), or legacy cloud_xyzrgb.npy",)
     parser.add_argument("--min-depth", type=float, default=0.15, help="Minimum camera-frame depth in metres.")
     parser.add_argument("--max-depth", type=float, default=0.70, help="Maximum camera-frame depth in metres.")
     parser.add_argument("--crop-margin",type=float,default=0.05,help="Horizontal margin added to detected plant radius in metres.",)
