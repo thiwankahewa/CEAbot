@@ -30,9 +30,12 @@ class PlantViewScanner(MoveItArmHelper):
         #--------- States and variables ---------#
         self.latest_targets = []
         self.latest_run_dir = None
-        self.base_frame = "gemini335_color_optical_frame"
+        # MoveItArmHelper defines the mounted end-effector link.  Do not
+        # replace it with the frame name reported by the remote camera driver:
+        # those names may be aliases (for example, the Pi currently reports
+        # gemini336_* while the robot description mounts a Gemini 305).
         self.reconstruction_frame = "base_link"
-        self.ee_link = "gemini336_color_optical_frame"
+        self.camera_tf_frame = self.ee_link
 
         self.scd41_csv_path = os.path.expanduser("~/scan_data/scd41_data.csv")
 
@@ -471,6 +474,26 @@ class PlantViewScanner(MoveItArmHelper):
 
             time.sleep(0.1)
 
+    def wait_for_capture_install(self, meta_path, timeout=180.0):
+        """Wait until the remote archive can no longer overwrite meta.yaml."""
+        start = time.time()
+        while rclpy.ok():
+            try:
+                with open(meta_path, "r", encoding="utf-8") as meta_file:
+                    metadata = yaml.safe_load(meta_file) or {}
+                # Local capture metadata has no pending flag.  Remote capture
+                # changes it to exactly false only after installing the archive.
+                if metadata.get("remote_archive_pending") is not True:
+                    return True
+            except (OSError, yaml.YAMLError):
+                pass
+
+            if time.time() - start > timeout:
+                self.get_logger().warn( f"Timed out waiting for final Orbbec archive metadata: {meta_path}")
+                return False
+
+            time.sleep(0.1)
+
     @staticmethod
     def point_cloud_time_from_meta(meta_path):
         with open(meta_path, "r", encoding="utf-8") as f:
@@ -555,6 +578,7 @@ class PlantViewScanner(MoveItArmHelper):
         meta_path,
         commanded_pose,
         transform,
+        cloud_frame,
         start_time,
         end_time,
     ):
@@ -589,7 +613,15 @@ class PlantViewScanner(MoveItArmHelper):
         metadata.update(
             {
                 "pose_frame": self.reconstruction_frame,
-                "pose_child_frame": self.ee_link,
+                # The numeric transform applies to points in the saved cloud.
+                # Keep its declared child consistent with frame_id even when
+                # the robot-description TF link uses a differently named alias.
+                "pose_child_frame": cloud_frame,
+                "tf_lookup_child_frame": self.camera_tf_frame,
+                "pose_timestamp": {
+                    "sec": int(transform.header.stamp.sec),
+                    "nanosec": int(transform.header.stamp.nanosec),
+                },
                 "command_frame": self.base_frame,
                 "start_time": start_time,
                 "end_time": end_time,
@@ -1120,11 +1152,17 @@ class PlantViewScanner(MoveItArmHelper):
                         cloud_time = self.point_cloud_time_from_meta(meta_path)
                         lookup_timeout = Duration(seconds=2.0)
 
+                        with open(meta_path, "r", encoding="utf-8") as meta_file:
+                            capture_metadata = yaml.safe_load(meta_file) or {}
+                        cloud_frame = str(capture_metadata.get("frame_id", "")).strip()
+                        if not cloud_frame:
+                            raise ValueError("Capture metadata is missing frame_id")
+
                         # Reconstruction pose: base_link <- camera optical frame,
                         # sampled at the exact PointCloud2 timestamp.
                         transform = self.tf_buffer.lookup_transform(
                             self.reconstruction_frame,
-                            self.ee_link,
+                            self.camera_tf_frame,
                             cloud_time,
                             timeout=lookup_timeout,
                         )
@@ -1148,10 +1186,13 @@ class PlantViewScanner(MoveItArmHelper):
                         )
 
                         capture_end_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        if not self.wait_for_capture_install(meta_path):
+                            raise TimeoutError( "Remote capture archive was not installed before saving TF")
                         self.append_pose_data_to_meta(
                             meta_path,
                             commanded_pose_in_base,
                             transform,
+                            cloud_frame,
                             item["planning_started_at"],
                             capture_end_time,
                         )
