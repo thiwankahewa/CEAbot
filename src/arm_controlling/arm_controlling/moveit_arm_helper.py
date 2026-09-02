@@ -43,8 +43,8 @@ class MoveItArmHelper(Node):
         self.declare_parameter("pot_height", 0.15)
         self.declare_parameter("position_tolerance", 0.01)
         self.declare_parameter("orientation_tolerance", 0.01)
-        self.declare_parameter("velocity_scaling", 0.3)
-        self.declare_parameter("acceleration_scaling", 0.1)
+        self.declare_parameter("velocity_scaling", 0.4)
+        self.declare_parameter("acceleration_scaling", 0.15)
         self.declare_parameter("planning_time", 2.0)
 
         self._load_arm_params()

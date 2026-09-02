@@ -39,9 +39,9 @@ class PlantViewScanner(MoveItArmHelper):
 
         self.scd41_csv_path = os.path.expanduser("~/scan_data/scd41_data.csv")
 
-        self.declare_parameter("z_offset", 0.25)              # meters above target
-        self.declare_parameter("circle_radius_offset", 0.06)   # distance from top view to side-view circle
-        self.declare_parameter("circle_height_offset", 0.15)
+        self.declare_parameter("z_offset", 0.15)              # meters above target
+        self.declare_parameter("circle_radius_offset", 0.08)   # distance from top view to side-view circle
+        self.declare_parameter("circle_height_offset", 0.05)
         self.declare_parameter("look_at_angle_offset", 0.05)
         self.declare_parameter("view_count", 7)  
         self.declare_parameter("optimize_view_order", True)
