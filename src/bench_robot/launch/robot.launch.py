@@ -150,7 +150,6 @@ def generate_launch_description():
         Node(
             package="bench_robot",
             executable="aruco_detector",
-            parameters=[bench_tracker_params],
             output="screen",),
         #Node(
             #package="bench_robot",

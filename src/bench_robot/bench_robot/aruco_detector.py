@@ -47,6 +47,7 @@ class ArucoManager(Node):
         self.goal_seen_count = 0
         self.prev_selected_id = None
         self.stop_sent = False
+        self.last_center_error_px = None
         self.rest_client = None
         self.rest_pending = False
         self.rest_pending_action = None
@@ -60,7 +61,7 @@ class ArucoManager(Node):
         # Signed displacement of the desired marker position along the image
         # vertical axis.  This shifts the robot's final longitudinal stop while
         # retaining closed-loop ArUco centering. Positive means lower in image.
-        self.declare_parameter("scan_stop_offset_px", 0.0)
+        self.declare_parameter("scan_stop_offset_px", 200.0)
         self.scan_stop_offset_px = float( self.get_parameter("scan_stop_offset_px").value)
         self.add_on_set_parameters_callback(self.on_params)
 
@@ -128,6 +129,14 @@ class ArucoManager(Node):
     def cb_auto_state(self, msg: String):
         previous_state = self.auto_state
         self.auto_state = (msg.data or "").strip().lower()
+        if previous_state == "aruco_centering" and self.auto_state == "top_view_scan":
+            if self.last_center_error_px is not None:
+                final_offset_px = self.last_center_error_px + self.scan_stop_offset_px
+                self.get_logger().info(
+                    f"ArUco centering complete: final_pixel_offset={final_offset_px:.1f} px, "
+                    f"target_error={self.last_center_error_px:.1f} px")
+            else:
+                self.get_logger().warn( "ArUco centering complete, but no final pixel error was available")
         if self.auto_state not in TRACKING_STATES:
             self.goal_seen_count = 0
         if self.auto_state == "bench_change_start" and self.bench_exit_alignment_pending:
@@ -169,6 +178,7 @@ class ArucoManager(Node):
         self.current_row = None
         self.row_known = False
         self.stop_sent = False
+        self.last_center_error_px = None
         self.goal_seen_count = 0
         self.bench_exit_alignment_pending = False
         self.pub_bench_exit_align.publish(Bool(data=False))
@@ -349,14 +359,17 @@ class ArucoManager(Node):
             self.publish_align_error(False, 0.0)
 
         if active_goal_visible and self.auto_state == "aruco_centering":
+            self.last_center_error_px = center_error_px
             self.publish_align_error(True, center_error_px)
 
         if self.goal_seen_count >= self.stable_goal_frames and not self.stop_sent:
             self.stop_sent = True
+            self.last_center_error_px = None
             self.publish_stop(True)
             self.prev_selected_id = None
-            logged_center_error_px = center_error_px if center_error_px is not None else 0.0
-            self.get_logger().info(f"Goal centered and reached: bench={self.current_bench}, row={self.current_row}, center_error_px={logged_center_error_px:.1f}")
+            self.get_logger().info(
+                f"Goal reached: bench={self.current_bench}, row={self.current_row}; "
+                "starting final ArUco centering")
 
     # ------- handling arm rest requests and next steps ------- 
     
