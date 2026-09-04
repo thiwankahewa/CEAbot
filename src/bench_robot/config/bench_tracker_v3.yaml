@@ -19,6 +19,12 @@
     yaw_enter_m: 0.05
     yaw_exit_m: 0.01
 
+/aruco_detector:
+  ros__parameters:
+    # Signed vertical image offset for the final row stop. Start at zero and
+    # tune in small increments after checking which sign exposes the blind row.
+    scan_stop_offset_px: 0.0
+
 /bench_changer:
   ros__parameters:
     Kd_offset: 1.0

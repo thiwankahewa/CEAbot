@@ -5,6 +5,7 @@ import cv2
 import numpy as np
 import rclpy
 from rclpy.node import Node
+from rcl_interfaces.msg import SetParametersResult
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool, Float32MultiArray, Int16, Int16MultiArray, String
 from std_srvs.srv import Trigger
@@ -56,6 +57,13 @@ class ArucoManager(Node):
         self.usb_cam_height = 480
         self.usb_cam_fps = 15
 
+        # Signed displacement of the desired marker position along the image
+        # vertical axis.  This shifts the robot's final longitudinal stop while
+        # retaining closed-loop ArUco centering. Positive means lower in image.
+        self.declare_parameter("scan_stop_offset_px", 0.0)
+        self.scan_stop_offset_px = float( self.get_parameter("scan_stop_offset_px").value)
+        self.add_on_set_parameters_callback(self.on_params)
+
         # ---------------- services ----------------
         self.srv_reconnect = self.create_service(Trigger, "/aruco_detector/aruco_camera_reconnect", self.on_camera_reconnect)
 
@@ -104,9 +112,15 @@ class ArucoManager(Node):
         self.pub_align_error.publish(Float32MultiArray(data=data))
 
     @staticmethod
-    def marker_center_x(marker_corners) -> float:
+    def marker_center_y(marker_corners) -> float:
         pts = np.asarray(marker_corners).reshape(-1, 2)
         return float(np.mean(pts[:, 1]))
+
+    def on_params(self, params):
+        for param in params:
+            if param.name == "scan_stop_offset_px":
+                self.scan_stop_offset_px = float(param.value)
+        return SetParametersResult(successful=True)
 
 
     # ---------------- callback functions ----------------
@@ -297,8 +311,8 @@ class ArucoManager(Node):
 
         self.request_tracking_direction()
 
-        frame_center_x = frame.shape[0] / 2.0
-        center_error_px = self.marker_center_x(selected_corners) - frame_center_x
+        desired_marker_y = frame.shape[0] / 2.0 + self.scan_stop_offset_px
+        center_error_px = self.marker_center_y(selected_corners) - desired_marker_y
         active_goal_visible = self.is_active_stop_target(self.current_bench, self.current_row)
 
         # ---------------- routing mode ----------------

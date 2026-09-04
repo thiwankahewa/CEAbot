@@ -45,6 +45,16 @@ class PlantCoordinateNode(Node):
         self.max_depth_mm = 900.0
         self.dilate_itr = 2
 
+        # A top scan cannot see foliage hidden by the arm base.  Keep the
+        # expected pot lattice occupied in those blind areas instead of
+        # interpreting a missing contour as free space.
+        self.declare_parameter("infer_occluded_adjacent_plants", True)
+        self.declare_parameter("inferred_obstacle_radius_margin_m", 0.08)
+        self.declare_parameter("inferred_obstacle_default_radius_m", 0.13)
+        self.infer_occluded_adjacent_plants = bool( self.get_parameter("infer_occluded_adjacent_plants").value)
+        self.inferred_obstacle_radius_margin_mm = 1000.0 * float( self.get_parameter("inferred_obstacle_radius_margin_m").value)
+        self.inferred_obstacle_default_radius_mm = 1000.0 * float( self.get_parameter("inferred_obstacle_default_radius_m").value)
+
         # convention: pot 1 is the rightmost pot and IDs increase to the left.
         self.declare_parameter("pot_count", 4)
         self.pot_count = int(self.get_parameter("pot_count").value)
@@ -236,11 +246,12 @@ class PlantCoordinateNode(Node):
         while slot_edges[-1] < img.shape[1]:
             slot_edges.append( min(img.shape[1], int(round(slot_edges[-1] + slot_width))))
 
-        contours = []
-        for zone_top, zone_bottom in ((0, y1), (y2, img.shape[0])):
+        contour_candidates = []
+        obstacle_zones = (("above", 0, y1), ("below", y2, img.shape[0]))
+        for zone_name, zone_top, zone_bottom in obstacle_zones:
             if zone_bottom - zone_top < 2:
                 continue
-            for strip_left, strip_right in zip(slot_edges[:-1], slot_edges[1:]):
+            for strip_index, (strip_left, strip_right) in enumerate( zip(slot_edges[:-1], slot_edges[1:]) ):
                 strip = grouping[zone_top:zone_bottom, strip_left:strip_right]
                 strip_contours, _ = cv2.findContours(strip, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                 valid = [
@@ -252,7 +263,7 @@ class PlantCoordinateNode(Node):
                 contour = max(valid, key=cv2.contourArea).copy()
                 contour[:, 0, 0] += strip_left
                 contour[:, 0, 1] += zone_top
-                contours.append(contour)
+                contour_candidates.append( (zone_name, strip_index, strip_left, strip_right, contour) )
 
         obstacles = [dict(record) for record in selected_records]
         overlay = img.copy()
@@ -262,7 +273,9 @@ class PlantCoordinateNode(Node):
             cv2.circle(overlay, (u, v), 7, (255, 0, 255), -1)
 
         next_id = 1001
-        for contour in contours:
+        detected_slots = set()
+        detected_by_zone = {zone_name: [] for zone_name, _, _ in obstacle_zones}
+        for zone_name, strip_index, strip_left, strip_right, contour in contour_candidates:
             area = cv2.contourArea(contour)
             if area < self.min_area:
                 continue
@@ -301,11 +314,108 @@ class PlantCoordinateNode(Node):
                 "target_y": xyz[1],
                 "target_z": top_depth,
                 "radius_mm": radius_mm,
+                "inferred": False,
             })
+            detected_slots.add((zone_name, strip_index))
+            detected_by_zone[zone_name].append( {"u": u, "v": v, "xy_depth": xy_depth, "top_depth": top_depth} )
             (circle_x, circle_y), circle_radius = cv2.minEnclosingCircle(contour)
             cv2.circle( overlay, (int(circle_x), int(circle_y)), int(circle_radius), (0, 165, 255), 2)
             cv2.putText( overlay, f"O{next_id}", (u, v), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1, cv2.LINE_AA)
             next_id += 1
+
+        if self.infer_occluded_adjacent_plants:
+            selected_v = [
+                float(record["center_v_crop"] + y1)
+                for record in selected_records
+                if record.get("center_v_crop") is not None
+            ]
+            selected_xy_depth = [
+                float(record["target_z"])
+                for record in selected_records
+                if record.get("target_z") is not None
+            ]
+            selected_top_depth = selected_xy_depth
+            selected_radius = [
+                float(record["radius_mm"])
+                for record in selected_records
+                if record.get("radius_mm") is not None
+            ]
+
+            current_row_v = float(np.median(selected_v)) if selected_v else (y1 + y2) / 2.0
+            default_depth = (
+                float(np.median(selected_xy_depth)) if selected_xy_depth
+                else (self.min_depth_mm + self.max_depth_mm) / 2.0
+            )
+            default_top_depth = (
+                float(np.median(selected_top_depth)) if selected_top_depth
+                else default_depth
+            )
+            nominal_radius = (
+                float(np.median(selected_radius)) if selected_radius
+                else self.inferred_obstacle_default_radius_mm
+            )
+            inferred_radius = max(
+                self.inferred_obstacle_default_radius_mm,
+                nominal_radius + self.inferred_obstacle_radius_margin_mm,
+            )
+
+            zone_row_v = {}
+            for zone_name, _, _ in obstacle_zones:
+                observations = detected_by_zone[zone_name]
+                if observations:
+                    zone_row_v[zone_name] = float( np.median([record["v"] for record in observations]) )
+
+            # If the arm hides an entire adjacent row, mirror the visible
+            # opposite row around the selected row.  This uses row spacing in
+            # image space and also works when the inferred centre lies just
+            # outside the image.
+            if "above" not in zone_row_v and "below" in zone_row_v:
+                zone_row_v["above"] = 2.0 * current_row_v - zone_row_v["below"]
+            if "below" not in zone_row_v and "above" in zone_row_v:
+                zone_row_v["below"] = 2.0 * current_row_v - zone_row_v["above"]
+            # One clipped plant at an image edge gives a biased row centre.
+            # Prefer the mirror of a well-observed opposite row in that case.
+            if (len(detected_by_zone["below"]) < 2 and len(detected_by_zone["above"]) >= 2):
+                zone_row_v["below"] = ( 2.0 * current_row_v - zone_row_v["above"])
+            if (len(detected_by_zone["above"]) < 2 and len(detected_by_zone["below"]) >= 2):
+                zone_row_v["above"] = ( 2.0 * current_row_v - zone_row_v["below"] )
+
+            for zone_name, _, _ in obstacle_zones:
+                if zone_name not in zone_row_v:
+                    continue
+                observations = detected_by_zone[zone_name]
+                row_depth = (
+                    float(np.median([record["xy_depth"] for record in observations]))
+                    if observations else default_depth
+                )
+                row_top_depth = (
+                    float(np.median([record["top_depth"] for record in observations]))
+                    if observations else default_top_depth
+                )
+                v = int(round(zone_row_v[zone_name]))
+
+                for strip_index, (strip_left, strip_right) in enumerate( zip(slot_edges[:-1], slot_edges[1:]) ):
+                    # Only the four bench pot columns are guaranteed. The
+                    # extra edge strips exist solely to catch visible foliage
+                    # and must not create imaginary pots beyond the bench.
+                    strip_center = (strip_left + strip_right) / 2.0
+                    if not (x1 <= strip_center < x2):
+                        continue
+                    if (zone_name, strip_index) in detected_slots:
+                        continue
+                    u = int(round(strip_center))
+                    xyz = self.pixel_depth_to_3d( u, v, row_depth, fx, fy, cx, cy)
+                    obstacles.append({
+                        "plant_id": next_id,
+                        "target_x": xyz[0],
+                        "target_y": xyz[1],
+                        "target_z": row_top_depth,
+                        "radius_mm": inferred_radius,
+                        "inferred": True,
+                    })
+                    cv2.circle(overlay, (u, max(0, min(img.shape[0] - 1, v))), 12, (0, 0, 255), 3)
+                    cv2.putText( overlay, f"I{next_id}", (u, max(15, min(img.shape[0] - 5, v))), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA,)
+                    next_id += 1
 
         return obstacles, overlay
 
@@ -488,8 +598,9 @@ class PlantCoordinateNode(Node):
                 obstacle.radius_m = (float(row["radius_mm"]) / 1000.0 if row.get("radius_mm") is not None else 0.05)
                 obstacle_msg.targets.append(obstacle)
             self.obstacle_pub.publish(obstacle_msg)
+            inferred_count = sum( 1 for row in obstacle_records if row.get("inferred", False))
             run_name = (output_dir.name if output_dir is not None else "current frame")
-            self.get_logger().info(f"{run_name}: detected {len(results)} scan targets and " f"{len(obstacle_msg.targets)} full-frame plant obstacles")
+            self.get_logger().info( f"{run_name}: detected {len(results)} scan targets and " f"{len(obstacle_msg.targets)} full-frame plant obstacles " f"({inferred_count} inferred)")
             self.pub_auto_state_cmd.publish(String(data="individual_plant_scan"))
     
             if output_dir is not None:

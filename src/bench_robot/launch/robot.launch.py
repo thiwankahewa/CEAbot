@@ -150,6 +150,7 @@ def generate_launch_description():
         Node(
             package="bench_robot",
             executable="aruco_detector",
+            parameters=[bench_tracker_params],
             output="screen",),
         #Node(
             #package="bench_robot",
@@ -180,6 +181,11 @@ def generate_launch_description():
         Node(
             package="CEAbot_phenotyping",
             executable="plant_row_coordinates",
+            parameters=[{
+                "infer_occluded_adjacent_plants": True,
+                "inferred_obstacle_radius_margin_m": 0.08,
+                "inferred_obstacle_default_radius_m": 0.13,
+            }],
             output="screen",),
         Node(
             package="bench_robot",
