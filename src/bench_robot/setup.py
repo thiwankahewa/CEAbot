@@ -45,6 +45,7 @@ setup(
             'system_stats_publisher = bench_robot.system_stats_publisher:main',
             'handeye_capture = bench_robot.handeye_capture:main',
             'handeye_solve = bench_robot.handeye_solve:main',
+            'handeye_auto = bench_robot.handeye_auto:main',
         ],
     },
 )

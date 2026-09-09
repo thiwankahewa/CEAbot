@@ -25,62 +25,7 @@ from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
 from sensor_msgs.msg import CameraInfo, Image, PointCloud2
 
-
-DICTIONARIES = {
-    name: getattr(cv2.aruco, name)
-    for name in (
-        "DICT_4X4_50",
-        "DICT_4X4_100",
-        "DICT_5X5_50",
-        "DICT_5X5_100",
-        "DICT_6X6_50",
-        "DICT_6X6_100",
-    )
-}
-
-
-def rotation_matrix_to_quaternion(rotation):
-    """Return an xyzw quaternion from a proper 3x3 rotation matrix."""
-    matrix = np.eye(4)
-    matrix[:3, :3] = rotation
-    trace = np.trace(rotation)
-    if trace > 0:
-        scale = np.sqrt(trace + 1.0) * 2
-        return np.array(
-            [
-                (matrix[2, 1] - matrix[1, 2]) / scale,
-                (matrix[0, 2] - matrix[2, 0]) / scale,
-                (matrix[1, 0] - matrix[0, 1]) / scale,
-                0.25 * scale,
-            ]
-        )
-    diagonal = np.diag(matrix[:3, :3])
-    index = int(np.argmax(diagonal))
-    if index == 0:
-        scale = np.sqrt(1 + matrix[0, 0] - matrix[1, 1] - matrix[2, 2]) * 2
-        quaternion = [
-            0.25 * scale,
-            (matrix[0, 1] + matrix[1, 0]) / scale,
-            (matrix[0, 2] + matrix[2, 0]) / scale,
-            (matrix[2, 1] - matrix[1, 2]) / scale,
-        ]
-    elif index == 1:
-        scale = np.sqrt(1 + matrix[1, 1] - matrix[0, 0] - matrix[2, 2]) * 2
-        quaternion = [
-            (matrix[0, 1] + matrix[1, 0]) / scale,
-            0.25 * scale,
-            (matrix[1, 2] + matrix[2, 1]) / scale,
-            (matrix[0, 2] - matrix[2, 0]) / scale,
-        ]
-    else:
-        scale = np.sqrt(1 + matrix[2, 2] - matrix[0, 0] - matrix[1, 1]) * 2
-        quaternion = [
-            (matrix[0, 2] + matrix[2, 0]) / scale,
-            (matrix[1, 2] + matrix[2, 1]) / scale,
-            0.25 * scale,
-            (matrix[1, 0] - matrix[0, 1]) / scale,
-        ]
-    return np.asarray(quaternion)
+from bench_robot.handeye_geometry import DICTIONARIES, rotation_matrix_to_quaternion
 
 
 def transform_to_dict(transform):
@@ -305,7 +250,7 @@ class HandEyeCapture(Node):
         self.cached_display = display
         return display
 
-    def capture(self):
+    def capture(self, require_timestamped_tf=False, max_reprojection_rmse=None):
         if self.latest_detection is None or self.latest_camera_info is None:
             self.get_logger().warn("No synchronized image/camera info available")
             return
@@ -325,6 +270,9 @@ class HandEyeCapture(Node):
                 timeout=Duration(seconds=1.0),
             )
         except Exception as exc:
+            if require_timestamped_tf:
+                self.get_logger().warn(f"Exact image-timestamp TF unavailable: {exc}")
+                return
             self.get_logger().warn(
                 f"Timestamped TF lookup failed ({exc}); trying latest TF. "
                 "Only capture while the arm is completely stationary."
@@ -371,8 +319,6 @@ class HandEyeCapture(Node):
         quaternion = rotation_matrix_to_quaternion(rotation_matrix)
         index = len(self.observations) + 1
         image_name = f"capture_{index:03d}.png"
-        cv2.imwrite(str(self.output_dir / image_name), image)
-
         projected, _ = cv2.projectPoints(
             object_points,
             rotation_vector,
@@ -389,6 +335,14 @@ class HandEyeCapture(Node):
                 )
             )
         )
+        if not np.isfinite(reprojection_rmse) or (
+            max_reprojection_rmse is not None
+            and reprojection_rmse > max_reprojection_rmse
+        ):
+            self.get_logger().warn("Board reprojection error too high; capture skipped")
+            return
+        if not cv2.imwrite(str(self.output_dir / image_name), image):
+            raise RuntimeError(f"Could not save {image_name}")
         observation = {
             "index": index,
             "image": image_name,
@@ -427,6 +381,7 @@ class HandEyeCapture(Node):
             f"reprojection RMSE={reprojection_rmse:.3f} px, "
             f"TF age={tf_age_seconds:.3f} s"
         )
+        return observation
 
     def capture_validation(self):
         now = time.monotonic()
@@ -602,7 +557,7 @@ class HandEyeCapture(Node):
         os.replace(temporary_path, final_path)
 
 
-def parse_arguments():
+def argument_parser():
     parser = argparse.ArgumentParser(
         description="Interactively capture ChArUco eye-in-hand observations."
     )
@@ -646,7 +601,11 @@ def parse_arguments():
         default=0.10,
         help="Maximum RGB/cloud timestamp separation for validation captures",
     )
-    return parser.parse_known_args()
+    return parser
+
+
+def parse_arguments():
+    return argument_parser().parse_known_args()
 
 
 def main():

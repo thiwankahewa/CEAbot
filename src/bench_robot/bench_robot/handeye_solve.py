@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 import yaml
 
-from bench_robot.handeye_capture import DICTIONARIES, rotation_matrix_to_quaternion
+from bench_robot.handeye_geometry import DICTIONARIES, rotation_matrix_to_quaternion
 
 
 METHODS = {
@@ -78,6 +78,8 @@ def redetect_board_poses(session_dir, document, maximum_tf_age):
         if abs(float(observation.get("robot_tf_age_seconds", 0.0))) > maximum_tf_age:
             continue
         image = cv2.imread(str(session_dir / observation["image"]))
+        if image is None:
+            continue
         corners, ids, _, _ = detector.detectBoard(image)
         if ids is None or len(ids) < 8:
             continue
@@ -153,37 +155,60 @@ def score_solution(robot_poses, board_poses, end_effector_from_camera):
     }
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Solve eye-in-hand AX=XB calibration.")
-    parser.add_argument("session_dir", type=Path)
-    parser.add_argument("--max-translation-rms-mm", type=float, default=5.0)
-    parser.add_argument("--max-rotation-rms-deg", type=float, default=1.0)
-    parser.add_argument(
-        "--max-tf-age",
-        type=float,
-        default=0.1,
-        help="Exclude observations whose robot TF differs more than this many seconds",
-    )
-    args = parser.parse_args()
+def check_motion_diversity(robot_poses):
+    """Reject repeated poses and rotations about only one axis."""
+    rotations = np.asarray([
+        cv2.Rodrigues(robot_poses[0][:3, :3].T @ pose[:3, :3])[0].ravel()
+        for pose in robot_poses[1:]
+    ])
+    singular_values = np.linalg.svd(rotations, compute_uv=False)
+    if len(singular_values) < 2 or singular_values[1] < np.radians(5):
+        raise RuntimeError("Insufficient rotation diversity: capture rotations about "
+                           "at least two different axes")
+    return np.degrees(singular_values).tolist()
 
-    session_dir = args.session_dir.expanduser().resolve()
+
+def solve_session(session_dir, max_translation_rms_mm=5.0,
+                  max_rotation_rms_deg=1.0, max_tf_age=0.1):
+    """Solve a saved session and return its report (also written to YAML)."""
+    limits = np.asarray([max_translation_rms_mm, max_rotation_rms_deg, max_tf_age])
+    if not np.isfinite(limits).all() or np.any(limits <= 0):
+        raise ValueError("Solver limits must be finite and positive")
+
+    session_dir = Path(session_dir).expanduser().resolve()
     with (session_dir / "observations.yaml").open("r", encoding="utf-8") as stream:
         document = yaml.safe_load(stream)
     robot_poses, board_poses, indices, reprojection = redetect_board_poses(
-        session_dir, document, args.max_tf_age
+        session_dir, document, max_tf_age
     )
     if len(robot_poses) < 10:
         raise RuntimeError(f"Only {len(robot_poses)} usable observations")
+    frames = {(obs["base_frame"], obs["end_effector_frame"], obs["camera_frame"])
+              for obs in document["observations"] if obs["index"] in indices}
+    if len(frames) != 1:
+        raise RuntimeError("Observations contain inconsistent coordinate frames")
+    base_frame, end_effector_frame, camera_frame = frames.pop()
+    diversity = check_motion_diversity(robot_poses)
 
     results = {}
+    failed_methods = {}
     for name, method in METHODS.items():
-        rotation, translation = cv2.calibrateHandEye(
-            [pose[:3, :3] for pose in robot_poses],
-            [pose[:3, 3] for pose in robot_poses],
-            [pose[:3, :3] for pose in board_poses],
-            [pose[:3, 3] for pose in board_poses],
-            method=method,
-        )
+        try:
+            rotation, translation = cv2.calibrateHandEye(
+                [pose[:3, :3] for pose in robot_poses],
+                [pose[:3, 3] for pose in robot_poses],
+                [pose[:3, :3] for pose in board_poses],
+                [pose[:3, 3] for pose in board_poses],
+                method=method,
+            )
+        except cv2.error as exc:
+            failed_methods[name] = str(exc)
+            continue
+        if (not np.isfinite(rotation).all() or not np.isfinite(translation).all()
+                or not np.allclose(rotation.T @ rotation, np.eye(3), atol=1e-5)
+                or not np.isclose(np.linalg.det(rotation), 1.0, atol=1e-5)):
+            failed_methods[name] = "Non-finite or invalid rigid transform"
+            continue
         transform = np.eye(4)
         transform[:3, :3] = rotation
         transform[:3, 3] = translation.ravel()
@@ -192,37 +217,43 @@ def main():
             "end_effector_from_camera": transform_result(transform),
             "validation": score,
         }
+    if not results:
+        raise RuntimeError(f"All hand-eye methods failed: {failed_methods}")
 
     ranking = sorted(
         results,
         key=lambda name: (
             results[name]["validation"]["translation_rms_mm"]
-            / args.max_translation_rms_mm
+            / max_translation_rms_mm
             + results[name]["validation"]["rotation_rms_deg"]
-            / args.max_rotation_rms_deg
+            / max_rotation_rms_deg
         ),
     )
     accepted_methods = [
         name
         for name in ranking
         if results[name]["validation"]["translation_rms_mm"]
-        <= args.max_translation_rms_mm
+        <= max_translation_rms_mm
         and results[name]["validation"]["rotation_rms_deg"]
-        <= args.max_rotation_rms_deg
+        <= max_rotation_rms_deg
     ]
     best = accepted_methods[0] if accepted_methods else ranking[0]
-    best_score = results[best]["validation"]
     accepted = bool(accepted_methods)
     output = {
         "accepted": accepted,
+        "base_frame": base_frame,
+        "end_effector_frame": end_effector_frame,
+        "camera_frame": camera_frame,
+        "rotation_excitation_singular_values_deg": diversity,
+        "failed_methods": failed_methods,
         "best_method": best,
         "accepted_methods": accepted_methods,
         "acceptance_limits": {
-            "translation_rms_mm": args.max_translation_rms_mm,
-            "rotation_rms_deg": args.max_rotation_rms_deg,
+            "translation_rms_mm": max_translation_rms_mm,
+            "rotation_rms_deg": max_rotation_rms_deg,
         },
         "usable_observations": len(robot_poses),
-        "maximum_tf_age_seconds": args.max_tf_age,
+        "maximum_tf_age_seconds": max_tf_age,
         "observation_indices": indices,
         "reprojection_rmse_px": {
             "median": float(np.median(reprojection)),
@@ -244,7 +275,19 @@ def main():
         )
     print(f"Best: {best}; accepted={accepted}")
     print(f"Saved {output_path}")
-    if not accepted:
+    return output
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Solve eye-in-hand AX=XB calibration.")
+    parser.add_argument("session_dir", type=Path)
+    parser.add_argument("--max-translation-rms-mm", type=float, default=5.0)
+    parser.add_argument("--max-rotation-rms-deg", type=float, default=1.0)
+    parser.add_argument("--max-tf-age", type=float, default=0.1)
+    args = parser.parse_args()
+    result = solve_session(args.session_dir, args.max_translation_rms_mm,
+                           args.max_rotation_rms_deg, args.max_tf_age)
+    if not result["accepted"]:
         raise SystemExit(2)
 
 
