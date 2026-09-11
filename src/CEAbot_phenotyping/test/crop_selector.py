@@ -1,73 +1,80 @@
 import cv2
+import matplotlib.pyplot as plt
+from matplotlib.widgets import RectangleSelector
 
-IMAGE_PATH = "/home/thiwa/scan_data_zed/b1_r17_20260706_153034/color.png"
+IMAGE_PATH = "/home/thiwa/scan_data/b1_r12_20260911_110915/color.png"
 
-img = cv2.imread(IMAGE_PATH)
-if img is None:
-    raise FileNotFoundError(f"Could not read image: {IMAGE_PATH}")
+def main():
+    img = cv2.imread(IMAGE_PATH)
+    if img is None:
+        raise FileNotFoundError(f"Could not read image: {IMAGE_PATH}")
 
-clone = img.copy()
+    height, width = img.shape[:2]
+    # Use Matplotlib for windows: headless OpenCV still supports image I/O.
+    fig, ax = plt.subplots(figsize=(9, 6))
+    fig.canvas.manager.set_window_title("Select Crop")
+    ax.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB),
+              extent=(0, width, height, 0))
+    ax.set_title("Drag with left mouse button to crop. Press q to quit.")
+    preview = None
 
-crop_points = []
-cropping = False
+    def select_crop(press, release):
+        nonlocal preview
+        if any(value is None for value in
+               (press.xdata, press.ydata, release.xdata, release.ydata)):
+            return
 
+        x_min, x_max = sorted(
+            max(0, min(width, round(x))) for x in (press.xdata, release.xdata)
+        )
+        y_min, y_max = sorted(
+            max(0, min(height, round(y))) for y in (press.ydata, release.ydata)
+        )
+        if x_min == x_max or y_min == y_max:
+            return
 
-def mouse_callback(event, x, y, flags, param):
-    global crop_points, cropping, clone
-
-    if event == cv2.EVENT_LBUTTONDOWN:
-        crop_points = [(x, y)]
-        cropping = True
-
-    elif event == cv2.EVENT_MOUSEMOVE and cropping:
-        temp = clone.copy()
-        cv2.rectangle(temp, crop_points[0], (x, y), (0, 255, 0), 2)
-        cv2.imshow("Select Crop", temp)
-
-    elif event == cv2.EVENT_LBUTTONUP:
-        crop_points.append((x, y))
-        cropping = False
-
-        x1, y1 = crop_points[0]
-        x2, y2 = crop_points[1]
-
-        # Make sure coordinates are ordered correctly
-        x_min = min(x1, x2)
-        y_min = min(y1, y2)
-        x_max = max(x1, x2)
-        y_max = max(y1, y2)
-
-        crop = clone[y_min:y_max, x_min:x_max]
+        crop = img[y_min:y_max, x_min:x_max]
+        if not cv2.imwrite("cropped_image.png", crop):
+            raise OSError("Could not save cropped_image.png")
 
         print("\nCrop coordinates:")
-        print(f"x1 = {x_min}")
-        print(f"y1 = {y_min}")
-        print(f"x2 = {x_max}")
-        print(f"y2 = {y_max}")
-
+        print(f"x1 = {x_min}\ny1 = {y_min}\nx2 = {x_max}\ny2 = {y_max}")
         print("\nCrop resolution:")
-        print(f"width  = {x_max - x_min}")
-        print(f"height = {y_max - y_min}")
-
-        cv2.imshow("Cropped Image", crop)
-        cv2.imwrite("cropped_image.png", crop)
+        print(f"width  = {x_max - x_min}\nheight = {y_max - y_min}")
         print("\nSaved as cropped_image.png")
 
+        if preview is None or not plt.fignum_exists(preview.number):
+            preview, _ = plt.subplots()
+            preview.canvas.manager.set_window_title("Cropped Image")
+            preview.canvas.mpl_connect("key_press_event", on_key)
+        preview_ax = preview.axes[0]
+        preview_ax.clear()
+        preview_ax.imshow(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
+        preview.canvas.draw_idle()
+        preview.show()
 
-cv2.namedWindow("Select Crop", cv2.WINDOW_NORMAL)
-cv2.resizeWindow("Select Crop", 900, 600)
+    def on_key(event):
+        if event.key == "q":
+            plt.close(fig)
+            if preview is not None:
+                plt.close(preview)
 
-cv2.setMouseCallback("Select Crop", mouse_callback)
+    def on_close(event):
+        if preview is not None:
+            plt.close(preview)
 
-print("Drag with left mouse button to select crop area.")
-print("Press q to quit.")
+    # Keep a reference so the selector stays active throughout plt.show().
+    selector = RectangleSelector(
+        ax, select_crop, button=[1], minspanx=1, minspany=1,
+        spancoords="data", interactive=True,
+    )
+    fig.canvas.mpl_connect("key_press_event", on_key)
+    fig.canvas.mpl_connect("close_event", on_close)
+    print("Drag with left mouse button to select crop area.")
+    print("Press q to quit.")
+    plt.show()
+    selector.set_active(False)
 
-while True:
-    cv2.imshow("Select Crop", clone)
 
-    key = cv2.waitKey(1) & 0xFF
-
-    if key == ord("q"):
-        break
-
-cv2.destroyAllWindows()
+if __name__ == "__main__":
+    main()

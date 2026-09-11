@@ -27,10 +27,10 @@ class PlantCoordinateNode(Node):
         self.pending_process = False
 
         # tuned using src/CEAbot_phenotyping/test/crop_selector.py
-        self.x1 = 176
-        self.y1 = 379
-        self.x2 = 1124
-        self.y2 = 631
+        self.x1 = 93
+        self.y1 = 298
+        self.x2 = 1157
+        self.y2 = 551
 
         # tuned using src/CEAbot_phenotyping/test/plant_segmentation_tuner.py
         self.lower_green = np.array([35, 27, 10])
