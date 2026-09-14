@@ -136,8 +136,6 @@ class PlantViewScanner(MoveItArmHelper):
             self.get_logger().warn("No targets received yet")
             return
 
-        self.get_logger().info(f"Starting plant scan with {len(self.latest_targets)} targets")
-
         self.scan_busy = True
         self.stop_scan = False
         threading.Thread(target=self.run_scan_thread, daemon=True).start()
@@ -887,12 +885,6 @@ class PlantViewScanner(MoveItArmHelper):
                 )
                 failed_items.append(item)
                 continue
-
-            self.get_logger().info(
-                f"Online step {step} candidate {i + 1}/{candidate_count}: "
-                f"{plan_label} -> duration={self.trajectory_duration(trajectory):.3f}s, "
-                f"joint_distance={cost:.4f}rad"
-            )
 
             duration = self.trajectory_duration(trajectory)
             is_better = (

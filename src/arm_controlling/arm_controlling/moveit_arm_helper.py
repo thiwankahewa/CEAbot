@@ -387,7 +387,6 @@ class MoveItArmHelper(Node):
                     all_close = False
 
             if all_close:
-                self.get_logger().info("Reached final trajectory point")
                 return True
 
             if len(self.current_joint_state.velocity) > 0:
