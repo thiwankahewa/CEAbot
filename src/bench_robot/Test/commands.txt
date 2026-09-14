@@ -35,7 +35,92 @@ ros2 launch bench_robot full_robot.launch.py robot_ip:=192.168.1.10 use_rviz:=fa
 ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zedm
 ros2 run orbbec_camera list_devices_node
 
-#---Gemini 305 end-effector capture pipeline test
+#---ChArUco calibration: latest terminal commands (2026-09-09)
+# Run each block on the indicated machine, not this whole file as a script.
+# Last blocker: ros2_control_node crashed after BaseCyclicClient::Refresh timeout.
+# Next session: restart the existing Jetson robot launch and verify arm TF first.
+# Camera detection verified: 5 x 7 layout, DICT_4X4_50, 17 markers / 24 corners.
+# Measure the printed square/marker lengths; 0.030 / 0.022 m are still assumed.
+
+# 1. JETSON: rebuild only if code changed, then source the workspace.
+cd /home/thiwa/CEAbot
+source /opt/ros/humble/setup.bash
+colcon build --packages-select bench_robot --symlink-install
+source /home/thiwa/CEAbot/install/setup.bash
+
+# 2. JETSON robot terminal: Ctrl+C the old full_robot launch before restarting.
+# launch_arm_controller:=false disables arm_manager and plant_view_scanner;
+# the hardware driver and joint-state broadcaster still start.
+ros2 launch bench_robot full_robot.launch.py \
+  robot_ip:=192.168.1.10 use_rviz:=false launch_arm_controller:=false
+
+# 3. ANOTHER JETSON terminal: confirm connected, updating robot transforms.
+source /home/thiwa/CEAbot/install/setup.bash
+timeout 10 ros2 run tf2_ros tf2_echo base_link end_effector_link
+# Expect translation/rotation output. If absent, inspect driver errors before capture.
+timeout 8 ros2 topic echo /joint_states --once --qos-reliability best_effort
+
+# 4. JETSON: copy the Pi bridge when it has changed, then connect to the Pi.
+scp /home/thiwa/CEAbot/src/bench_robot/bench_robot/handeye_remote.py \
+  thiwa@10.20.0.200:/home/thiwa/handeye_remote.py
+ssh thiwa@10.20.0.200
+
+# 5. PI: source ROS and check that the normal camera service is running.
+source /home/thiwa/CEAbot_Rpi/systemd_boot_setup/ros_jazzy.bash
+systemctl --no-pager --full status orbbec-camera.service
+# If inactive:
+# sudo systemctl start orbbec-camera.service
+# If running but no images arrive, restart it and wait about 10 seconds:
+# sudo systemctl restart orbbec-camera.service
+
+# Stop an old bridge before launching a replacement:
+# - Foreground bridge: Ctrl+C in its terminal.
+# - Background bridge: find its PID below, then run kill <PID> with that number.
+pgrep -af handeye_remote.py
+
+# Start ONE bridge. Background mode survives an SSH disconnection.
+# If CEABOT_CAPTURE_TOKEN is used, set the same value in Pi and Jetson terminals.
+nohup python3 /home/thiwa/handeye_remote.py --port 8081 \
+  > /home/thiwa/handeye_preview.log 2>&1 < /dev/null &
+tail -n 20 /home/thiwa/handeye_preview.log
+
+# PI diagnostics: /status does not encode or download an image.
+curl -sS --max-time 3 -H "Authorization: Bearer $CEABOT_CAPTURE_TOKEN" \
+  http://127.0.0.1:8081/status | python3 -m json.tool
+# If image or camera_info is null, check actual delivery:
+timeout 8 ros2 topic echo /gemini336/color/image_raw \
+  --once --field header --qos-reliability best_effort
+timeout 8 ros2 topic echo /gemini336/color/camera_info \
+  --once --qos-reliability best_effort
+
+# 6. JETSON capture terminal: manual capture without continuous preview.
+# The measured image age was about 0.48 s; allow 1 s for manual transfer/detection.
+# Exact image-timestamp TF is still required. Keep Pi/Jetson clocks synchronized.
+source /home/thiwa/CEAbot/install/setup.bash
+ros2 run bench_robot handeye_capture \
+  --rpi-url http://10.20.0.200:8081 \
+  --no-preview --remote-max-age 1.0 \
+  --squares-x 5 --squares-y 7 \
+  --square-length 0.030 --marker-length 0.022 \
+  --dictionary DICT_4X4_50
+# Keep board fixed and arm completely still; Enter captures, q + Enter quits.
+# Sessions: /home/thiwa/scan_data/handeye_calibration/handeye_<timestamp>/
+
+# OPTIONAL: continuous camera preview instead of the manual command above.
+# Stop the manual capture process before starting this alternative.
+ros2 run bench_robot handeye_capture \
+  --rpi-url http://10.20.0.200:8081 --remote-max-age 1.0 \
+  --squares-x 5 --squares-y 7 \
+  --square-length 0.030 --marker-length 0.022 --dictionary DICT_4X4_50
+# SPACE captures while stationary; Q quits.
+
+# OPTIONAL: automatic target preview only (no motion); use after manual capture works.
+# Automatic mode retains its stricter default 0.5 s sensor-age check.
+ros2 run bench_robot handeye_auto --rpi-url http://10.20.0.200:8081 \
+  --camera-mount-frame gemini305_color_optical_frame \
+  --squares-x 5 --squares-y 7 --square-length 0.030 --marker-length 0.022
+
+#---Existing Pi scan capture pipeline test
 # Run the following block on the Raspberry Pi. Stop the boot services before a
 # manual launch so that two processes do not try to control the camera.
 sudo systemctl stop ceabot-capture.service

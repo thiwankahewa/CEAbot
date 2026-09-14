@@ -46,6 +46,7 @@ setup(
             'handeye_capture = bench_robot.handeye_capture:main',
             'handeye_solve = bench_robot.handeye_solve:main',
             'handeye_auto = bench_robot.handeye_auto:main',
+            'handeye_preview = bench_robot.handeye_remote:main',
         ],
     },
 )

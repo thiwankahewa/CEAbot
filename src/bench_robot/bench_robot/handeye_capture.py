@@ -26,6 +26,7 @@ from rclpy.time import Time
 from sensor_msgs.msg import CameraInfo, Image, PointCloud2
 
 from bench_robot.handeye_geometry import DICTIONARIES, rotation_matrix_to_quaternion
+from bench_robot.handeye_remote import RemoteCamera
 
 
 def transform_to_dict(transform):
@@ -125,6 +126,10 @@ class HandEyeCapture(Node):
         self.observations = []
         self.validation_count = 0
         self.last_validation_capture_time = 0.0
+        self.remote_camera = None
+        self.remote_record = None
+        self.remote_model = None
+        self.last_remote_warning = 0.0
 
         dictionary = cv2.aruco.getPredefinedDictionary(
             DICTIONARIES[args.dictionary]
@@ -141,26 +146,79 @@ class HandEyeCapture(Node):
 
         # Sensor-data QoS keeps only fresh images instead of building a stale
         # reliable queue while ChArUco rendering is busy.
-        self.create_subscription(
-            Image,
-            args.image_topic,
-            self.image_callback,
-            qos_profile_sensor_data,
-        )
-        self.create_subscription(
-            CameraInfo, args.camera_info_topic, self.camera_info_callback, 10
-        )
-        self.create_subscription(
-            PointCloud2,
-            args.cloud_topic,
-            self.cloud_callback,
-            qos_profile_sensor_data,
-        )
+        if not args.rpi_url:
+            self.create_subscription(
+                Image, args.image_topic, self.image_callback, qos_profile_sensor_data)
+            self.create_subscription(
+                CameraInfo, args.camera_info_topic, self.camera_info_callback,
+                qos_profile_sensor_data)
+            self.create_subscription(
+                PointCloud2, args.cloud_topic, self.cloud_callback, qos_profile_sensor_data)
 
         session_name = datetime.now().strftime("handeye_%Y%m%d_%H%M%S")
         self.output_dir = args.output_dir.expanduser() / session_name
         self.output_dir.mkdir(parents=True, exist_ok=False)
         self.get_logger().info(f"Saving observations to {self.output_dir}")
+        if args.rpi_url:
+            self.remote_camera = RemoteCamera(
+                args.rpi_url, os.environ.get("CEABOT_CAPTURE_TOKEN", ""),
+                args.remote_rate, args.remote_timeout, poll=not args.no_preview)
+            mode = "on-demand capture" if args.no_preview else "RGB preview"
+            self.get_logger().info(f"Pi {mode} at {args.rpi_url}")
+
+    def capture_on_demand(self):
+        """Fetch once on user input; never save an earlier preview detection."""
+        self.latest_detection = None
+        try:
+            self.remote_camera.latest = self.remote_camera.fetch(fresh=True)
+            self.remote_camera.error = None
+        except Exception as exc:
+            self.remote_camera.error = str(exc)
+            self.get_logger().warning(f"Capture request failed: {exc}")
+            return
+        self.cached_display = None
+        self.render()
+        return self.capture()
+
+    def destroy_node(self):
+        if self.remote_camera is not None:
+            self.remote_camera.close()
+        return super().destroy_node()
+
+    def refresh_remote(self):
+        source = self.remote_camera
+        if source is None:
+            return
+        record = source.latest
+        if record is not None and record is not self.remote_record:
+            frame, info, stamp, frame_id = record
+            model = (frame_id, info["width"], info["height"], tuple(info["k"]),
+                     tuple(info["d"]), info["distortion_model"])
+            if self.remote_model is not None and model != self.remote_model:
+                raise RuntimeError("Pi camera frame/intrinsics changed; start a new calibration session")
+            self.remote_model = model
+            message = self.bridge.cv2_to_imgmsg(frame, encoding="bgr8")
+            message.header.stamp.sec = stamp["sec"]
+            message.header.stamp.nanosec = stamp["nanosec"]
+            message.header.frame_id = frame_id
+            camera_info = CameraInfo()
+            camera_info.header = message.header
+            camera_info.width, camera_info.height = info["width"], info["height"]
+            camera_info.k = [float(v) for v in info["k"]]
+            camera_info.d = [float(v) for v in info["d"]]
+            camera_info.distortion_model = info["distortion_model"]
+            self.latest_camera_info, self.latest_image_msg = camera_info, message
+            self.remote_record = record
+        if source.error and time.monotonic() - self.last_remote_warning > 5.:
+            self.get_logger().warning(source.error)
+            self.last_remote_warning = time.monotonic()
+
+    def remote_image_fresh(self, message):
+        if self.remote_camera is None:
+            return True
+        stamp = message.header.stamp
+        age = (self.get_clock().now().nanoseconds - stamp.sec * 10**9 - stamp.nanosec) / 1e9
+        return self.remote_camera.error is None and 0 <= age <= self.args.remote_max_age
 
     def image_callback(self, message):
         self.latest_image_msg = message
@@ -172,12 +230,14 @@ class HandEyeCapture(Node):
         self.latest_cloud_msg = message
 
     def render(self):
+        self.refresh_remote()
         image_message = self.latest_image_msg
         if image_message is None:
             frame = np.zeros((480, 800, 3), dtype=np.uint8)
             cv2.putText(
                 frame,
-                f"Waiting for {self.args.image_topic}",
+                "Waiting for Pi HTTP preview (see terminal)" if self.remote_camera
+                else f"Waiting for {self.args.image_topic}",
                 (30, 60),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.8,
@@ -219,6 +279,7 @@ class HandEyeCapture(Node):
         ready = (
             corner_count >= self.args.minimum_corners
             and self.latest_camera_info is not None
+            and self.remote_image_fresh(image_message)
         )
         color = (0, 220, 0) if ready else (0, 180, 255)
         status = (
@@ -226,6 +287,8 @@ class HandEyeCapture(Node):
             if ready
             else f"NOT READY: {corner_count}/{self.args.minimum_corners} corners"
         )
+        if not self.remote_image_fresh(image_message):
+            status = "NOT READY: Pi feed stale/disconnected; check clocks"
         cv2.putText(
             display, status, (20, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2
         )
@@ -240,7 +303,8 @@ class HandEyeCapture(Node):
         )
         cv2.putText(
             display,
-            "SPACE=calibration   C=RGB+cloud validation   Q=quit",
+            "SPACE=calibration   Q=quit (Pi RGB mode)" if self.remote_camera
+            else "SPACE=calibration   C=RGB+cloud validation   Q=quit",
             (20, 102),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.58,
@@ -255,6 +319,11 @@ class HandEyeCapture(Node):
             self.get_logger().warn("No synchronized image/camera info available")
             return
         corners, ids, image_message, image = self.latest_detection
+        if not self.remote_image_fresh(image_message):
+            self.get_logger().warn("Pi image stale/unavailable. Check feed and Pi/Jetson clock sync")
+            return
+        # Remote transport delay must never be hidden by a latest-pose fallback.
+        require_timestamped_tf = require_timestamped_tf or self.remote_camera is not None
         if ids is None or len(ids) < self.args.minimum_corners:
             self.get_logger().warn("Not enough ChArUco corners; capture skipped")
             return
@@ -384,6 +453,9 @@ class HandEyeCapture(Node):
         return observation
 
     def capture_validation(self):
+        if self.remote_camera is not None:
+            self.get_logger().warn("Pi preview carries RGB only; C requires ROS RGB+cloud input")
+            return
         now = time.monotonic()
         if now - self.last_validation_capture_time < 1.0:
             return
@@ -533,6 +605,7 @@ class HandEyeCapture(Node):
         camera_info = self.latest_camera_info
         document = {
             "capture_type": "eye_in_hand_hand_eye_calibration",
+            "image_source": "pi_http" if self.remote_camera is not None else "ros",
             "board": {
                 "type": "charuco",
                 "squares_x": self.args.squares_x,
@@ -567,6 +640,13 @@ def argument_parser():
         default=Path("/home/thiwa/scan_data/handeye_calibration"),
     )
     parser.add_argument("--image-topic", default="/gemini336/color/image_raw")
+    parser.add_argument("--rpi-url", help="Pi preview URL, e.g. http://10.20.0.200:8081; overrides ROS input")
+    parser.add_argument("--no-preview", action="store_true",
+                        help="Manual Pi capture: Enter requests one image, q quits; no window or polling")
+    parser.add_argument("--remote-rate", type=float, default=5., help="Pi preview polling rate, Hz")
+    parser.add_argument("--remote-timeout", type=float, default=2., help="HTTP timeout, seconds")
+    parser.add_argument("--remote-max-age", type=float, default=0.5,
+                        help="Maximum Pi image age, seconds; requires synchronized clocks")
     parser.add_argument(
         "--camera-info-topic", default="/gemini336/color/camera_info"
     )
@@ -605,7 +685,24 @@ def argument_parser():
 
 
 def parse_arguments():
-    return argument_parser().parse_known_args()
+    parser = argument_parser()
+    args, ros_args = parser.parse_known_args()
+    validate_remote_arguments(parser, args)
+    return args, ros_args
+
+
+def validate_remote_arguments(parser, args):
+    from urllib.parse import urlsplit
+    if args.no_preview and not args.rpi_url:
+        parser.error("--no-preview requires --rpi-url")
+    if args.rpi_url:
+        url = urlsplit(args.rpi_url)
+        if (url.scheme not in ("http", "https") or not url.hostname or url.username
+                or url.password or url.query or url.fragment):
+            parser.error("--rpi-url must be an HTTP(S) URL without credentials, query or fragment")
+    for key in ("remote_rate", "remote_timeout", "remote_max_age", "display_rate"):
+        if not np.isfinite(getattr(args, key)) or getattr(args, key) <= 0:
+            parser.error(f"--{key.replace('_', '-')} must be finite and positive")
 
 
 def main():
@@ -616,24 +713,41 @@ def main():
     executor.add_node(node)
     executor_thread = threading.Thread(target=executor.spin, daemon=True)
     executor_thread.start()
-    window = "Gemini336 Hand-Eye Calibration"
-    cv2.namedWindow(window, cv2.WINDOW_NORMAL)
+    window = "Hand-Eye Calibration" + (" - Pi camera" if args.rpi_url else "")
     try:
-        while rclpy.ok():
-            cv2.imshow(window, node.render())
-            key = cv2.waitKey(1) & 0xFF
-            if key in (ord("q"), 27):
-                break
-            if key == ord(" "):
-                node.capture()
-            if key in (ord("c"), ord("C")):
-                node.capture_validation()
+        if args.no_preview:
+            terminal_capture(node)
+        else:
+            cv2.namedWindow(window, cv2.WINDOW_NORMAL)
+            while rclpy.ok():
+                cv2.imshow(window, node.render())
+                key = cv2.waitKey(1) & 0xFF
+                if key in (ord("q"), 27):
+                    break
+                if key == ord(" "):
+                    node.capture()
+                if key in (ord("c"), ord("C")):
+                    node.capture_validation()
+    except (KeyboardInterrupt, EOFError):
+        pass
     finally:
-        cv2.destroyAllWindows()
+        if not args.no_preview:
+            cv2.destroyAllWindows()
         executor.shutdown()
         executor_thread.join(timeout=2.0)
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+def terminal_capture(node):
+    print("Keep the board fixed and arm completely still. No camera preview or background polling.")
+    while rclpy.ok():
+        command = input("Enter = capture one observation; q + Enter = quit: ").strip().lower()
+        if command == "q":
+            break
+        if not command:
+            node.capture_on_demand()
 
 
 if __name__ == "__main__":
