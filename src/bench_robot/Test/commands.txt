@@ -193,9 +193,8 @@ python3 /home/thiwa/CEAbot/src/CEAbot_phenotyping/test/plant_segmentation_tuner.
 
 python3 ~/CEAbot/src/bench_robot/Test/publish_zed_top_scan_folder.py /home/thiwa/scan_data_zed/b1_r15_20260608_133520 --trigger
 
-python3 ~/CEAbot/src/CEAbot_phenotyping/test/reconstruct_plant_views.py \
-  /home/thiwa/scan_data_zed/b1_r15_20260608_133520
-    --color-by-view \
+OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 /tmp/ceabot-registration-venv/bin/python /home/thiwa/CEAbot/src/CEAbot_phenotyping/test/reconstruct_plant_views.py /home/thiwa/scan_data/b1_r19_20260914_115521 --robust-icp --no-baseline --pairing all --views 3 --voxel-size 0 --min-depth 0.08
+
 
 ros2 topic pub --once /plant_row/targets arm_interfaces/msg/PlantTargetArray \
 "{run_dir: '/home/thiwa/scan_data/b1_r13_20260709_144506', targets: [
