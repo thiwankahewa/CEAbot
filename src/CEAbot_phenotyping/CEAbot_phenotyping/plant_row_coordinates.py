@@ -11,6 +11,7 @@ from std_msgs.msg import String
 from sensor_msgs.msg import Image, CameraInfo
 from cv_bridge import CvBridge
 from arm_interfaces.msg import PlantTarget, PlantTargetArray
+from CEAbot_phenotyping.row_segmentation import draw_row_guides, select_row_contours
 
 class PlantCoordinateNode(Node):
     def __init__(self):
@@ -38,6 +39,14 @@ class PlantCoordinateNode(Node):
         self.lower_yellow = np.array([20, 80, 100])
         self.upper_yellow = np.array([38, 255, 255])
         self.min_area = 2000
+        self.declare_parameter("row_min_area", 500.0)
+        self.declare_parameter("row_band_pct", 50.0)
+        self.row_min_area = float(self.get_parameter("row_min_area").value)
+        self.row_band_pct = float(self.get_parameter("row_band_pct").value)
+        if not np.isfinite(self.row_min_area) or self.row_min_area < 0:
+            raise ValueError("row_min_area must be finite and nonnegative")
+        if not 0 <= self.row_band_pct <= 100:
+            raise ValueError("row_band_pct must be between 0 and 100")
         self.kernel_size = 4
         self.top_percentile = 5.0
         self.center_window_size = 9
@@ -56,7 +65,7 @@ class PlantCoordinateNode(Node):
         self.inferred_obstacle_default_radius_mm = 1000.0 * float( self.get_parameter("inferred_obstacle_default_radius_m").value)
 
         # convention: pot 1 is the rightmost pot and IDs increase to the left.
-        self.declare_parameter("pot_count", 4)
+        self.declare_parameter("pot_count", 3)
         self.pot_count = int(self.get_parameter("pot_count").value)
         if self.pot_count < 1:
             raise ValueError("pot_count must be at least 1")
@@ -455,48 +464,10 @@ class PlantCoordinateNode(Node):
             measurement_mask = cv2.bitwise_or(green_clean, yellow_clean)
             segmented = cv2.bitwise_and(crop, crop, mask=measurement_mask)
             detection = crop.copy()
-            grouping_mask = np.zeros_like(measurement_mask)
-            slot_contours = []
-            slot_width = crop.shape[1] / float(self.pot_count)
-
-            for slot_index in range(self.pot_count):
-                slot_left = int(round(slot_index * slot_width))
-                slot_right = int(round((slot_index + 1) * slot_width))
-                if slot_index == self.pot_count - 1:
-                    slot_right = crop.shape[1]
-
-                slot_measurement = measurement_mask[:, slot_left:slot_right]
-                slot_grouping = cv2.morphologyEx(slot_measurement, cv2.MORPH_CLOSE, kernel)
-                slot_grouping = cv2.dilate( slot_grouping, kernel, iterations=self.dilate_itr)
-                grouping_mask[:, slot_left:slot_right] = slot_grouping
-
-                if slot_right < crop.shape[1]:
-                    cv2.line(detection, (slot_right, 0), (slot_right, crop.shape[0] - 1), (255, 180, 0), 1, )
-
-                contours, _ = cv2.findContours( slot_grouping, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE )
-                valid_contours = [
-                    contour
-                    for contour in contours
-                    if cv2.contourArea(contour) >= self.min_area
-                ]
-                if not valid_contours:
-                    continue
-
-                contour = max(valid_contours, key=cv2.contourArea)
-                contour = contour.copy()
-                contour[:, 0, 0] += slot_left
-
-                # Pot IDs increase from right to left.
-                plant_id = self.pot_count - slot_index
-                slot_contours.append((plant_id, contour))
-
-
-            # Keep the saved diagnostic mask visually separated at slot
-            # boundaries as well. Contours above were already extracted from
-            # their individual slots.
-            for boundary_index in range(1, self.pot_count):
-                boundary_x = int(round(boundary_index * slot_width))
-                grouping_mask[:, max(0, boundary_x - 1):boundary_x + 1] = 0
+            grouping_mask, slot_contours = select_row_contours(
+                measurement_mask, self.pot_count, kernel, self.dilate_itr,
+                self.row_min_area, self.row_band_pct)
+            draw_row_guides(detection, self.pot_count, self.row_band_pct)
     
             plant_records = []
     
@@ -551,18 +522,7 @@ class PlantCoordinateNode(Node):
     
                 plant_records.append(row)
     
-            # A fragmented mask can occasionally produce multiple contours in one
-            # slot. Keep the largest contour, but never renumber another pot.
-            records_by_slot = {}
-            for row in plant_records:
-                slot_id = row["plant_id"]
-                existing = records_by_slot.get(slot_id)
-                if existing is None or row["area_px"] > existing["area_px"]:
-                    if existing is not None:
-                        self.get_logger().warn(f"Multiple plant contours matched pot slot {slot_id}; ""keeping the largest contour.")
-                    records_by_slot[slot_id] = row
-    
-            results = [records_by_slot[slot_id] for slot_id in sorted(records_by_slot)]
+            results = sorted(plant_records, key=lambda row: row["plant_id"])
 
             obstacle_records, obstacle_detection = self.detect_full_frame_obstacles(img, depth, fx, fy, cx_intr, cy_intr, results, (x1_clamped, y1_clamped, x2_clamped, y2_clamped), )
 
@@ -635,7 +595,10 @@ class PlantCoordinateNode(Node):
                 "pot_count": int(self.pot_count),
                 "minimum_depth_mm": float(self.min_depth_mm),
                 "maximum_depth_mm": float(self.max_depth_mm),
-                "minimum_contour_area_px": float(self.min_area),
+                "minimum_contour_area_px": float(self.row_min_area),
+                "row_band_pct": float(self.row_band_pct),
+                "row_selection": "nearest_centroid_to_crop_midline",
+                "obstacle_minimum_contour_area_px": float(self.min_area),
                 "grouping_dilation_iterations": int(self.dilate_itr),
             },
             "main_plant": {

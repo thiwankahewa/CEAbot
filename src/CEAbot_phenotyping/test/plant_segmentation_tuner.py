@@ -1,12 +1,21 @@
 #!/usr/bin/env python3
-"""Interactive tuner for plant, pot-rim, and soil segmentation with custom UI controls."""
+"""Interactive plant, pot-rim, and soil tuner with native Tkinter controls."""
 
 import argparse
+import sys
+from concurrent.futures import ThreadPoolExecutor
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
 from pathlib import Path
 
 import cv2
 import numpy as np
 import yaml
+from PIL import Image, ImageTk
+
+# Allow running this tuner directly from the source checkout without ROS.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from CEAbot_phenotyping.row_segmentation import draw_row_guides, select_row_contours
 
 
 DEFAULTS = {
@@ -16,11 +25,11 @@ DEFAULTS = {
     "y_h_lo": (20, 179), "y_s_lo": (80, 255), "y_v_lo": (100, 255),
     "y_h_hi": (38, 179), "y_s_hi": (255, 255), "y_v_hi": (255, 255),
     # Plant geometry
-    "min_area": (3000, 50000), "plant_kernel": (4, 31),
+    "min_area": (500, 50000), "row_band_pct": (50, 100), "plant_kernel": (4, 31),
     "yellow_kernel": (2, 15), "dilate": (2, 6),
     "plant_z_min": (150, 2000), "plant_z_max": (900, 2500),
-    "pot_count": (4, 12), "roi_x1_px": (176, 4000),
-    "roi_y1_px": (379, 4000), "roi_x2_px": (1124, 4000),
+    "pot_count": (4, 12), "roi_x1_px": (93, 298),
+    "roi_y1_px": (379, 4000), "roi_x2_px": (1157, 551),
     "roi_y2_px": (631, 4000),
     # Rim RANSAC (percentages are relative to one pot-slot width)
     "iterations": (800, 2000), "canny_low": (50, 255),
@@ -40,7 +49,7 @@ DEFAULTS = {
 WINDOWS = {
     "Plant color": [key for key in DEFAULTS if key.startswith(("g_", "y_"))],
     "Plant geometry": [
-        "min_area", "plant_kernel", "yellow_kernel", "dilate",
+        "min_area", "row_band_pct", "plant_kernel", "yellow_kernel", "dilate",
         "plant_z_min", "plant_z_max", "pot_count",
         "roi_x1_px", "roi_y1_px", "roi_x2_px", "roi_y2_px",
     ],
@@ -55,167 +64,48 @@ WINDOWS = {
 }
 
 
-# Initialize state for parameters and mouse UI interaction
-PARAMS = {}
-for name, (initial, maximum) in DEFAULTS.items():
-    PARAMS[name] = {"val": initial, "min": 0, "max": maximum}
-
-active_slider = None
-is_dragging_scrollbar = False
-is_dragging_canvas = False
-drag_start_y = 0
-drag_start_scroll = 0
-scroll_offset = 0
-
-# UI Metrics
-CANVAS_W = 500
-VIEW_H = 850
-SLIDER_X_START = 160
-SLIDER_W = 210
-ROW_H = 30
-START_Y = 50
-
-SCROLLBAR_X = 475
-SCROLLBAR_W = 18
+# Keep nonzero constraints visible in the controls and saved parameters.
+POSITIVE_PARAMS = {
+    "plant_kernel", "yellow_kernel", "pot_count", "iterations",
+    "support_dist_x10", "inner_radius_pct", "plant_exclusion",
+    "soil_open", "soil_min_pixels",
+}
 
 
-def get_ui_elements():
-    ui_elements = []
-    for section_title, keys in WINDOWS.items():
-        ui_elements.append({"type": "header", "title": section_title})
-        for key in keys:
-            ui_elements.append({"type": "slider", "key": key})
-    return ui_elements
+def parameter_limits(color):
+    height, width = color.shape[:2]
+    limits = {
+        key: (1 if key in POSITIVE_PARAMS else 0, maximum)
+        for key, (_, maximum) in DEFAULTS.items()
+    }
+    limits.update({
+        "roi_x1_px": (0, width - 1), "roi_x2_px": (1, width),
+        "roi_y1_px": (0, height - 1), "roi_y2_px": (1, height),
+    })
+    return limits
 
 
-def get_max_scroll():
-    ui_elements = get_ui_elements()
-    return max(0, len(ui_elements) * ROW_H + START_Y - (VIEW_H - 40))
-
-
-def mouse_callback(event, x, y, flags, param):
-    global active_slider, scroll_offset, is_dragging_scrollbar, is_dragging_canvas, drag_start_y, drag_start_scroll
-
-    ui_elements = get_ui_elements()
-    max_scroll = get_max_scroll()
-
-    adj_y = y + scroll_offset
-
-    if event == cv2.EVENT_LBUTTONDOWN:
-        # 1. Click on Scrollbar Track
-        if x >= SCROLLBAR_X - 5:
-            is_dragging_scrollbar = True
-            pct = np.clip(y / float(VIEW_H), 0.0, 1.0)
-            scroll_offset = int(pct * max_scroll)
-            return
-
-        # 2. Click on a Slider
-        clicked_slider = False
-        for idx, elem in enumerate(ui_elements):
-            if elem["type"] == "slider":
-                s_y = START_Y + idx * ROW_H
-                if s_y - 12 <= adj_y <= s_y + 12 and SLIDER_X_START - 10 <= x <= SLIDER_X_START + SLIDER_W + 10:
-                    active_slider = elem["key"]
-                    p = PARAMS[active_slider]
-                    pct = np.clip((x - SLIDER_X_START) / float(SLIDER_W), 0.0, 1.0)
-                    PARAMS[active_slider]["val"] = int(p["min"] + pct * (p["max"] - p["min"]))
-                    clicked_slider = True
-                    break
-
-        # 3. Click on Background -> Drag Canvas to Scroll
-        if not clicked_slider:
-            is_dragging_canvas = True
-            drag_start_y = y
-            drag_start_scroll = scroll_offset
-
-    elif event == cv2.EVENT_MOUSEMOVE:
-        if is_dragging_scrollbar:
-            pct = np.clip(y / float(VIEW_H), 0.0, 1.0)
-            scroll_offset = int(pct * max_scroll)
-
-        elif is_dragging_canvas:
-            dy = drag_start_y - y
-            scroll_offset = int(np.clip(drag_start_scroll + dy, 0, max_scroll))
-
-        elif active_slider is not None:
-            p = PARAMS[active_slider]
-            pct = np.clip((x - SLIDER_X_START) / float(SLIDER_W), 0.0, 1.0)
-            PARAMS[active_slider]["val"] = int(p["min"] + pct * (p["max"] - p["min"]))
-
-    elif event == cv2.EVENT_LBUTTONUP:
-        active_slider = None
-        is_dragging_scrollbar = False
-        is_dragging_canvas = False
-
-
-def render_ui_canvas():
-    ui_elements = get_ui_elements()
-    max_scroll = get_max_scroll()
-
-    total_h = max(VIEW_H, len(ui_elements) * ROW_H + START_Y + 50)
-    full_canvas = np.full((total_h, CANVAS_W, 3), (30, 28, 28), dtype=np.uint8)
-
-    cv2.putText(full_canvas, "TUNER CONTROLS", (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 0), 2, cv2.LINE_AA)
-
-    for idx, elem in enumerate(ui_elements):
-        s_y = START_Y + idx * ROW_H
-
-        if elem["type"] == "header":
-            # Section Header divider
-            cv2.rectangle(full_canvas, (10, s_y - 15), (460, s_y + 8), (45, 45, 45), -1)
-            cv2.putText(full_canvas, f"--- {elem['title'].upper()} ---", (15, s_y + 2),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 255, 255), 1, cv2.LINE_AA)
-        else:
-            name = elem["key"]
-            p = PARAMS[name]
-
-            # White text label
-            cv2.putText(full_canvas, f"{name}:", (15, s_y + 4),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.38, (240, 240, 240), 1, cv2.LINE_AA)
-
-            # Trackbar Base Line
-            cv2.line(full_canvas, (SLIDER_X_START, s_y), (SLIDER_X_START + SLIDER_W, s_y), (70, 70, 70), 3, cv2.LINE_AA)
-
-            # Active Progress Bar
-            denom = (p["max"] - p["min"])
-            val_pct = (p["val"] - p["min"]) / float(denom) if denom > 0 else 0.0
-            knob_x = int(SLIDER_X_START + val_pct * SLIDER_W)
-
-            cv2.line(full_canvas, (SLIDER_X_START, s_y), (knob_x, s_y), (235, 140, 30), 3, cv2.LINE_AA)
-            cv2.circle(full_canvas, (knob_x, s_y), 6, (255, 255, 255), -1, cv2.LINE_AA)
-
-            # Active Value Readout Text
-            cv2.putText(full_canvas, str(p["val"]), (SLIDER_X_START + SLIDER_W + 10, s_y + 4),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.38, (150, 230, 255), 1, cv2.LINE_AA)
-
-    # Crop full virtual canvas down to window frame size with scroll offset
-    viewport = full_canvas[scroll_offset:scroll_offset + VIEW_H, 0:CANVAS_W].copy()
-
-    # Draw Interactive Scrollbar Track
-    cv2.rectangle(viewport, (SCROLLBAR_X, 0), (SCROLLBAR_X + SCROLLBAR_W, VIEW_H), (20, 20, 20), -1)
-    if max_scroll > 0:
-        thumb_h = max(40, int((VIEW_H / float(total_h)) * VIEW_H))
-        thumb_y = int((scroll_offset / float(max_scroll)) * (VIEW_H - thumb_h))
-        cv2.rectangle(viewport, (SCROLLBAR_X + 2, thumb_y), (SCROLLBAR_X + SCROLLBAR_W - 2, thumb_y + thumb_h), (120, 120, 120), -1)
-
-    # Footer Help Bar
-    cv2.rectangle(viewport, (0, VIEW_H - 25), (CANVAS_W, VIEW_H), (15, 15, 15), -1)
-    cv2.putText(viewport, "Drag scrollbar/background or Arrow keys | 's' save | 'q' quit", (10, VIEW_H - 8),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.35, (160, 160, 160), 1, cv2.LINE_AA)
-
-    return viewport
-
-
-def params():
-    values = {k: v["val"] for k, v in PARAMS.items()}
-
-    # Values that must never be zero.
-    for name in (
-        "plant_kernel", "yellow_kernel", "pot_count", "iterations",
-        "support_dist_x10", "inner_radius_pct", "plant_exclusion",
-        "soil_open", "soil_min_pixels",
+def validate_parameters(values, limits):
+    """Reject invalid ranges instead of silently processing different values."""
+    for key, (minimum, maximum) in limits.items():
+        value = values[key]
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"{key} must be an integer")
+        if not minimum <= value <= maximum:
+            raise ValueError(f"{key} must be between {minimum} and {maximum}")
+    for prefix in ("g", "y", "s"):
+        for channel in ("h", "s", "v"):
+            if values[f"{prefix}_{channel}_lo"] > values[f"{prefix}_{channel}_hi"]:
+                raise ValueError(f"{prefix}_{channel}: lower bound must be ≤ upper bound")
+    for low, high in (
+        ("plant_z_min", "plant_z_max"), ("soil_z_min", "soil_z_max"),
+        ("radius_min_pct", "radius_max_pct"), ("canny_low", "canny_high"),
+        ("roi_x1_px", "roi_x2_px"), ("roi_y1_px", "roi_y2_px"),
     ):
-        values[name] = max(1, values[name])
+        if values[low] >= values[high]:
+            raise ValueError(f"{low} must be less than {high}")
+    if not values["radius_min_pct"] <= values["radius_expected_pct"] <= values["radius_max_pct"]:
+        raise ValueError("Expected rim radius must be within the minimum/maximum range")
     return values
 
 
@@ -231,6 +121,8 @@ def load_folder(folder):
         depth = depth.astype(np.float32) * 1000.0
     else:
         depth = depth.astype(np.float32)
+    if depth.ndim != 2 or depth.shape != color.shape[:2]:
+        raise ValueError("color.png and depth.npy must have matching image dimensions")
     return color, depth
 
 
@@ -299,24 +191,16 @@ def fit_rim(edges, expected, slot_width, plant_id, p):
     return best
 
 
-def plant_records(contours, width, count):
-    slots = [(count - index - .5) / count for index in range(count)]
-    records = {}
-    for contour in contours:
+def plant_records(slot_contours):
+    records = []
+    for plant_id, contour in slot_contours:
         moments = cv2.moments(contour)
         if not moments["m00"]:
             continue
         cx, cy = int(moments["m10"] / moments["m00"]), int(moments["m01"] / moments["m00"])
-        fraction = cx / float(width)
-        index = int(np.argmin([abs(fraction - slot) for slot in slots]))
-        if abs(fraction - slots[index]) > .45 / count:
-            continue
-        item = {"id": index + 1, "x": cx, "y": cy,
-                "area": cv2.contourArea(contour), "contour": contour}
-        old = records.get(item["id"])
-        if old is None or item["area"] > old["area"]:
-            records[item["id"]] = item
-    return [records[key] for key in sorted(records)]
+        records.append({"id": plant_id, "x": cx, "y": cy,
+                        "area": cv2.contourArea(contour), "contour": contour})
+    return records
 
 
 def process(color, depth, p):
@@ -324,7 +208,7 @@ def process(color, depth, p):
     x1, y1 = p["roi_x1_px"], p["roi_y1_px"]
     x2, y2 = p["roi_x2_px"], p["roi_y2_px"]
     x1, y1 = np.clip(x1, 0, width - 1), np.clip(y1, 0, height - 1)
-    x2, y2 = np.clip(max(x1 + 5, x2), x1 + 1, width), np.clip(max(y1 + 5, y2), y1 + 1, height)
+    x2, y2 = np.clip(max(x1 + 1, x2), x1 + 1, width), np.clip(max(y1 + 1, y2), y1 + 1, height)
     crop, z = color[y1:y2, x1:x2], depth[y1:y2, x1:x2]
     hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
 
@@ -340,17 +224,16 @@ def process(color, depth, p):
     y_kernel = np.ones((p["yellow_kernel"], p["yellow_kernel"]), np.uint8)
     yellow = cv2.morphologyEx(yellow, cv2.MORPH_OPEN, y_kernel)
     measurement = cv2.bitwise_or(green, yellow)
-    grouping = cv2.morphologyEx(measurement, cv2.MORPH_CLOSE, kernel)
-    if p["dilate"]:
-        grouping = cv2.dilate(grouping, kernel, iterations=p["dilate"])
-    contours, _ = cv2.findContours(grouping, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    contours = [c for c in contours if cv2.contourArea(c) >= p["min_area"]]
-    records = plant_records(contours, crop.shape[1], p["pot_count"])
+    grouping, slot_contours = select_row_contours(
+        measurement, p["pot_count"], kernel, p["dilate"],
+        p["min_area"], p["row_band_pct"])
+    records = plant_records(slot_contours)
 
     canny_high = max(p["canny_low"] + 1, p["canny_high"])
     gray = cv2.GaussianBlur(cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY), (5, 5), 1.2)
     edges = cv2.Canny(gray, p["canny_low"], canny_high)
     overlay, interior, soil = crop.copy(), np.zeros_like(grouping), np.zeros_like(grouping)
+    draw_row_guides(overlay, p["pot_count"], p["row_band_pct"])
     exclusion = cv2.dilate(measurement, np.ones((p["plant_exclusion"],) * 2, np.uint8))
     soil_color = cv2.inRange(hsv, (p["s_h_lo"], p["s_s_lo"], p["s_v_lo"]),
                              (p["s_h_hi"], p["s_s_hi"], p["s_v_hi"]))
@@ -386,6 +269,8 @@ def process(color, depth, p):
         cv2.putText(overlay, f"P{record['id']} {rim_confidence}", (round(cx) - 35, round(cy)),
                     cv2.FONT_HERSHEY_SIMPLEX, .45, color_code, 1, cv2.LINE_AA)
         telemetry.append({"plant_id": record["id"], "rim_method": method,
+                          "plant_area_px": float(record["area"]),
+                          "plant_center_px": [record["x"], record["y"]],
                           "rim_confidence": rim_confidence,
                           "rim_center": [round(cx, 1), round(cy, 1)],
                           "rim_radius_px": round(radius, 1),
@@ -404,7 +289,13 @@ def process(color, depth, p):
 def tile(image, title, size=(360, 210)):
     if image.ndim == 2:
         image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-    output = cv2.resize(image, size)
+    # Letterbox each view so rims and leaves retain their true proportions.
+    output = np.full((size[1], size[0], 3), 24, dtype=np.uint8)
+    scale = min(size[0] / image.shape[1], (size[1] - 27) / image.shape[0])
+    width, height = max(1, round(image.shape[1] * scale)), max(1, round(image.shape[0] * scale))
+    resized = cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA)
+    x, y = (size[0] - width) // 2, 27 + (size[1] - 27 - height) // 2
+    output[y:y + height, x:x + width] = resized
     cv2.rectangle(output, (0, 0), (size[0], 27), (20, 20, 20), -1)
     cv2.putText(output, title, (8, 19), cv2.FONT_HERSHEY_SIMPLEX, .48, (0, 255, 255), 1, cv2.LINE_AA)
     return output
@@ -414,7 +305,7 @@ def dashboard(result):
     views = [("overlay", "Plant contours + rim RANSAC"), ("green", "Green mask"),
              ("yellow", "Yellow flower mask"), ("measurement", "Measurement mask"),
              ("grouping", "Dilated grouping mask"), ("segmented", "Plant segmentation"),
-             ("overlay", "Dynamic pot rims"), ("interior", "Inner-pot ROI"),
+             ("crop", "Original crop"), ("interior", "Inner-pot ROI"),
              ("soil", "Accepted soil mask")]
     panels = [tile(result[key], label) for key, label in views]
     return np.vstack((np.hstack(panels[:3]), np.hstack(panels[3:6]), np.hstack(panels[6:])))
@@ -422,62 +313,268 @@ def dashboard(result):
 
 def save(folder, result, p):
     for key in ("green", "yellow", "measurement", "grouping", "overlay", "interior", "soil"):
-        cv2.imwrite(str(folder / f"tuner_{key}.png"), result[key])
+        path = folder / f"tuner_{key}.png"
+        if not cv2.imwrite(str(path), result[key]):
+            raise OSError(f"Could not save {path}")
     report = {"roi": result["roi"], "parameters": p, "pots": result["telemetry"]}
     (folder / "tuner_parameters.yaml").write_text(yaml.safe_dump(report, sort_keys=False))
     print(f"Saved tuner outputs to {folder}")
 
 
+
+class TunerApp:
+    """Native controls with debounced processing and no OpenCV HighGUI calls."""
+
+    def __init__(self, root, folder, color, depth):
+        self.root, self.folder = root, folder
+        self.color, self.depth = color, depth
+        self.limits = parameter_limits(color)
+        self.variables = {}
+        self.executor = ThreadPoolExecutor(max_workers=1)
+        self.future = None
+        self.pending = None
+        self.result = self.result_params = None
+        self.preview_image = None
+        self.debounce_id = None
+        self.closed = False
+        self.updating = False
+
+        root.title(f"Plant segmentation tuner — {folder.name}")
+        width = min(1500, root.winfo_screenwidth() - 60)
+        height = min(950, root.winfo_screenheight() - 80)
+        root.geometry(f"{width}x{height}")
+        root.protocol("WM_DELETE_WINDOW", self.close)
+
+        toolbar = ttk.Frame(root, padding=8)
+        toolbar.pack(fill="x")
+        self.save_button = ttk.Button(toolbar, text="Save outputs", command=self.save_outputs, state="disabled")
+        self.save_button.pack(side="left")
+        ttk.Button(toolbar, text="Load parameters…", command=self.load_parameters).pack(side="left", padx=6)
+        ttk.Button(toolbar, text="Reset defaults", command=self.reset).pack(side="left")
+        ttk.Label(toolbar, text=str(folder)).pack(side="left", padx=12)
+        ttk.Button(toolbar, text="Quit", command=self.close).pack(side="right")
+
+        panes = ttk.Panedwindow(root, orient="horizontal")
+        panes.pack(fill="both", expand=True, padx=8)
+        controls = ttk.Notebook(panes, width=450)
+        panes.add(controls, weight=0)
+        display = ttk.Frame(panes)
+        panes.add(display, weight=1)
+
+        for title, keys in WINDOWS.items():
+            tab = ttk.Frame(controls)
+            controls.add(tab, text=title)
+            canvas = tk.Canvas(tab, highlightthickness=0, width=440)
+            scrollbar = ttk.Scrollbar(tab, orient="vertical", command=canvas.yview)
+            canvas.configure(yscrollcommand=scrollbar.set)
+            scrollbar.pack(side="right", fill="y")
+            canvas.pack(side="left", fill="both", expand=True)
+            content = ttk.Frame(canvas, padding=8)
+            window = canvas.create_window((0, 0), window=content, anchor="nw")
+            content.bind("<Configure>", lambda event, c=canvas: c.configure(scrollregion=c.bbox("all")))
+            canvas.bind("<Configure>", lambda event, c=canvas, w=window: c.itemconfigure(w, width=event.width))
+            content.columnconfigure(1, weight=1)
+            for row, key in enumerate(keys):
+                low, high = self.limits[key]
+                value = max(low, min(high, DEFAULTS[key][0]))
+                variable = tk.StringVar(value=str(value))
+                self.variables[key] = variable
+                ttk.Label(content, text=key).grid(row=row, column=0, sticky="w", pady=7)
+                scale = ttk.Scale(content, from_=low, to=high, orient="horizontal")
+                scale.set(value)
+                scale.configure(command=lambda value, k=key: self.set_slider(k, value))
+                scale.grid(row=row, column=1, sticky="ew", padx=8)
+                entry = ttk.Spinbox(content, from_=low, to=high, textvariable=variable, width=7)
+                entry.grid(row=row, column=2)
+                variable.trace_add("write", lambda *args, k=key, s=scale: self.parameter_changed(k, s))
+            # Scroll controls on Linux/X11 and platforms reporting MouseWheel.
+            def wheel(event, c=canvas):
+                step = -1 if event.num == 4 or getattr(event, "delta", 0) > 0 else 1
+                c.yview_scroll(step * 3, "units")
+                return "break"
+            for widget in (canvas, content, *content.winfo_children()):
+                for event in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+                    widget.bind(event, wheel)
+
+        self.preview = ttk.Label(display, anchor="center")
+        self.preview.pack(fill="both", expand=True)
+        self.preview.bind("<Configure>", self.draw_preview)
+        columns = ("plant_id", "rim_confidence", "soil_pixels", "soil_median_depth_mm", "soil_confidence")
+        self.telemetry = ttk.Treeview(display, columns=columns, show="headings", height=5)
+        for key, label in zip(columns, ("Pot", "Rim confidence", "Soil pixels", "Depth (mm)", "Soil confidence")):
+            self.telemetry.heading(key, text=label)
+            self.telemetry.column(key, width=105, anchor="center")
+        self.telemetry.pack(fill="x", pady=8)
+        self.status = tk.StringVar(value="Preparing preview…")
+        ttk.Label(root, textvariable=self.status, padding=8, wraplength=1200).pack(fill="x")
+        root.bind("<Control-s>", lambda event: self.save_outputs())
+        root.bind("<Escape>", lambda event: self.close())
+        self.reset()
+        self.poll_id = root.after(50, self.poll)
+
+    def set_slider(self, key, value):
+        text = str(round(float(value)))
+        if self.variables[key].get() != text:
+            self.variables[key].set(text)
+
+    def parameter_changed(self, key, scale):
+        if self.updating:
+            return
+        try:
+            value = int(self.variables[key].get())
+            low, high = self.limits[key]
+            if low <= value <= high and round(scale.get()) != value:
+                scale.set(value)
+        except ValueError:
+            pass  # Allow partially typed numeric entries.
+        self.schedule_update()
+
+    def read_parameters(self):
+        values = {}
+        for key, variable in self.variables.items():
+            try:
+                values[key] = int(variable.get())
+            except ValueError:
+                raise ValueError(f"{key} must be an integer") from None
+        return validate_parameters(values, self.limits)
+
+    def schedule_update(self):
+        self.save_button.configure(state="disabled")
+        self.pending = None
+        if self.debounce_id is not None:
+            self.root.after_cancel(self.debounce_id)
+        self.status.set("Parameters changed — waiting to update preview…")
+        self.debounce_id = self.root.after(200, self.queue_update)
+
+    def queue_update(self):
+        self.debounce_id = None
+        try:
+            self.pending = self.read_parameters()
+            self.status.set("Updating segmentation…")
+        except ValueError as exc:
+            self.status.set(str(exc))
+
+    def poll(self):
+        if self.closed:
+            return
+        if self.future is not None and self.future.done():
+            future, submitted = self.future, self.submitted
+            self.future = None
+            try:
+                result = future.result()
+                # A result is only displayed/saved if it matches the controls.
+                if submitted == self.read_parameters():
+                    self.result, self.result_params = result, submitted
+                    self.preview_image = Image.fromarray(cv2.cvtColor(dashboard(result), cv2.COLOR_BGR2RGB))
+                    self.draw_preview()
+                    self.telemetry.delete(*self.telemetry.get_children())
+                    for item in result["telemetry"]:
+                        self.telemetry.insert("", "end", values=[
+                            item[key] if item[key] is not None else "—"
+                            for key in self.telemetry["columns"]
+                        ])
+                    self.save_button.configure(state="normal")
+                    self.status.set(f"{len(result['telemetry'])} pots detected · ROI {result['roi']} · Ctrl+S saves masks and YAML")
+            except Exception as exc:
+                self.status.set(f"Cannot update preview: {exc}")
+        if self.future is None and self.pending is not None:
+            self.submitted, self.pending = self.pending, None
+            self.future = self.executor.submit(process, self.color, self.depth, self.submitted)
+        self.poll_id = self.root.after(50, self.poll)
+
+    def draw_preview(self, event=None):
+        if self.preview_image is None:
+            return
+        image = self.preview_image.copy()
+        image.thumbnail((max(1, self.preview.winfo_width()), max(1, self.preview.winfo_height())),
+                        Image.Resampling.LANCZOS)
+        self.photo = ImageTk.PhotoImage(image)
+        self.preview.configure(image=self.photo)
+
+    def apply_parameters(self, values):
+        validate_parameters(values, self.limits)
+        self.updating = True
+        try:
+            for key, value in values.items():
+                self.variables[key].set(str(value))
+        finally:
+            self.updating = False
+        # Trigger traces once more to synchronize slider positions.
+        for variable in self.variables.values():
+            variable.set(variable.get())
+        self.schedule_update()
+
+    def reset(self):
+        values = {key: max(low, min(high, DEFAULTS[key][0]))
+                  for key, (low, high) in self.limits.items()}
+        for axis, maximum in (("x", self.color.shape[1]), ("y", self.color.shape[0])):
+            if values[f"roi_{axis}1_px"] >= values[f"roi_{axis}2_px"]:
+                values[f"roi_{axis}1_px"], values[f"roi_{axis}2_px"] = 0, maximum
+        self.apply_parameters(values)
+
+    def load_parameters(self):
+        path = filedialog.askopenfilename(parent=self.root, initialdir=self.folder,
+                                          filetypes=[("YAML parameters", "*.yaml *.yml")])
+        if not path:
+            return
+        try:
+            report = yaml.safe_load(Path(path).read_text())
+            if not isinstance(report, dict) or not isinstance(report.get("parameters"), dict):
+                raise ValueError("Expected a tuner YAML file containing parameters")
+            values = dict(report["parameters"])
+            # Saved files from before the row-band control remain loadable.
+            values.setdefault("row_band_pct", DEFAULTS["row_band_pct"][0])
+            if set(values) != set(DEFAULTS):
+                raise ValueError("The file must contain all tuner parameters and no unknown parameters")
+            self.apply_parameters(values)
+        except (OSError, ValueError, yaml.YAMLError) as exc:
+            messagebox.showerror("Could not load parameters", str(exc), parent=self.root)
+
+    def save_outputs(self):
+        try:
+            current = self.read_parameters()
+            if self.result is None or current != self.result_params:
+                self.status.set("Wait for the preview to finish updating before saving.")
+                return
+            save(self.folder, self.result, current)
+            self.status.set(f"Saved masks and tuner_parameters.yaml to {self.folder}")
+        except (OSError, ValueError, cv2.error) as exc:
+            messagebox.showerror("Could not save outputs", str(exc), parent=self.root)
+
+    def close(self):
+        self.closed = True
+        if self.debounce_id is not None:
+            self.root.after_cancel(self.debounce_id)
+        self.root.after_cancel(self.poll_id)
+        self.executor.shutdown(wait=False, cancel_futures=True)
+        self.root.destroy()
+
+
 def main():
-    global scroll_offset
-
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("folder", type=Path)
+    parser.add_argument("folder", type=Path, nargs="?",
+                        help="Scan folder containing color.png and depth.npy; opens a picker if omitted")
     args = parser.parse_args()
-    folder = args.folder.expanduser()
-    color, depth = load_folder(folder)
-
-    control_win = "Control Panel (Click & Drag)"
-    cv2.namedWindow(control_win, cv2.WINDOW_GUI_NORMAL)
-    cv2.resizeWindow(control_win, CANVAS_W, VIEW_H)
-    cv2.setMouseCallback(control_win, mouse_callback)
-    cv2.moveWindow(control_win, 10, 10)
-
-    cv2.namedWindow("Dashboard", cv2.WINDOW_NORMAL)
-    cv2.resizeWindow("Dashboard", 1100, 750)
-    cv2.moveWindow(Dashboard_win := "Dashboard", 530, 10)
-
-    previous, result, current = None, None, None
-
-    while True:
-        current = params()
-        snapshot = tuple(current.items())
-        if snapshot != previous:
-            result = process(color, depth, current)
-            previous = snapshot
-            print("\nPer-pot result:")
-            for item in result["telemetry"]:
-                print(item)
-
-        cv2.imshow(control_win, render_ui_canvas())
-        cv2.imshow(Dashboard_win, dashboard(result))
-
-        key = cv2.waitKeyEx(20)
-
-        if key in (27, ord("q")):
-            break
-        elif key == ord("s"):
-            save(folder, result, current)
-        # Up Arrow / Page Up
-        elif key in (2490368, 82, 0, 2162688):
-            scroll_offset = max(0, scroll_offset - 40)
-        # Down Arrow / Page Down
-        elif key in (2621440, 84, 1, 2228224):
-            scroll_offset = min(get_max_scroll(), scroll_offset + 40)
-
-    cv2.destroyAllWindows()
+    root = tk.Tk()
+    root.withdraw()
+    folder = args.folder
+    if folder is None:
+        selected = filedialog.askdirectory(parent=root, title="Select scan folder with color.png and depth.npy")
+        if not selected:
+            root.destroy()
+            return
+        folder = Path(selected)
+    folder = folder.expanduser()
+    try:
+        color, depth = load_folder(folder)
+    except (OSError, ValueError, RuntimeError) as exc:
+        messagebox.showerror("Could not open scan", str(exc), parent=root)
+        root.destroy()
+        return
+    TunerApp(root, folder, color, depth)
+    root.deiconify()
+    root.mainloop()
 
 
 if __name__ == "__main__":
     main()
-    
