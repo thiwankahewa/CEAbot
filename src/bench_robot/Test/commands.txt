@@ -105,10 +105,21 @@ ros2 topic pub /robot_location std_msgs/msg/Int16MultiArray "{data: [0, 1, 15, 1
 #plant_segmentation tuner
 python3 /home/thiwa/CEAbot/src/CEAbot_phenotyping/test/plant_segmentation_tuner.py /path/to/scan_folder
 
+# Plant height: local soil at stem to highest supported plant organ.
+# Ruler units are provisionally mm; change --manual-unit if needed.
+# Choose a NEW output directory for each run. See test/height/PLANT_HEIGHT.md for history.
+python3 /home/thiwa/CEAbot/src/CEAbot_phenotyping/test/height/measure_plant_height.py \
+  /home/thiwa/scan_data \
+  --date 2026-09-14 --locations b1_r16 b1_r17 b1_r18 b1_r19 \
+  --config /home/thiwa/CEAbot/src/CEAbot_phenotyping/test/height/plant_height_config.example.json \
+  --manual-csv /home/thiwa/CEAbot/src/CEAbot_phenotyping/test/height/manual_heights_20260914.csv \
+  --manual-unit mm \
+  --output-dir /home/thiwa/scan_data/plant_height_20260914_run2
+
 
 python3 ~/CEAbot/src/bench_robot/Test/publish_zed_top_scan_folder.py /home/thiwa/scan_data_zed/b1_r15_20260608_133520 --trigger
 
-python3 ~/CEAbot/src/CEAbot_phenotyping/test/reconstruct_plant_views.py \
+python3 ~/CEAbot/src/CEAbot_phenotyping/test/reconstruction/reconstruct_plant_views.py \
   /home/thiwa/scan_data_zed/b1_r15_20260608_133520
     --color-by-view \
 

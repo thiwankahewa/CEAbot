@@ -1,0 +1,45 @@
+{
+  "experiment_start_date": "2026-09-14",
+  "settings": {
+    "soil_inner_radius_m": 0.008,
+    "soil_outer_radius_m": 0.045,
+    "soil_residual_m": 0.004,
+    "voxel_m": 0.001,
+    "support_radius_m": 0.003,
+    "support_min_neighbors": 3
+  },
+  "defaults": {
+    "reference_id": null
+  },
+  "locations": {
+    "b1_r16": {
+      "plants": {
+        "1": {"history_key": "september2026-b1-r16-pot1"},
+        "2": {"history_key": "september2026-b1-r16-pot2"},
+        "3": {"history_key": "september2026-b1-r16-pot3"}
+      }
+    },
+    "b1_r17": {
+      "plants": {
+        "1": {"history_key": "september2026-b1-r17-pot1"},
+        "2": {"history_key": "september2026-b1-r17-pot2"},
+        "3": {"history_key": "september2026-b1-r17-pot3"}
+      }
+    },
+    "b1_r18": {
+      "plants": {
+        "1": {"history_key": "september2026-b1-r18-pot1"},
+        "2": {"history_key": "september2026-b1-r18-pot2"},
+        "3": {"history_key": "september2026-b1-r18-pot3"}
+      }
+    },
+    "b1_r19": {
+      "plants": {
+        "1": {"history_key": "september2026-b1-r19-pot1"},
+        "2": {"history_key": "september2026-b1-r19-pot2"},
+        "3": {"history_key": "september2026-b1-r19-pot3"}
+      }
+    }
+  },
+  "scans": {}
+}

@@ -2,11 +2,21 @@
 
 from pathlib import Path
 import argparse
-from datetime import datetime
+from datetime import datetime, timezone
+import json
 import re
-import cv2
 import numpy as np
 import yaml
+
+from CEAbot_phenotyping.test.reconstruction.plant_view_registration import (
+    RegistrationView,
+    add_registration_arguments,
+    align_views,
+    correction_size,
+    read_rgbd,
+    require_open3d,
+    validate_registration_arguments,
+)
 
 
 VIEW_COLORS = np.array(
@@ -51,6 +61,8 @@ def pose_to_matrix(meta: dict) -> np.ndarray:
 
     translation = np.array([float(meta["actual_x"]), float(meta["actual_y"]), float(meta["actual_z"]),], dtype=np.float64,)
     quat_xyzw = np.array([ float(meta["actual_qx"]), float(meta["actual_qy"]), float(meta["actual_qz"]), float(meta["actual_qw"]),], dtype=np.float64,)
+    if not np.all(np.isfinite(translation)) or not np.all(np.isfinite(quat_xyzw)):
+        raise ValueError("actual pose contains non-finite values")
 
     quat_norm = np.linalg.norm(quat_xyzw)
     if quat_norm < 1e-12:
@@ -90,35 +102,7 @@ def voxel_downsample_xyzrgb(points: np.ndarray, voxel_size: float) -> np.ndarray
 
 def create_rgbd_cloud(view_dir: Path) -> np.ndarray:
     """Create camera-frame XYZRGB points in memory from depth and color data."""
-    depth_path = view_dir / "depth.npy"
-    color_path = view_dir / "color.png"
-    meta_path = view_dir / "meta.yaml"
-    missing = [path.name for path in (depth_path, color_path, meta_path) if not path.exists()]
-    if missing:
-        raise FileNotFoundError(f"missing required files: {', '.join(missing)}")
-
-    meta = parse_meta_yaml(meta_path)
-    camera_info = meta.get("color_camera_info")
-    matrix = camera_info.get("k") if isinstance(camera_info, dict) else None
-    if not isinstance(matrix, list) or len(matrix) != 9:
-        raise ValueError("color_camera_info.k must contain 9 values")
-    fx, fy, cx, cy = map(float, (matrix[0], matrix[4], matrix[2], matrix[5]))
-    if not np.all(np.isfinite([fx, fy, cx, cy])) or fx <= 0.0 or fy <= 0.0:
-        raise ValueError("invalid color camera intrinsics")
-
-    scale = float(meta.get("depth_scale_m_per_unit", 0.001))
-    if not np.isfinite(scale) or scale <= 0.0:
-        raise ValueError("invalid depth_scale_m_per_unit")
-    depth = np.load(depth_path, allow_pickle=False)
-    color_bgr = cv2.imread(str(color_path), cv2.IMREAD_COLOR)
-    if depth.ndim != 2:
-        raise ValueError(f"depth.npy must be HxW, got {depth.shape}")
-    if color_bgr is None:
-        raise ValueError("could not read color.png")
-    if color_bgr.shape[:2] != depth.shape:
-        raise ValueError(f"color/depth size mismatch: {color_bgr.shape[:2]} and {depth.shape}")
-
-    depth_m = depth.astype(np.float32) * np.float32(scale)
+    depth_m, color_bgr, (fx, fy, cx, cy) = read_rgbd(view_dir)
     rows, columns = np.nonzero(np.isfinite(depth_m) & (depth_m > 0.0))
     z = depth_m[rows, columns]
     cloud = np.empty((len(z), 6), dtype=np.float32)
@@ -242,9 +226,10 @@ def select_view_dirs(plant_dir: Path, number_of_side_views: int | None) -> list[
 
     return top_views + selected_sides
 
-def reconstruct_plant(scan_dir: Path,plant_dir: Path,output_dir: Path,voxel_size: float,color_by_view: bool,minimum_depth: float,maximum_depth: float,crop_margin: float,crop_below: float,crop_above: float,number_of_side_views: int | None,cloud_source: str,):
+def reconstruct_plant(scan_dir: Path,plant_dir: Path,output_dir: Path,voxel_size: float,color_by_view: bool,minimum_depth: float,maximum_depth: float,crop_margin: float,crop_below: float,crop_above: float,number_of_side_views: int | None,cloud_source: str,registration_args=None):
     view_dirs = select_view_dirs(plant_dir, number_of_side_views)
-    transformed_views = []
+    views = []
+    skipped_views = []
 
     first_meta_path = next((view / "meta.yaml" for view in view_dirs if (view / "meta.yaml").exists()),None,)
     if first_meta_path is None:
@@ -261,6 +246,7 @@ def reconstruct_plant(scan_dir: Path,plant_dir: Path,output_dir: Path,voxel_size
         meta_path = view_dir / "meta.yaml"
         if not meta_path.exists():
             print(f"  skip {view_dir.name}: missing meta.yaml")
+            skipped_views.append({"view": view_dir.name, "reason": "missing meta.yaml"})
             continue
 
         try:
@@ -270,7 +256,7 @@ def reconstruct_plant(scan_dir: Path,plant_dir: Path,output_dir: Path,voxel_size
             cloud_frame = meta.get("camera_frame", meta.get("frame_id", "unknown"))
 
             if pose_frame not in {EXPECTED_POSE_FRAME}:
-                raise ValueError(f"unsupported pose_frame {pose_frame!r}; "f"expected {EXPECTED_POSE_FRAME} "f"(or legacy {LEGACY_POSE_FRAME})")
+                raise ValueError(f"unsupported pose_frame {pose_frame!r}; expected {EXPECTED_POSE_FRAME}")
             if pose_child_frame not in {EXPECTED_POSE_CHILD_FRAME,LEGACY_POSE_CHILD_FRAME,}:
                 raise ValueError(f"unsupported pose_child_frame {pose_child_frame!r}; "f"expected {EXPECTED_POSE_CHILD_FRAME} "f"(or legacy {LEGACY_POSE_CHILD_FRAME})")
             if cloud_frame != EXPECTED_CLOUD_FRAME:
@@ -280,32 +266,75 @@ def reconstruct_plant(scan_dir: Path,plant_dir: Path,output_dir: Path,voxel_size
 
             cloud = load_cloud_xyzrgb(view_dir,minimum_depth,maximum_depth,cloud_source,)
             cloud[:, :3] = transform_points(cloud[:, :3], transform_world_camera)
-            cloud = crop_world_points(cloud,plant_center,crop_radius,crop_below,crop_above,)
-            if color_by_view:
-                cloud = recolor_cloud(cloud, view_index)
-            transformed_views.append(cloud)
+            if len(cloud) == 0:
+                raise ValueError("no valid points in the requested depth range")
+            views.append(RegistrationView(view_dir, cloud, transform_world_camera, view_index))
 
         except Exception as exc:
             print(f"  skip {view_dir.name}: {exc}")
+            skipped_views.append({"view": view_dir.name, "reason": str(exc)})
 
-    if not transformed_views:
+    if not views:
         print(f"  no usable views for {plant_dir.name}")
-        return
+        return []
 
-    merged = np.vstack(transformed_views)
-    before_downsample = len(merged)
-    merged = voxel_downsample_xyzrgb(merged, voxel_size)
+    methods = registration_args.methods if registration_args else []
+    baseline = registration_args.baseline if registration_args else True
+    comparison = bool(methods or (registration_args and registration_args.run_name))
+    saved_paths = []
+    for method in (["baseline"] if baseline else []) + methods:
+        method_dir = output_dir / method if comparison else output_dir
+        print(f"  {method}: {method_dir}", flush=True)
+        if method == "baseline":
+            corrections = [np.eye(4) for _ in views]
+            diagnostics = {"method": method, "pairs": [], "accepted_pairs": 0, "components": []}
+        else:
+            corrections, diagnostics = align_views(views, method, plant_center, crop_radius, registration_args)
+        transformed_views, poses = [], {}
+        for view, correction in zip(views, corrections):
+            # Work from the full cloud so final cropping cannot discard points
+            # merely because their initial pose was slightly wrong.
+            cloud = view.points.copy()
+            cloud[:, :3] = transform_points(cloud[:, :3], correction)
+            cloud = crop_world_points(cloud, plant_center, crop_radius, crop_below, crop_above)
+            if color_by_view:
+                cloud = recolor_cloud(cloud, view.color_index)
+            transformed_views.append(cloud)
+            shift, angle = correction_size(correction, plant_center)
+            poses[view.path.name] = {"saved_pose": view.pose.tolist(), "correction": correction.tolist(),
+                                    "refined_pose": (correction @ view.pose).tolist(), "points": len(cloud),
+                                    "center_displacement_m": shift, "rotation_deg": angle}
+            if registration_args and registration_args.save_debug_views:
+                save_binary_ply(method_dir / "debug_views" / plant_dir.name / f"{view.path.name}.ply", cloud)
+        merged = np.vstack(transformed_views)
+        before_downsample = len(merged)
+        merged = voxel_downsample_xyzrgb(merged, voxel_size)
+        output_suffix = "_merged.ply" if cloud_source == "original" else "_merged_rgbd.ply"
+        output_path = method_dir / f"{plant_dir.name}{output_suffix}"
+        save_binary_ply(output_path, merged)
+        diagnostics.update(scan=str(scan_dir.resolve()), plant=plant_dir.name, poses=poses,
+                           skipped_views=skipped_views, points_before_downsample=before_downsample,
+                           output_points=len(merged), evaluation_distance_m=(registration_args.icp_distances[-1]
+                           if registration_args else None))
+        if registration_args:
+            diagnostics["parameters"] = vars(registration_args)
+        write_json(method_dir / f"{plant_dir.name}_registration.json", diagnostics)
+        print(f"  saved {output_path} ({before_downsample} -> {len(merged)} points)", flush=True)
+        saved_paths.append(output_path)
+    return saved_paths
 
-    output_suffix = "_merged.ply" if cloud_source == "original" else "_merged_rgbd.ply"
-    output_path = output_dir / f"{plant_dir.name}{output_suffix}"
-    save_binary_ply(output_path, merged)
-    print(f"({before_downsample} -> {len(merged)} points, voxel={voxel_size} m)")
+
+def write_json(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as stream:
+        json.dump(value, stream, indent=2, default=str, allow_nan=False)
+        stream.write("\n")
 
 
-def main():
-    parser = argparse.ArgumentParser()
+def build_parser():
+    parser = argparse.ArgumentParser(description="Reconstruct plant views with saved poses, robust ICP, or colored ICP.")
     parser.add_argument("input_dir", type=Path, help="A scan folder, or a parent folder containing timestamped scans")
-    parser.add_argument("--output-dir", type=Path, default=None, help="Output directory for merged PLY files")
+    parser.add_argument("--output-dir", type=Path, default=None, help="Output root; comparison runs use <root>/<run>/<method>/")
     parser.add_argument("--views", type=int, default=None, help="Number of evenly spaced side views to use; the top view is always added when available")
     parser.add_argument("--start-time", type=parse_cli_timestamp, default=None, help="Inclusive start: YYYYMMDD_HHMMSS or YYYY-MM-DD[ HH:MM[:SS]]")
     parser.add_argument("--end-time", type=parse_cli_timestamp, default=None, help="Inclusive end: YYYYMMDD_HHMMSS or YYYY-MM-DD[ HH:MM[:SS]]")
@@ -317,7 +346,14 @@ def main():
     parser.add_argument("--crop-margin",type=float,default=0.05,help="Horizontal margin added to detected plant radius in metres.",)
     parser.add_argument("--crop-below", type=float, default=0.12)
     parser.add_argument("--crop-above", type=float, default=0.30)
+    add_registration_arguments(parser)
+    return parser
+
+
+def main():
+    parser = build_parser()
     args = parser.parse_args()
+    validate_registration_arguments(parser, args)
 
     if args.views is not None and args.views < 0:
         parser.error("--views must be zero or greater")
@@ -332,6 +368,14 @@ def main():
     if not scan_dirs:
         raise RuntimeError(f"No scan folders found in {input_dir} for the requested date/time range")
 
+    if args.methods:
+        try:
+            require_open3d()
+        except RuntimeError as exc:
+            parser.error(str(exc))
+    comparison = bool(args.methods or args.run_name)
+    run_name = args.run_name or datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%fUTC")
+
     multiple_scans = len(scan_dirs) > 1 or scan_dirs[0] != input_dir
     output_root = args.output_dir.expanduser() if args.output_dir else None
     for scan_dir in scan_dirs:
@@ -343,9 +387,22 @@ def main():
         else:
             output_dir = output_root
 
+        if comparison:
+            output_dir = output_dir / run_name
+            try:
+                output_dir.mkdir(parents=True, exist_ok=False)
+            except FileExistsError:
+                parser.error(f"comparison run already exists: {output_dir}; choose a different --run-name")
+            write_json(output_dir / "run_config.json", {"scan": str(scan_dir.resolve()),
+                       "created_utc": datetime.now(timezone.utc).isoformat(), "parameters": vars(args)})
+
         plant_dirs = sorted(path for path in scan_dir.glob("plant_*") if path.is_dir())
+        if args.plant:
+            plant_dirs = [path for path in plant_dirs if path.name == args.plant]
+            if not plant_dirs:
+                parser.error(f"{scan_dir} does not contain {args.plant}")
         for plant_dir in plant_dirs:
-            reconstruct_plant(scan_dir,plant_dir,output_dir,args.voxel_size,args.color_by_view,args.min_depth,args.max_depth,args.crop_margin,args.crop_below,args.crop_above,args.views,args.cloud_source,)
+            reconstruct_plant(scan_dir,plant_dir,output_dir,args.voxel_size,args.color_by_view,args.min_depth,args.max_depth,args.crop_margin,args.crop_below,args.crop_above,args.views,args.cloud_source,args)
 
 def find_scan_dirs(input_dir: Path, start_time: datetime | None, end_time: datetime | None) -> list[Path]:
     """Find one explicit scan or timestamped scans immediately below a root."""
