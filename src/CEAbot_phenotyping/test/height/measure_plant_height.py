@@ -11,7 +11,6 @@ from dataclasses import asdict, dataclass, fields
 from datetime import datetime, timezone
 import json
 from pathlib import Path
-import sys
 
 import cv2
 import numpy as np
@@ -19,12 +18,8 @@ from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
 from scipy.spatial import ConvexHull, QhullError, cKDTree
 
-# Shared reconstruction helpers live beside the height directory. Resolve from
-# this file so the script can be launched from any working directory.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "reconstruction"))
-
-from plant_view_registration import read_rgbd
-from reconstruct_plant_views import (
+from CEAbot_phenotyping.test.reconstruction.plant_view_registration import read_rgbd
+from CEAbot_phenotyping.test.reconstruction.reconstruct_plant_views import (
     EXPECTED_CLOUD_FRAME, EXPECTED_POSE_CHILD_FRAME, LEGACY_POSE_CHILD_FRAME,
     parse_meta_yaml, pose_to_matrix, save_binary_ply, scan_timestamp, transform_points,
 )
