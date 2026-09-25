@@ -8,7 +8,7 @@ import re
 import numpy as np
 import yaml
 
-from CEAbot_phenotyping.test.reconstruction.plant_view_registration import (
+from plant_view_registration import (
     RegistrationView,
     add_registration_arguments,
     align_views,
