@@ -96,7 +96,6 @@ class PlantCoordinateNode(Node):
             return
 
         self.pending_process = True
-        self.get_logger().info("Waiting for latest color/depth/camera_info before processing")
         self.try_process_pending_scan()
         
     def cb_color(self, msg):
