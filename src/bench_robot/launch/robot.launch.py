@@ -15,6 +15,7 @@ def generate_launch_description():
     hub_motor_driver_params = os.path.join(pkg_share,'config','hub_motor_driver_v2.yaml')
     bench_tracker_params = os.path.join(pkg_share,'config','bench_tracker_v3.yaml')
     zed_params = os.path.join(pkg_share, 'config', 'zed_2i.yaml')
+    row_segmentation_params = os.path.join(pkg_share, 'config', 'plant_row_coordinates.yaml')
 
     zed_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(PathJoinSubstitution([FindPackageShare("zed_wrapper"),"launch","zed_camera.launch.py"])),
@@ -180,11 +181,7 @@ def generate_launch_description():
         Node(
             package="CEAbot_phenotyping",
             executable="plant_row_coordinates",
-            parameters=[{
-                "infer_occluded_adjacent_plants": True,
-                "inferred_obstacle_radius_margin_m": 0.08,
-                "inferred_obstacle_default_radius_m": 0.13,
-            }],
+            parameters=[row_segmentation_params],
             output="screen",),
         Node(
             package="bench_robot",

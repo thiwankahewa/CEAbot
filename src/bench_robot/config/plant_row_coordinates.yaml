@@ -1,0 +1,15 @@
+plant_row_coordinate_node:
+  ros__parameters:
+    # Read at startup. Change to yolo after training a row-camera plant model.
+    row_segmentation_method: hsv
+    row_yolo_weights: ""
+    row_yolo_class: plant
+    row_yolo_confidence: 0.25
+    row_yolo_imgsz: 640
+    # Empty selects automatically; use "cpu" or "0" to select explicitly.
+    row_yolo_device: ""
+
+    # Estimate adjacent-plant obstacles hidden from the camera.
+    infer_occluded_adjacent_plants: true
+    inferred_obstacle_radius_margin_m: 0.08
+    inferred_obstacle_default_radius_m: 0.13
