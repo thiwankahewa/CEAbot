@@ -6,6 +6,6 @@ __pycache__/
 *$py.class
 /.vscode/*
 !/.vscode/settings.json
-mobile_sam.pt
-sam2.1_b.pt
+yolo26n-seg.pt
+yolo26n.pt
 /runs
