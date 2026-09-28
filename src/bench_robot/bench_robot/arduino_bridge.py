@@ -167,7 +167,7 @@ class ArduinoBridge(Node):
             with open( self.scd41_csv_path, "a", newline="", encoding="utf-8") as stream:
                 writer = csv.writer(stream)
                 if needs_header:
-                    writer.writerow([ "timestamp", "unix_time_s", "co2_ppm", "temperature_c", "relative_humidity",] )
+                    writer.writerow([ "timestamp", "unix_time_s", "co2_ppm", "temperature_c", "relative_humidity_percent",] )
                 writer.writerow([ timestamp.isoformat(timespec="milliseconds"),f"{timestamp.timestamp():.3f}", *values,])
             self.scd41_log_error_reported = False
         except OSError as exc:

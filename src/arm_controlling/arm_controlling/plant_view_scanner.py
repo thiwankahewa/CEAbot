@@ -77,6 +77,7 @@ class PlantViewScanner(MoveItArmHelper):
         self.plan_pose_client = self.create_client(PlanToPose, "/arm/plan_to_pose")
         self.execute_planned_client = self.create_client(ExecutePlannedTrajectory,"/arm/execute_planned_trajectory")
         self.arm_stop_client = self.create_client(Trigger, "/arm/stop")
+        self.arm_ready_client = self.create_client(Trigger, "/arm/control_ready")
         self.go_rest_client = self.create_client(Trigger, "/arm/go_rest")
         self.orbbec_capture_client = self.create_client(CaptureView,"/orbbec_test_scan/capture_view")
 
@@ -155,6 +156,10 @@ class PlantViewScanner(MoveItArmHelper):
         except Exception as exc:
             self.get_logger().error(f"Plant scan crashed: {exc}")
         finally:
+            # Preserve the sensor interval even if scanning or returning to
+            # rest was interrupted. Completion status is recorded separately.
+            if self.scan_end_time is None:
+                self.scan_end_time = datetime.now().strftime("%Y%m%d_%H%M%S")
             self.save_scan_summary()
             self.scan_busy = False
 
@@ -315,18 +320,58 @@ class PlantViewScanner(MoveItArmHelper):
             return self.scan_stopped
 
     def wait_for_scan_arm(self):
+        # The scanner has no pending MoveIt goals of its own. Controller and
+        # joint-state checks here alone cannot tell whether arm_manager still
+        # owns an unresolved goal from the crashed controller process.
         if not self.wait_if_paused_or_stopped():
             raise RuntimeError("Scanner stopped")
-        if not self.wait_for_controller_ready(timeout=2.0):
-            self.get_logger().warn(
-                "Arm unavailable. Holding current scan view while controllers reconnect.")
-            timeout = float(self.get_parameter("arm_recovery_timeout").value)
-            if not self.wait_for_controller_ready(timeout=timeout, stable_duration=0.5):
-                raise ArmConnectionError(
-                    "Recovery timed out or scan stopped; row remains incomplete")
-            self.get_logger().info("Arm connection recovered with fresh feedback.")
-        if not self.wait_if_paused_or_stopped():
+        timeout = max(0.0, float(self.get_parameter("arm_recovery_timeout").value))
+        deadline = time.monotonic() + timeout
+        waiting_logged = False
+        ready_since = None
+        reason = "/arm/control_ready service unavailable"
+        while rclpy.ok() and time.monotonic() < deadline:
+            if not self.wait_if_paused_or_stopped():
+                raise RuntimeError("Scanner stopped")
+            ready = False
+            if self.arm_ready_client.service_is_ready():
+                future = self.arm_ready_client.call_async(Trigger.Request())
+                try:
+                    result = self.wait_future(
+                        future, timeout=min(2.0, max(0.0, deadline - time.monotonic())),
+                        check_stop=True)
+                    if result is not None:
+                        reason = result.message
+                        if reason == "Stopped by user":
+                            raise RuntimeError(reason)
+                        ready = result.success and self.has_fresh_arm_state()
+                        if result.success and not ready:
+                            reason = "Waiting for fresh feedback in the scanner"
+                    else:
+                        reason = "Waiting for arm_manager readiness response"
+                finally:
+                    if not future.done():
+                        self.arm_ready_client.remove_pending_request(future)
+            if ready:
+                if not waiting_logged:
+                    return
+                if ready_since is None:
+                    ready_since = time.monotonic()
+                if time.monotonic() - ready_since >= 0.5:
+                    self.get_logger().info(
+                        "Arm recovered: controllers ready and previous motion finished. "
+                        "Continuing the current scan view.")
+                    return
+            else:
+                ready_since = None
+                if not waiting_logged:
+                    self.get_logger().warn(
+                        f"Holding current scan view for arm recovery (up to {timeout:.0f}s): {reason}")
+                    waiting_logged = True
+            time.sleep(0.2)
+        if self.check_stop_requested():
             raise RuntimeError("Scanner stopped")
+        raise ArmConnectionError(f"Recovery timed out: {reason}; row remains incomplete")
 
     def move_scan_view(self, pose, trajectory=None):
         retries = max(0, int(self.get_parameter("arm_recovery_retries").value))
@@ -786,7 +831,7 @@ class PlantViewScanner(MoveItArmHelper):
             result["motion_status"] = motion_status
 
     def save_scan_summary(self):
-        if not getattr(self, "scan_results", None) or not self.latest_run_dir:
+        if not self.latest_run_dir:
             return
 
         metadata_path = os.path.join(self.latest_run_dir, "metadata.yaml")
@@ -869,7 +914,7 @@ class PlantViewScanner(MoveItArmHelper):
             self.get_logger().error(f"Could not save plant scan metadata: {exc}")
 
     def summarize_scd41_interval(self, metadata):
-        """Summarize CSV samples captured during this complete row scan."""
+        """Summarize CSV samples captured during this row scan interval."""
         start_text = metadata.get("top_scan_timestamp")
         end_text = metadata.get("scan_end_time")
         if not start_text or not end_text:
@@ -894,13 +939,19 @@ class PlantViewScanner(MoveItArmHelper):
                 for row in csv.DictReader(stream):
                     try:
                         sample_time = float(row["unix_time_s"])
-                        if start_epoch <= sample_time <= end_epoch + 0.999:
-                            samples.append(
-                                {
-                                    "co2_ppm": float(row["co2_ppm"]),
-                                    "temperature_c": float(row["temperature_c"]),
-                                    "relative_humidity_percent": float(row["relative_humidity_percent"]),
-                                })
+                        if start_epoch <= sample_time < end_epoch + 1.0:
+                            # Existing logs use relative_humidity; new logs
+                            # include the unit explicitly in the header.
+                            humidity = row.get("relative_humidity_percent")
+                            if humidity is None:
+                                humidity = row.get("relative_humidity")
+                            sample = {
+                                "co2_ppm": float(row["co2_ppm"]),
+                                "temperature_c": float(row["temperature_c"]),
+                                "relative_humidity_percent": float(humidity),
+                            }
+                            if all(math.isfinite(value) for value in sample.values()):
+                                samples.append(sample)
                     except (KeyError, TypeError, ValueError):
                         continue
         except OSError as exc:
