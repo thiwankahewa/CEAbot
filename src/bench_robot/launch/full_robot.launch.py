@@ -39,6 +39,8 @@ def generate_launch_description():
             "use_fake_hardware": use_fake_hardware,
             "launch_arm_controller": launch_arm_controller,
             "use_rviz": use_rviz,
+            "arm_control_max_restarts": LaunchConfiguration("arm_control_max_restarts"),
+            "arm_control_restart_delay": LaunchConfiguration("arm_control_restart_delay"),
         }.items(),
         condition=IfCondition(launch_arm),
     )
@@ -49,6 +51,8 @@ def generate_launch_description():
         DeclareLaunchArgument("launch_arm_controller", default_value="true"),
         DeclareLaunchArgument("use_rviz", default_value="true"),
 
+        DeclareLaunchArgument("arm_control_max_restarts", default_value="3"),
+        DeclareLaunchArgument("arm_control_restart_delay", default_value="5.0"),
         DeclareLaunchArgument("launch_base", default_value="true"),
         DeclareLaunchArgument("launch_arm", default_value="true"),
 

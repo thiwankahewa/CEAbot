@@ -20,6 +20,12 @@ from moveit_msgs.msg import (
 from geometry_msgs.msg import Pose, Point, Quaternion
 from shape_msgs.msg import SolidPrimitive
 from rcl_interfaces.msg import SetParametersResult
+from controller_manager_msgs.srv import ListControllers
+
+
+class ArmConnectionError(RuntimeError):
+    def __init__(self, message):
+        super().__init__(f"ARM_CONNECTION_LOST: {message}")
 
 
 class MoveItArmHelper(Node):
@@ -36,6 +42,11 @@ class MoveItArmHelper(Node):
         #self.ee_link = "gemini336_color_optical_frame"
 
         self.current_joint_state = None
+        self.joint_state_received_at = None
+        self.connection_epoch = 0
+        self.execution_epoch = None
+        self.pending_execution_result = None
+        self.pending_execution_send = None
         self.active_execute_goal = None
 
         # -------- params --------
@@ -46,6 +57,9 @@ class MoveItArmHelper(Node):
         self.declare_parameter("velocity_scaling", 0.4)
         self.declare_parameter("acceleration_scaling", 0.15)
         self.declare_parameter("planning_time", 2.0)
+        self.declare_parameter("joint_state_max_age", 1.5)
+        self.joint_state_max_age = float(self.get_parameter("joint_state_max_age").value)
+        self.arm_joint_names = {f"joint_{i}" for i in range(1, 8)}
 
         self._load_arm_params()
         self.add_on_set_parameters_callback(self.on_params)
@@ -56,6 +70,10 @@ class MoveItArmHelper(Node):
         # -------- clients --------
         self.move_group_client = ActionClient( self, MoveGroup, "/move_action", callback_group=self.moveit_cb_group,)
         self.execute_client = ActionClient( self, ExecuteTrajectory, "/execute_trajectory", callback_group=self.moveit_cb_group,)
+        self.list_controllers_client = self.create_client(
+            ListControllers, "/controller_manager/list_controllers",
+            callback_group=self.moveit_cb_group,
+        )
 
     # -------- callback functions --------
 
@@ -73,17 +91,88 @@ class MoveItArmHelper(Node):
         return SetParametersResult(successful=True)
 
     def joint_state_callback(self, msg):
+        positions = dict(zip(msg.name, msg.position))
+        if not self.arm_joint_names.issubset(positions):
+            return  # Chassis joint messages must not mask loss of arm feedback.
+        if not all(math.isfinite(positions[name]) for name in self.arm_joint_names):
+            return
+        stamp_ns = msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
+        age = (self.get_clock().now().nanoseconds - stamp_ns) / 1e9
+        if stamp_ns and (age < -self.joint_state_max_age or age > self.joint_state_max_age):
+            return
+        now = time.monotonic()
+        if (self.joint_state_received_at is not None
+                and now - self.joint_state_received_at > self.joint_state_max_age):
+            self.connection_epoch += 1
         self.current_joint_state = msg
+        self.joint_state_received_at = now
+
+    def has_fresh_arm_state(self):
+        return (self.current_joint_state is not None
+                and self.joint_state_received_at is not None
+                and time.monotonic() - self.joint_state_received_at <= self.joint_state_max_age)
+
+    def check_stop_requested(self):
+        return False
+
+    def check_arm_connection(self):
+        if not self.has_fresh_arm_state():
+            raise ArmConnectionError("No fresh arm joint feedback")
+        if self.execution_epoch is not None and self.execution_epoch != self.connection_epoch:
+            raise ArmConnectionError("Arm connection restarted during this motion")
+
+    def wait_for_controller_ready(self, timeout=120.0, stable_duration=0.0):
+        """Require an answering manager, active controllers, and live feedback."""
+        deadline = time.monotonic() + timeout
+        stable_since = None
+        while rclpy.ok() and time.monotonic() < deadline:
+            if self.check_stop_requested():
+                return False
+            ready = False
+            if self.list_controllers_client.service_is_ready():
+                future = self.list_controllers_client.call_async(ListControllers.Request())
+                try:
+                    result = self.wait_future(
+                        future, timeout=min(1.0, max(0.0, deadline - time.monotonic())),
+                        check_stop=True,
+                    )
+                    active = {c.name for c in result.controller if c.state == "active"} if result else set()
+                    ready = {"joint_state_broadcaster", "joint_trajectory_controller"}.issubset(active)
+                except Exception:
+                    ready = False
+                finally:
+                    if not future.done():
+                        self.list_controllers_client.remove_pending_request(future)
+            ready = (ready and self.has_fresh_arm_state()
+                     and self.move_group_client.server_is_ready()
+                     and self.execute_client.server_is_ready()
+                     and self.pending_execution_send is None
+                     and (self.pending_execution_result is None or self.pending_execution_result.done()))
+            if ready:
+                if stable_since is None:
+                    stable_since = time.monotonic()
+                if time.monotonic() - stable_since >= stable_duration:
+                    return True
+            else:
+                stable_since = None
+            time.sleep(0.1)
+        return False
+
+    def require_controller_ready(self):
+        if not self.wait_for_controller_ready(timeout=2.0):
+            raise ArmConnectionError("Controllers or fresh arm feedback unavailable")
 
     # -------------------------
     # Safe future wait helper
     # IMPORTANT: do not spin this node from inside helper methods
     # when the node is already running in an executor.
     # -------------------------
-    def wait_future(self, future, timeout=30.0, check_stop=False):
-        start = time.time()
+    def wait_future(self, future, timeout=30.0, check_stop=False, check_connection=False):
+        start = time.monotonic()
 
         while rclpy.ok():
+            if check_connection:
+                self.check_arm_connection()
             if future.done():
                 return future.result()
 
@@ -91,7 +180,7 @@ class MoveItArmHelper(Node):
                 self.get_logger().warn("Future wait interrupted by stop request")
                 return None
 
-            if time.time() - start > timeout:
+            if time.monotonic() - start > timeout:
                 self.get_logger().error("Future timeout")
                 return None
 
@@ -104,12 +193,14 @@ class MoveItArmHelper(Node):
         '''Get the current joint positions as a dictionary.'''
         start = time.time()
 
-        while rclpy.ok() and self.current_joint_state is None:
+        while rclpy.ok() and not self.has_fresh_arm_state():
             if time.time() - start > timeout:
                 self.get_logger().error("Timeout waiting for /joint_states")
                 return None
             time.sleep(0.05)
 
+        if not self.has_fresh_arm_state():
+            return None
         return dict(zip(self.current_joint_state.name, self.current_joint_state.position))
 
     def make_joint_goal(self, joint_targets):
@@ -134,6 +225,7 @@ class MoveItArmHelper(Node):
 
     def plan_to_joint_positions(self, joint_targets, planning_time=None, num_planning_attempts=None):
         '''plan trajectory to a given pose with joint angles'''
+        self.require_controller_ready()
         if not self.move_group_client.wait_for_server(timeout_sec=10.0):
             self.get_logger().error("/move_action server not ready")
             return None
@@ -184,6 +276,7 @@ class MoveItArmHelper(Node):
 
     def plan_to_target(self, x, y, z, qx, qy, qz, qw, start_joint_map=None):
         '''plan trajectory with given end effector pose'''
+        self.require_controller_ready()
         if not self.move_group_client.wait_for_server(timeout_sec=10.0):
             self.get_logger().error("/move_action server not ready")
             return None
@@ -272,6 +365,8 @@ class MoveItArmHelper(Node):
 
     def execute_trajectory(self, trajectory):
         '''Execute a planned trajectory.'''
+        self.require_controller_ready()
+        self.execution_epoch = self.connection_epoch
         goal_msg = ExecuteTrajectory.Goal()
         goal_msg.trajectory = trajectory
 
@@ -280,20 +375,32 @@ class MoveItArmHelper(Node):
             return False
 
         send_future = self.execute_client.send_goal_async(goal_msg)
+        self.pending_execution_send = send_future
         goal_handle = self.wait_future(send_future, timeout=10.0)
 
         if goal_handle is None:
+            # A late acceptance must not leave an untracked moving goal.
+            def cancel_late_goal(future):
+                handle = future.result()
+                if handle is not None and handle.accepted:
+                    self.pending_execution_result = handle.get_result_async()
+                    handle.cancel_goal_async()
+                self.pending_execution_send = None
+            send_future.add_done_callback(cancel_late_goal)
             return False
 
         if not goal_handle.accepted:
+            self.pending_execution_send = None
             self.get_logger().error("Trajectory execution rejected")
             return False
 
         self.active_execute_goal = goal_handle
+        result_future = goal_handle.get_result_async()
+        self.pending_execution_result = result_future
+        self.pending_execution_send = None
 
         try:
-            result_future = goal_handle.get_result_async()
-            result_wrap = self.wait_future(result_future, timeout=60.0, check_stop=True)
+            result_wrap = self.wait_future(result_future, timeout=60.0, check_stop=True, check_connection=True)
 
             if result_wrap is None:
                 return False
@@ -319,6 +426,8 @@ class MoveItArmHelper(Node):
             return True
 
         finally:
+            if not result_future.done():
+                goal_handle.cancel_goal_async()
             self.active_execute_goal = None
 
     def wait_until_robot_stops(self, velocity_tolerance=0.005, timeout=10.0, stable_duration=0.5):
@@ -327,6 +436,9 @@ class MoveItArmHelper(Node):
         stable_since = None
 
         while rclpy.ok():
+            if self.check_stop_requested():
+                return False
+            self.check_arm_connection()
             if time.time() - start_time > timeout:
                 self.get_logger().warn("Timeout waiting for robot to stop")
                 return False
@@ -364,6 +476,9 @@ class MoveItArmHelper(Node):
         start_time = time.time()
 
         while rclpy.ok():
+            if self.check_stop_requested():
+                return False
+            self.check_arm_connection()
             if time.time() - start_time > timeout:
                 self.get_logger().warn("Timeout waiting for robot to reach final trajectory point")
                 return False
@@ -389,7 +504,7 @@ class MoveItArmHelper(Node):
             if all_close:
                 return True
 
-            if len(self.current_joint_state.velocity) > 0:
+            if all(name in current for name in target) and len(self.current_joint_state.velocity) > 0:
                 max_vel = max(abs(v) for v in self.current_joint_state.velocity)
                 if max_vel < 0.005 and max_error < max(tolerance * 3.0, 0.05):
                     self.get_logger().info("Robot stopped near final trajectory point")

@@ -13,7 +13,7 @@ import tf2_ros
 from rclpy.duration import Duration
 from rclpy.time import Time
 from rcl_interfaces.msg import SetParametersResult
-from arm_controlling.moveit_arm_helper import MoveItArmHelper
+from arm_controlling.moveit_arm_helper import MoveItArmHelper, ArmConnectionError
 from std_msgs.msg import Bool, String
 from arm_interfaces.srv import ExecutePlannedTrajectory, MoveToPose, PlanToPose
 from std_srvs.srv import Trigger
@@ -44,6 +44,8 @@ class PlantViewScanner(MoveItArmHelper):
         self.declare_parameter("circle_height_offset", 0.05)
         self.declare_parameter("look_at_angle_offset", 0.05)
         self.declare_parameter("view_count", 7)  
+        self.declare_parameter("arm_recovery_timeout", 120.0)
+        self.declare_parameter("arm_recovery_retries", 2)
         self.declare_parameter("optimize_view_order", True)
         # Limit greedy optimization to adjacent groups of plants.  A value of
         # 2 optimizes plants 1-2, then plants 3-4, while carrying the predicted
@@ -74,6 +76,7 @@ class PlantViewScanner(MoveItArmHelper):
         self.move_pose_client = self.create_client(MoveToPose, "/arm/move_to_pose")
         self.plan_pose_client = self.create_client(PlanToPose, "/arm/plan_to_pose")
         self.execute_planned_client = self.create_client(ExecutePlannedTrajectory,"/arm/execute_planned_trajectory")
+        self.arm_stop_client = self.create_client(Trigger, "/arm/stop")
         self.go_rest_client = self.create_client(Trigger, "/arm/go_rest")
         self.orbbec_capture_client = self.create_client(CaptureView,"/orbbec_test_scan/capture_view")
 
@@ -146,6 +149,9 @@ class PlantViewScanner(MoveItArmHelper):
         self.scan_end_time = None
         try:
             self.run()
+        except ArmConnectionError as exc:
+            self.scan_processing_complete = False
+            self.get_logger().error(f"Plant scan halted: {exc}")
         except Exception as exc:
             self.get_logger().error(f"Plant scan crashed: {exc}")
         finally:
@@ -177,6 +183,8 @@ class PlantViewScanner(MoveItArmHelper):
             self.scan_paused = False
 
         response.success = True
+        if self.arm_stop_client.service_is_ready():
+            self.arm_stop_client.call_async(Trigger.Request())
         response.message = "Plant scanner stopped"
         return response
     
@@ -302,7 +310,63 @@ class PlantViewScanner(MoveItArmHelper):
 
         return poses
     
-    def call_arm_move_to_pose(self, pose, timeout=60.0):
+    def check_stop_requested(self):
+        with self.scan_lock:
+            return self.scan_stopped
+
+    def wait_for_scan_arm(self):
+        if not self.wait_if_paused_or_stopped():
+            raise RuntimeError("Scanner stopped")
+        if not self.wait_for_controller_ready(timeout=2.0):
+            self.get_logger().warn(
+                "Arm unavailable. Holding current scan view while controllers reconnect.")
+            timeout = float(self.get_parameter("arm_recovery_timeout").value)
+            if not self.wait_for_controller_ready(timeout=timeout, stable_duration=0.5):
+                raise ArmConnectionError(
+                    "Recovery timed out or scan stopped; row remains incomplete")
+            self.get_logger().info("Arm connection recovered with fresh feedback.")
+        if not self.wait_if_paused_or_stopped():
+            raise RuntimeError("Scanner stopped")
+
+    def move_scan_view(self, pose, trajectory=None):
+        retries = max(0, int(self.get_parameter("arm_recovery_retries").value))
+        for attempt in range(retries + 1):
+            epoch = self.connection_epoch
+            self.wait_for_scan_arm()
+            if epoch != self.connection_epoch:
+                trajectory = None
+            epoch = self.connection_epoch
+            if trajectory is not None:
+                success, message = self.call_arm_execute_planned(trajectory, pose["label"])
+                # Ordinary plan failures can use the existing Cartesian fallback.
+                if (not success and "Stopped by user" not in message
+                        and "ARM_CONNECTION_LOST:" not in message
+                        and epoch == self.connection_epoch and self.has_fresh_arm_state()):
+                    self.get_logger().warn(
+                        f"Optimizer trajectory failed for {pose['label']}: {message}. "
+                        "Replanning from actual state.")
+                    success, message = self.call_arm_move_to_pose(pose)
+            else:
+                success, message = self.call_arm_move_to_pose(pose)
+            if success:
+                self.wait_for_scan_arm()
+            if self.check_stop_requested():
+                raise RuntimeError("Scanner stopped")
+            interrupted = ("ARM_CONNECTION_LOST:" in message
+                           or epoch != self.connection_epoch or not self.has_fresh_arm_state())
+            if "Stopped by user" in message:
+                return False, message
+            if not interrupted:
+                return success, message
+            if attempt == retries:
+                raise ArmConnectionError("Repeated connection failures; row remains incomplete")
+            self.get_logger().warn(
+                f"Connection interrupted {pose['label']}; retaining this view and "
+                f"replanning after recovery ({attempt + 1}/{retries}).")
+            trajectory = None
+        return False, "Arm recovery failed"
+
+    def call_arm_move_to_pose(self, pose, timeout=180.0):
         if not self.move_pose_client.wait_for_service(timeout_sec=5.0):
             return False, "/arm/move_to_pose service not available"
 
@@ -325,11 +389,15 @@ class PlantViewScanner(MoveItArmHelper):
                 return res.success, res.message
 
             if time.time() - start > timeout:
-                return False, "Timeout waiting for arm_manager"
+                raise RuntimeError("Timeout waiting for arm_manager; scan halted to avoid overlapping motion requests")
 
             time.sleep(0.05)
 
     def call_arm_plan_to_pose(self, pose, start_joint_map, timeout=60.0):
+        epoch = self.connection_epoch
+        self.wait_for_scan_arm()
+        if epoch != self.connection_epoch:
+            return True, "Replan after arm recovery", float("inf"), {}, None
         if not self.plan_pose_client.wait_for_service(timeout_sec=5.0):
             return False, "/arm/plan_to_pose service not available", None, None, None
 
@@ -354,6 +422,12 @@ class PlantViewScanner(MoveItArmHelper):
                 if res is None:
                     return False, "No response from arm_manager", None, None, None
 
+                if ("ARM_CONNECTION_LOST:" in res.message or epoch != self.connection_epoch
+                        or not self.has_fresh_arm_state()):
+                    # Leave the candidate pending: execute_scan_item will replan
+                    # after recovery instead of marking it unreachable.
+                    self.wait_for_scan_arm()
+                    return True, "Replan after arm recovery", float("inf"), {}, None
                 final_joint_map = dict(zip(res.final_joint_names, res.final_joint_positions))
                 return res.success, res.message, res.cost, final_joint_map, res.planned_trajectory
 
@@ -362,7 +436,7 @@ class PlantViewScanner(MoveItArmHelper):
 
             time.sleep(0.05)
 
-    def call_arm_execute_planned(self, trajectory, label, timeout=90.0):
+    def call_arm_execute_planned(self, trajectory, label, timeout=180.0):
         if not self.execute_planned_client.wait_for_service(timeout_sec=5.0):
             return False, "/arm/execute_planned_trajectory service not available"
 
@@ -380,7 +454,7 @@ class PlantViewScanner(MoveItArmHelper):
                 return res.success, res.message
 
             if time.time() - start > timeout:
-                return False, "Timeout waiting for cached trajectory execution"
+                raise RuntimeError("Timeout waiting for cached trajectory execution; scan halted to avoid overlapping motion requests")
 
             time.sleep(0.05)
 
@@ -403,7 +477,7 @@ class PlantViewScanner(MoveItArmHelper):
                 return res.success, res.message
 
             if time.time() - start > timeout:
-                return False, "Timeout waiting for arm to go rest"
+                raise RuntimeError("Timeout waiting for arm to go rest; scan halted to avoid overlapping motion requests")
 
             time.sleep(0.05)
 
@@ -847,6 +921,7 @@ class PlantViewScanner(MoveItArmHelper):
         return summary
 
     def select_next_scan_item(self, remaining, step, batch_index, batch_count):
+        epoch = self.connection_epoch
         start_joint_map = self.get_current_joint_map(timeout=5.0)
         if start_joint_map is None:
             self.get_logger().warn(
@@ -878,6 +953,10 @@ class PlantViewScanner(MoveItArmHelper):
                 plan_pose, start_joint_map
             )
 
+            if epoch != self.connection_epoch:
+                # All candidates in this optimizer pass used the old start state.
+                return remaining.pop(i), None, step + 1
+
             if not success:
                 self.get_logger().warn(
                     f"Online step {step} candidate {i + 1}/{candidate_count}: "
@@ -886,6 +965,8 @@ class PlantViewScanner(MoveItArmHelper):
                 failed_items.append(item)
                 continue
 
+            if trajectory is None:
+                return remaining.pop(i), None, step + 1
             duration = self.trajectory_duration(trajectory)
             is_better = (
                 best_duration is None
@@ -941,6 +1022,7 @@ class PlantViewScanner(MoveItArmHelper):
         )
 
         for item in deferred:
+            self.wait_for_scan_arm()
             start_joint_map = self.get_current_joint_map(timeout=5.0)
             if start_joint_map is None:
                 self.get_logger().warn(
@@ -966,11 +1048,11 @@ class PlantViewScanner(MoveItArmHelper):
 
             self.get_logger().info(
                 f"Deferred retry succeeded for {plan_pose['label']}, "
-                f"duration={self.trajectory_duration(trajectory):.3f}s, "
+                f"duration={self.trajectory_duration(trajectory) if trajectory is not None else 0.0:.3f}s, "
                 f"joint_distance={cost:.4f}rad"
             )
             if not self.execute_scan_item(item, order_index, total_items, trajectory):
-                return order_index
+                raise RuntimeError("Scanner stopped during deferred views")
             order_index += 1
 
         return order_index
@@ -1021,6 +1103,7 @@ class PlantViewScanner(MoveItArmHelper):
             )
 
             while remaining:
+                self.wait_for_scan_arm()
                 if self.optimize_view_order:
                     item, trajectory, optimizer_step = self.select_next_scan_item(
                         remaining,
@@ -1065,19 +1148,13 @@ class PlantViewScanner(MoveItArmHelper):
 
             move_pose = dict(pose)
             move_pose["label"] = f"plant_{plant_id}_{pose['label']}"
-            if trajectory is not None:
-                success, message = self.call_arm_execute_planned(
-                    trajectory, move_pose["label"]
-                )
-                if not success and "Stopped by user" not in message:
-                    self.get_logger().warn(
-                        f"Optimizer trajectory failed for {move_pose['label']}: "
-                        f"{message}. Falling back to replanning from actual state."
-                    )
-                    success, message = self.call_arm_move_to_pose(move_pose)
-            else:
+            if trajectory is None:
                 item["planning_started_at"] = datetime.now().strftime("%Y%m%d_%H%M%S")
-                success, message = self.call_arm_move_to_pose(move_pose)
+            try:
+                success, message = self.move_scan_view(move_pose, trajectory)
+            except ArmConnectionError:
+                self.set_scan_result(item, motion_status="execution_failed")
+                raise
 
             if not success:
                 self.set_scan_result(
@@ -1169,7 +1246,15 @@ class PlantViewScanner(MoveItArmHelper):
 
     def finish_scan(self):
         self.get_logger().info("All targets processed. Sending arm to rest.")
-        success, message = self.call_arm_go_rest()
+        for attempt in range(int(self.get_parameter("arm_recovery_retries").value) + 1):
+            self.wait_for_scan_arm()
+            epoch = self.connection_epoch
+            success, message = self.call_arm_go_rest()
+            if ("ARM_CONNECTION_LOST:" not in message and self.has_fresh_arm_state()
+                    and epoch == self.connection_epoch):
+                break
+        else:
+            raise ArmConnectionError("Cannot return to rest after recovery")
         if success:
             self.get_logger().info(message)
             if not self.wait_until_arm_rest():

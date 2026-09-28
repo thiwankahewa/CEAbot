@@ -41,6 +41,7 @@ class ArmManager(MoveItArmHelper):
 
         #--------- Parameters ---------#
         self.declare_parameter("plant_obstacle_radius_margin", 0.02)
+        self.declare_parameter("plant_obstacle_height_margin", 0.03)
         self.declare_parameter("plant_obstacle_min_radius", 0.04)
         self.declare_parameter("plant_obstacle_max_radius", 0.30)
         self.declare_parameter("rest_planning_time", 10.0)
@@ -49,6 +50,7 @@ class ArmManager(MoveItArmHelper):
         self.bench_height = float(self.get_parameter("bench_height").value)
         self.pot_height = float(self.get_parameter("pot_height").value)
         self.plant_obstacle_radius_margin = float( self.get_parameter("plant_obstacle_radius_margin").value)
+        self.plant_obstacle_height_margin = float(self.get_parameter("plant_obstacle_height_margin").value)
         self.plant_obstacle_min_radius = float( self.get_parameter("plant_obstacle_min_radius").value)
         self.plant_obstacle_max_radius = float( self.get_parameter("plant_obstacle_max_radius").value)
         self.rest_planning_time = float( self.get_parameter("rest_planning_time").value)
@@ -87,6 +89,9 @@ class ArmManager(MoveItArmHelper):
             if height <= 0.01:
                 self.get_logger().warn(f"Skipping {object_id}: top z {top_z:.3f} is not above " f"obstacle bottom z {bottom_z:.3f}")
                 continue
+
+            top_z -= self.plant_obstacle_height_margin
+            height += self.plant_obstacle_height_margin
 
             new_ids.add(object_id)
 
@@ -386,21 +391,10 @@ class ArmManager(MoveItArmHelper):
             return self.stop_requested
 
     def wait_for_arm_ready(self, timeout=10.0):
-        start = time.time()
-
-        while rclpy.ok():
-            if self.move_group_client.wait_for_server(timeout_sec=0.2):
-                if self.current_joint_state is not None and len(self.current_joint_state.name) > 0:
-                    return True
-
-            if time.time() - start > timeout:
-                return False
-
-            time.sleep(0.2)
-
-        return False
+        return self.wait_for_controller_ready(timeout=timeout)
 
     def is_near_joint_pose(self, target, tolerance=0.06):
+        self.require_controller_ready()
         current = self.get_current_joint_map(timeout=5.0)
 
         if current is None:
