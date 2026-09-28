@@ -11,7 +11,7 @@ from std_msgs.msg import String
 from sensor_msgs.msg import Image, CameraInfo
 from cv_bridge import CvBridge
 from arm_interfaces.msg import PlantTarget, PlantTargetArray
-from CEAbot_phenotyping.row_segmentation import draw_row_guides, select_row_contours
+from CEAbot_phenotyping.row_segmentation import YoloPlantSegmenter, draw_row_guides, select_row_contours
 
 class PlantCoordinateNode(Node):
     def __init__(self):
@@ -28,10 +28,10 @@ class PlantCoordinateNode(Node):
         self.pending_process = False
 
         # tuned using src/CEAbot_phenotyping/test/crop_selector.py
-        self.x1 = 93
-        self.y1 = 298
-        self.x2 = 1157
-        self.y2 = 551
+        self.x1 = 250
+        self.y1 = 259
+        self.x2 = 1054
+        self.y2 = 481
 
         # tuned using src/CEAbot_phenotyping/test/plant_segmentation_tuner.py
         self.lower_green = np.array([35, 27, 10])
@@ -53,6 +53,27 @@ class PlantCoordinateNode(Node):
         self.min_depth_mm = 150.0
         self.max_depth_mm = 900.0
         self.dilate_itr = 2
+
+        # Startup-selectable backend; HSV remains the default and needs no ML dependencies.
+        self.declare_parameter("row_segmentation_method", "hsv")
+        self.declare_parameter("row_yolo_weights", "")
+        self.declare_parameter("row_yolo_confidence", 0.25)
+        self.declare_parameter("row_yolo_imgsz", 640)
+        self.declare_parameter("row_yolo_device", "")
+        self.declare_parameter("row_yolo_class", "plant")
+        self.segmentation_method = str(self.get_parameter("row_segmentation_method").value).lower()
+        if self.segmentation_method not in ("hsv", "yolo"):
+            raise ValueError("row_segmentation_method must be hsv or yolo")
+        self.plant_segmenter = None
+        if self.segmentation_method == "yolo":
+            self.plant_segmenter = YoloPlantSegmenter(
+                str(self.get_parameter("row_yolo_weights").value),
+                confidence=float(self.get_parameter("row_yolo_confidence").value),
+                imgsz=int(self.get_parameter("row_yolo_imgsz").value),
+                device=str(self.get_parameter("row_yolo_device").value),
+                class_name=str(self.get_parameter("row_yolo_class").value),
+            )
+        self.get_logger().info(f"Row segmentation backend: {self.segmentation_method}")
 
         # A top scan cannot see foliage hidden by the arm base.  Keep the
         # expected pot lattice occupied in those blind areas instead of
@@ -96,6 +117,7 @@ class PlantCoordinateNode(Node):
             return
 
         self.pending_process = True
+        self.get_logger().info("Waiting for latest color/depth/camera_info before processing")
         self.try_process_pending_scan()
         
     def cb_color(self, msg):
@@ -222,25 +244,31 @@ class PlantCoordinateNode(Node):
 
         return float(np.median(top_depth_values))
 
-    def detect_full_frame_obstacles(self, img, depth, fx, fy, cx, cy, selected_records, crop_bounds):
+    def detect_full_frame_obstacles(self, img, depth, fx, fy, cx, cy, selected_records, crop_bounds, plant_mask=None):
         """Detect plant envelopes in the uncropped image.
         Selected-row records are retained because their slot-wise segmentation
         is more reliable when neighbouring foliage touches.  Extra contours
         whose centres lie outside the crop supply adjacent-row obstacles.
         """
 
-        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-        green = cv2.inRange(hsv, self.lower_green, self.upper_green)
-        yellow = cv2.inRange(hsv, self.lower_yellow, self.upper_yellow)
-        valid_depth = ( np.isfinite(depth) & (depth >= self.min_depth_mm) & (depth <= self.max_depth_mm))
-        green[~valid_depth] = 0
-        yellow[~valid_depth] = 0
-
         kernel = np.ones((self.kernel_size, self.kernel_size), np.uint8)
-        green = cv2.morphologyEx(green, cv2.MORPH_OPEN, kernel)
-        green = cv2.morphologyEx(green, cv2.MORPH_CLOSE, kernel)
-        yellow = cv2.morphologyEx( yellow, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
-        measurement = cv2.bitwise_or(green, yellow)
+        if plant_mask is not None:
+            valid_depth = (np.isfinite(depth) & (depth >= self.min_depth_mm) & (depth <= self.max_depth_mm))
+            measurement = plant_mask.copy()
+            measurement[~valid_depth] = 0
+        else:
+            hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+            green = cv2.inRange(hsv, self.lower_green, self.upper_green)
+            yellow = cv2.inRange(hsv, self.lower_yellow, self.upper_yellow)
+            valid_depth = ( np.isfinite(depth) & (depth >= self.min_depth_mm) & (depth <= self.max_depth_mm))
+            green[~valid_depth] = 0
+            yellow[~valid_depth] = 0
+
+            kernel = np.ones((self.kernel_size, self.kernel_size), np.uint8)
+            green = cv2.morphologyEx(green, cv2.MORPH_OPEN, kernel)
+            green = cv2.morphologyEx(green, cv2.MORPH_CLOSE, kernel)
+            yellow = cv2.morphologyEx( yellow, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+            measurement = cv2.bitwise_or(green, yellow)
         grouping = cv2.morphologyEx(measurement, cv2.MORPH_CLOSE, kernel)
         grouping = cv2.dilate(grouping, kernel, iterations=self.dilate_itr)
         x1, y1, x2, y2 = crop_bounds
@@ -446,21 +474,35 @@ class PlantCoordinateNode(Node):
             depth = self.depth_to_mm(depth)
             depth_crop = depth[y1_clamped:y2_clamped, x1_clamped:x2_clamped]
     
-            hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
-            green_mask = cv2.inRange(hsv, self.lower_green, self.upper_green)
-            yellow_mask = cv2.inRange(hsv, self.lower_yellow, self.upper_yellow)
-    
-            depth_mask = (np.isfinite(depth_crop) & (depth_crop >= self.min_depth_mm) & (depth_crop <= self.max_depth_mm))
-    
-            green_mask[~depth_mask] = 0
-            yellow_mask[~depth_mask] = 0
+            # Predict once on the raw full frame, matching the row-camera training images.
+            # Reuse the mask for target-row measurements and adjacent-row obstacles.
+            full_plant_mask = None
             kernel = np.ones((self.kernel_size, self.kernel_size), np.uint8)
-            green_clean = cv2.morphologyEx(green_mask, cv2.MORPH_OPEN, kernel)
-            green_clean = cv2.morphologyEx(green_clean, cv2.MORPH_CLOSE, kernel)
-            yellow_kernel = np.ones((2, 2), np.uint8)
-            yellow_clean = cv2.morphologyEx(yellow_mask, cv2.MORPH_OPEN, yellow_kernel)
+            if self.plant_segmenter is not None:
+                try:
+                    full_plant_mask = self.plant_segmenter.predict_mask(img)
+                except Exception as exc:
+                    self.get_logger().error(f"YOLO row segmentation failed; scan not advanced: {exc}")
+                    return
+                measurement_mask = full_plant_mask[y1_clamped:y2_clamped, x1_clamped:x2_clamped].copy()
+                depth_mask = (np.isfinite(depth_crop) & (depth_crop >= self.min_depth_mm) & (depth_crop <= self.max_depth_mm))
+                measurement_mask[~depth_mask] = 0
+            else:
+                hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+                green_mask = cv2.inRange(hsv, self.lower_green, self.upper_green)
+                yellow_mask = cv2.inRange(hsv, self.lower_yellow, self.upper_yellow)
     
-            measurement_mask = cv2.bitwise_or(green_clean, yellow_clean)
+                depth_mask = (np.isfinite(depth_crop) & (depth_crop >= self.min_depth_mm) & (depth_crop <= self.max_depth_mm))
+    
+                green_mask[~depth_mask] = 0
+                yellow_mask[~depth_mask] = 0
+                kernel = np.ones((self.kernel_size, self.kernel_size), np.uint8)
+                green_clean = cv2.morphologyEx(green_mask, cv2.MORPH_OPEN, kernel)
+                green_clean = cv2.morphologyEx(green_clean, cv2.MORPH_CLOSE, kernel)
+                yellow_kernel = np.ones((2, 2), np.uint8)
+                yellow_clean = cv2.morphologyEx(yellow_mask, cv2.MORPH_OPEN, yellow_kernel)
+    
+                measurement_mask = cv2.bitwise_or(green_clean, yellow_clean)
             segmented = cv2.bitwise_and(crop, crop, mask=measurement_mask)
             detection = crop.copy()
             grouping_mask, slot_contours = select_row_contours(
@@ -523,7 +565,7 @@ class PlantCoordinateNode(Node):
     
             results = sorted(plant_records, key=lambda row: row["plant_id"])
 
-            obstacle_records, obstacle_detection = self.detect_full_frame_obstacles(img, depth, fx, fy, cx_intr, cy_intr, results, (x1_clamped, y1_clamped, x2_clamped, y2_clamped), )
+            obstacle_records, obstacle_detection = self.detect_full_frame_obstacles(img, depth, fx, fy, cx_intr, cy_intr, results, (x1_clamped, y1_clamped, x2_clamped, y2_clamped), plant_mask=full_plant_mask)
 
             target_msg = PlantTargetArray()
             target_msg.run_dir = str(output_dir) if output_dir is not None else ""
@@ -584,6 +626,7 @@ class PlantCoordinateNode(Node):
         metadata["row_segmentation_timestamp"] = datetime.now().strftime("%Y%m%d_%H%M%S")
 
         metadata["segmentation_parameters"] = {
+            "method": self.segmentation_method,
             "crop": {
                 "x_min_px": int(self.x1),
                 "y_min_px": int(self.y1),
@@ -611,6 +654,15 @@ class PlantCoordinateNode(Node):
                 "morphology_kernel_size_px": 2,
             },
         }
+
+        if self.plant_segmenter is not None:
+            model = self.plant_segmenter
+            metadata["segmentation_parameters"]["yolo"] = {
+                "weights": model.weights, "class_name": model.class_name,
+                "class_id": model.class_id, "confidence": model.confidence,
+                "imgsz": model.imgsz, "device": model.device or "auto",
+                "input": "full_frame_bgr", "retina_masks": True,
+            }
 
         metadata["plants"] = [
             {

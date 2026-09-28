@@ -1,8 +1,8 @@
 plant_row_coordinate_node:
   ros__parameters:
     # Read at startup. Change to yolo after training a row-camera plant model.
-    row_segmentation_method: hsv
-    row_yolo_weights: ""
+    row_segmentation_method: yolo
+    row_yolo_weights: "/home/thiwa/CEAbot/models/plant_top_v1.pt"
     row_yolo_class: plant
     row_yolo_confidence: 0.25
     row_yolo_imgsz: 640

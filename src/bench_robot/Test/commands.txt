@@ -4,6 +4,22 @@ ros2 launch rosbridge_server rosbridge_websocket_launch.xml
 #---building ros packages
 colcon build --symlink-install
 
+#---arm crash recovery (after rebuilding, restart the existing launch once)
+# Standalone real/fake arm launches now restart a crashed ros2_control_node,
+# reload both controllers, and retain the running scanner/MoveIt processes.
+# Defaults: 5 s restart delay; at most 3 restarts per launch session.
+# The scanner waits up to 120 s for active controllers + fresh joint feedback,
+# then replans the interrupted view (up to 2 recovery retries for that view).
+# Exhausted recovery halts the row without publishing scan completion.
+# This handles process crashes, not a still-running but hung driver or the
+# underlying network/Kortex timeout. Do not start a second robot launch.
+# Build only the changed packages:
+# colcon build --symlink-install --packages-select arm_controlling bench_robot
+# source install/setup.bash
+# ros2 launch bench_robot full_robot.launch.py robot_ip:=192.168.1.10 use_rviz:=false
+# Optional launch overrides: arm_control_max_restarts:=3 arm_control_restart_delay:=5.0
+# Scanner parameters: arm_recovery_timeout (seconds), arm_recovery_retries.
+
 #---ROS general commands
 ros2 topic hz /astra2/color/image_raw
 ros2 topic echo /astra2/color/camera_info --once
@@ -98,45 +114,95 @@ ros2 service call /remote_orbbec_transfer/start \
   std_srvs/srv/Trigger '{}'
 
 
-
-ros2 topic pub /robot_location std_msgs/msg/Int16MultiArray "{data: [0, 1, 15, 1, 15]}" --once
-
-
 #plant_segmentation tuner
 python3 /home/thiwa/CEAbot/src/CEAbot_phenotyping/test/plant_segmentation_tuner.py /path/to/scan_folder
 
+
+cd /home/thiwa/CEAbot
+
+# reconstrction all args
+
+python3 src/CEAbot_phenotyping/test/reconstruction/reconstruct_plant_views.py \
+  /home/thiwa/scan_data (or for one row specify the scan folder path)
+  --run-name "compare_$(date +%Y%m%d_%H%M%S)" \ (use sub folder OR if not use timestamp folder)
+  --views 8 \
+  --start-time "2026-09-02 00:00:00" \
+  --end-time "2026-09-02 23:59:59" \
+  --min-depth 0.05 \
+  --max-depth 0.60 \
+  --crop-margin 0.05 \
+  --crop-below 0.12 \
+  --crop-above 0.30 \
+  --voxel-size 0 \
+  --methods robust_icp (baseline OR colored_icp)
+  --pairing adjacent \
+  --max-pair-angle 80 \
+  --registration-margin 0.03 \
+  --pose-graph \
+  --icp-voxels 0.008 0.004 0.002 \
+  --icp-distances 0.03 0.015 0.008 \
+  --icp-iterations 40 \
+  --normal-radius-factor 2.5 \
+  --normal-max-nn 30 \
+  --robust-kernel huber \
+  --robust-scale 0.01 \
+  --colored-geometric-weight 0.968 \
+  --min-fitness 0.20 \
+  --min-correspondences 30 \
+  --max-rmse 0.008 \
+  --max-correction-translation 0.05 \
+  --max-correction-rotation 12 \
+  --color-by-view \
+
+# reconstrction main args
+
+python3 src/CEAbot_phenotyping/test/reconstruction/reconstruct_plant_views.py \
+  /home/thiwa/scan_data \
+  --start-time "2026-09-15 00:00:00" \
+  --end-time "2026-09-25 23:59:59" \
+  --min-depth 0.05 \
+  --max-depth 0.60 \
+  --voxel-size 0 \
+  --methods robust_icp 
+
+
 # Plant height: local soil at stem to highest supported plant organ.
-# Ruler units are provisionally mm; change --manual-unit if needed.
+# Manual ruler measurements must be in mm.
 # Choose a NEW output directory for each run. See test/height/PLANT_HEIGHT.md for history.
 python3 /home/thiwa/CEAbot/src/CEAbot_phenotyping/test/height/measure_plant_height.py \
   /home/thiwa/scan_data \
-  --date 2026-09-14 --locations b1_r16 b1_r17 b1_r18 b1_r19 \
+  --date 2026-09-15 --locations b1_r16 b1_r17 b1_r18 b1_r19 b1_r20 b1_r21 \
   --config /home/thiwa/CEAbot/src/CEAbot_phenotyping/test/height/plant_height_config.example.json \
   --manual-csv /home/thiwa/CEAbot/src/CEAbot_phenotyping/test/height/manual_heights_20260914.csv \
-  --manual-unit mm \
-  --output-dir /home/thiwa/scan_data/plant_height_20260914_run2
+  --output-dir /home/thiwa/scan_data/plant_height_20260923
+# For later scans, add to the command: --history /path/to/latest_run/soil_history.json
 
 
-python3 ~/CEAbot/src/bench_robot/Test/publish_zed_top_scan_folder.py /home/thiwa/scan_data_zed/b1_r15_20260608_133520 --trigger
+DATASET_ROOT=/home/thiwa/plant_dataset/soil_plant_indivdual
+
+python3 "/home/thiwa/CEAbot/src/CEAbot_phenotyping/test/fruit count/split_plant_view_images.py" \
+  "$DATASET_ROOT/v2_annotations" \
+  --source /home/thiwa/scan_data \
+  --camera top \(end-effector)
+  --start 2026-09-15 \
+  --end 2026-09-25 \
+  --reuse-splits "$DATASET_ROOT/soil_plant_yolo" \
+  --train 80 \
+  --validate 10 \
+  --test 10 \
+  --execute
+
+python3 "/home/thiwa/CEAbot/src/CEAbot_phenotyping/test/fruit count/combine_xanylabeling_to_yolo.py" \
+  "$DATASET_ROOT/yolo" \
+  "$DATASET_ROOT/v1/split" \
+  "$DATASET_ROOT/v2/split" \  (#remove this if at v1)
+  --classes soil,plant
+  --execute
+
 
 python3 ~/CEAbot/src/CEAbot_phenotyping/test/reconstruction/reconstruct_plant_views.py \
   /home/thiwa/scan_data_zed/b1_r15_20260608_133520
     --color-by-view \
-
-OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 /tmp/ceabot-registration-venv/bin/python /home/thiwa/CEAbot/src/CEAbot_phenotyping/test/reconstruction/reconstruct_plant_views.py /home/thiwa/scan_data/b1_r19_20260914_115521 --robust-icp --no-baseline --pairing all --views 3 --voxel-size 0 --min-depth 0.08
-
-
-ros2 topic pub --once /plant_row/targets arm_interfaces/msg/PlantTargetArray \
-"{run_dir: '/home/thiwa/scan_data/b1_r13_20260709_144506', targets: [
-  {plant_id: 1, target_x: 0.45654, target_y: 0.15719, target_z: 0.840, radius_m: 0.062},
-  {plant_id: 2, target_x: 0.14228, target_y: 0.17708, target_z: 0.808, radius_m: 0.069},
-  {plant_id: 3, target_x: -0.15780, target_y: 0.17515, target_z: 0.833, radius_m: 0.058},
-  {plant_id: 4, target_x: -0.42001, target_y: 0.18824, target_z: 0.833, radius_m: 0.053}
-]}"
-
-ros2 topic pub /auto_state std_msgs/msg/String "{data: individual_plant_scan}" --once
-
-
 
 
 ros2 launch bench_robot robot_sim_gazebo.launch.py \
@@ -154,14 +220,3 @@ ros2 launch bench_robot robot_sim_gazebo.launch.py \
   enable_ir:=false \
   publish_tf:=false
 
-
-ros2 run bench_robot handeye_capture \
-  --squares-x 5 \
-  --squares-y 7 \
-  --square-length 0.030 \
-  --marker-length 0.022 \
-  --dictionary DICT_4X4_50 \
-  --display-rate 3
-
-
- ros2 run bench_robot handeye_capture   --squares-x 5   --squares-y 7   --square-length 0.030   --marker-length 0.022   --dictionary DICT_4X4_50   --display-rate 3

@@ -1,5 +1,7 @@
 """Slot-wise plant selection shared by the live node and offline tuner."""
 
+from pathlib import Path
+
 import cv2
 import numpy as np
 
@@ -66,3 +68,65 @@ def draw_row_guides(image, pot_count, row_band_pct):
         y = max(0, min(height - 1, round(y)))
         cv2.line(image, (0, y), (width - 1, y), (160, 120, 0), 1)
     cv2.line(image, (0, round(midline)), (width - 1, round(midline)), (0, 255, 255), 1)
+
+
+class YoloPlantSegmenter:
+    """Load one local segmentation model and return full-frame plant masks.
+
+    Ultralytics is optional: it is imported only when this backend is selected.
+    Input is OpenCV BGR. Native-resolution masks avoid letterbox misalignment.
+    """
+
+    def __init__(self, weights, confidence=0.25, imgsz=640, device="", class_name="plant"):
+        if not np.isfinite(confidence) or not 0 < confidence <= 1:
+            raise ValueError("row_yolo_confidence must be in (0, 1]")
+        if isinstance(imgsz, bool) or not isinstance(imgsz, int) or imgsz < 32 or imgsz % 32:
+            raise ValueError("row_yolo_imgsz must be a positive multiple of 32")
+        path = Path(weights).expanduser().resolve()
+        if not path.is_file():
+            raise ValueError(f"row_yolo_weights must point to local segmentation weights: {path}")
+        try:
+            from ultralytics import YOLO
+        except ImportError as exc:
+            raise ValueError("YOLO row segmentation requires ultralytics in the ROS Python environment") from exc
+        self.model = YOLO(str(path))
+        if self.model.task != "segment":
+            raise ValueError("row_yolo_weights must be a segmentation model, not a box detector")
+        names = self.model.names
+        items = names.items() if isinstance(names, dict) else enumerate(names)
+        matches = [int(index) for index, name in items if name == class_name]
+        if len(matches) != 1:
+            raise ValueError(f"model must contain exactly one class named {class_name!r}; got {names}")
+        self.class_id = matches[0]
+        self.weights = str(path)
+        self.confidence = confidence
+        self.imgsz = imgsz
+        self.device = device
+        self.class_name = class_name
+
+    def predict_mask(self, bgr):
+        results = self.model.predict(
+            source=bgr, conf=self.confidence, imgsz=self.imgsz,
+            device=self.device or None, classes=[self.class_id], retina_masks=True,
+            verbose=False, save=False,
+        )
+        if len(results) != 1:
+            raise ValueError("expected one segmentation result for one row image")
+        return plant_mask_from_result(results[0], bgr.shape[:2], self.class_id)
+
+
+def plant_mask_from_result(result, image_shape, class_id):
+    """Union only plant instances; preserve full-frame pixel coordinates."""
+    output = np.zeros(image_shape, dtype=np.uint8)
+    if result.boxes is None or len(result.boxes) == 0:
+        return output
+    if result.masks is None:
+        raise ValueError("segmentation result contains boxes but no masks")
+    masks = result.masks.data.cpu().numpy()
+    classes = result.boxes.cls.cpu().numpy().astype(int)
+    if masks.ndim != 3 or masks.shape[1:] != tuple(image_shape) or len(masks) != len(classes):
+        raise ValueError("segmentation masks do not match the original row image; retina_masks is required")
+    selected = masks[classes == class_id]
+    if len(selected):
+        output[np.any(selected > 0.5, axis=0)] = 255
+    return output
