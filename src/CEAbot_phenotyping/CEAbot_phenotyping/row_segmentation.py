@@ -1,6 +1,7 @@
 """Slot-wise plant selection shared by the live node and offline tuner."""
 
 from pathlib import Path
+import sys
 
 import cv2
 import numpy as np
@@ -88,7 +89,11 @@ class YoloPlantSegmenter:
         try:
             from ultralytics import YOLO
         except ImportError as exc:
-            raise ValueError("YOLO row segmentation requires ultralytics in the ROS Python environment") from exc
+            raise ValueError(
+                f"YOLO row segmentation could not load in {sys.executable}: {exc}. "
+                "Install the YOLO dependencies for this interpreter; see "
+                "src/CEAbot_phenotyping/README.md for the Jetson setup."
+            ) from exc
         self.model = YOLO(str(path))
         if self.model.task != "segment":
             raise ValueError("row_yolo_weights must be a segmentation model, not a box detector")

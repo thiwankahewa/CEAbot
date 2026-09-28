@@ -74,6 +74,12 @@ class PlantCoordinateNode(Node):
                 class_name=str(self.get_parameter("row_yolo_class").value),
             )
         self.get_logger().info(f"Row segmentation backend: {self.segmentation_method}")
+        if self.plant_segmenter is not None:
+            self.get_logger().info(
+                f"Loaded row YOLO model: {self.plant_segmenter.weights} "
+                f"(class={self.plant_segmenter.class_name}, "
+                f"device={self.plant_segmenter.device or 'auto'})"
+            )
 
         # A top scan cannot see foliage hidden by the arm base.  Keep the
         # expected pot lattice occupied in those blind areas instead of
