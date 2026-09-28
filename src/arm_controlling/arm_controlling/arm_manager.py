@@ -72,8 +72,31 @@ class ArmManager(MoveItArmHelper):
         self.srv_pose_1 = self.create_service(Trigger, "/arm/pose_1", self.cb_pose_1,callback_group=self.cb_group,)
         self.srv_reset = self.create_service(Trigger, "/arm/reset_moveit_control", self.cb_reset_moveit_control,callback_group=self.cb_group,)
         self.srv_stop = self.create_service(Trigger, "/arm/stop", self.cb_stop,callback_group=self.cb_group,)
+        self.srv_control_ready = self.create_service(
+            Trigger, "/arm/control_ready", self.cb_control_ready, callback_group=self.cb_group)
 
     #--------- Callbacks ---------#
+
+    def cb_control_ready(self, request, response):
+        """Read-only readiness including the execution state owned by this node."""
+        with self.command_lock:
+            busy = self.command_busy
+            stopped = self.stop_requested
+        response.success = False
+        if stopped:
+            response.message = "Stopped by user"
+        elif busy:
+            response.message = "Waiting for the previous arm command to finish"
+        elif self.pending_execution_send is not None:
+            response.message = "Waiting for the previous MoveIt goal acceptance"
+        elif (self.pending_execution_result is not None
+              and not self.pending_execution_result.done()):
+            response.message = "Waiting for the previous MoveIt goal to terminate"
+        else:
+            response.success = self.wait_for_controller_ready(timeout=0.5)
+            response.message = ("Arm control ready" if response.success else
+                                "Waiting for active controllers and fresh arm feedback")
+        return response
 
     def cb_plant_obstacles(self, msg):
         """Replace the previous row's plant cylinders in MoveIt's world."""
