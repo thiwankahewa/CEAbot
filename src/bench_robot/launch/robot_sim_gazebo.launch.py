@@ -13,6 +13,7 @@ from launch.actions import SetEnvironmentVariable
 
 from ament_index_python.packages import get_package_share_directory
 from moveit_configs_utils import MoveItConfigsBuilder
+from bench_robot.controller_recovery import recovering_controller_manager
 
 
 def launch_setup(context, *args, **kwargs):
@@ -80,13 +81,13 @@ def launch_setup(context, *args, **kwargs):
 
     # Standalone Controller Manager (Required for Real Robot and Fake Hardware)
     ros2_controllers_path = os.path.join(get_package_share_directory(moveit_package_str), "config", "ros2_controllers.yaml")
-    ros2_control_node = Node(
-        package="controller_manager",
-        executable="ros2_control_node",
-        parameters=[ robot_description,ros2_controllers_path, {"use_sim_time": actual_sim_time}],
-        #arguments=["--ros-args", "--log-level", "warn",],
-        output="screen",
-    )
+    def make_controller_manager():
+        return Node(
+            package="controller_manager",
+            executable="ros2_control_node",
+            parameters=[robot_description, ros2_controllers_path, {"use_sim_time": actual_sim_time}],
+            output="screen",
+        )
 
     kinova_power_logger_node = Node(
         package="arm_controlling",
@@ -205,13 +206,17 @@ def launch_setup(context, *args, **kwargs):
             delayed_spawn,
             RegisterEventHandler(OnProcessExit(target_action=ignition_spawn_entity, on_exit=[joint_state_broadcaster_spawner])),
         ]
-    else:               
-        nodes_to_start += [ros2_control_node, joint_state_broadcaster_spawner]     # REAL ROBOT or FAKE MODE
-
-    nodes_to_start += [
-        RegisterEventHandler(OnProcessExit(target_action=joint_state_broadcaster_spawner, on_exit=[robot_traj_controller_spawner])),
-        RegisterEventHandler(OnProcessExit(target_action=robot_traj_controller_spawner, on_exit=[move_group_node, rviz_node, arm_manager_node, plant_view_scanner_node])), 
-    ]
+        nodes_to_start += [
+            RegisterEventHandler(OnProcessExit(target_action=joint_state_broadcaster_spawner, on_exit=[robot_traj_controller_spawner])),
+            RegisterEventHandler(OnProcessExit(target_action=robot_traj_controller_spawner, on_exit=[move_group_node, rviz_node, arm_manager_node, plant_view_scanner_node])),
+        ]
+    else:
+        nodes_to_start += recovering_controller_manager(
+            make_controller_manager,
+            [move_group_node, rviz_node, arm_manager_node, plant_view_scanner_node],
+            max_restarts=int(LaunchConfiguration("arm_control_max_restarts").perform(context)),
+            delay=float(LaunchConfiguration("arm_control_restart_delay").perform(context)),
+        )
 
     return nodes_to_start
 
@@ -229,5 +234,7 @@ def generate_launch_description():
         DeclareLaunchArgument("launch_arm_controller", default_value="false"),
         DeclareLaunchArgument("use_rviz", default_value="true"),
 
+        DeclareLaunchArgument("arm_control_max_restarts", default_value="3"),
+        DeclareLaunchArgument("arm_control_restart_delay", default_value="5.0"),
         OpaqueFunction(function=launch_setup)
     ])
