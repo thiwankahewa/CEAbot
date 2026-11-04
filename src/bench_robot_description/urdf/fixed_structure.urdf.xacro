@@ -8,6 +8,11 @@
   <xacro:property name="col_d" value="0.06"/>          <!-- 60 mm -->
   <xacro:property name="col_h" value="1.8288"/>        <!-- 6 ft -->
 
+  <xacro:property name="column_box_h" value="0.2"/>  <!-- 150 mm tall -->
+  <xacro:property name="column_box_w" value="${col_w}"/> <!-- match column width -->
+  <xacro:property name="column_box_d" value="0.03"/>  <!-- 30 mm deep -->
+  <xacro:property name="column_box_top_offset" value="0.51"/> <!-- center below column top -->
+
   <xacro:property name="beam_len" value="1.524"/>        <!-- 1 m top beam -->
   <xacro:property name="beam_w" value="0.06"/>
   <xacro:property name="beam_d" value="0.06"/>
@@ -62,6 +67,16 @@
     <parent link="world"/>
     <child link="column_right_link"/>
     <origin xyz="${half_spacing + 0.03} 0 ${col_h/2.0}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ===== Right-column box on the arm-facing (-Y) side ===== -->
+  <xacro:box_link name="column_right_box_link" sx="${column_box_w}" sy="${column_box_d}" sz="${column_box_h}"/>
+
+  <!-- Flush to the column face; column link origin is at mid-height. -->
+  <joint name="column_right_to_box" type="fixed">
+    <parent link="column_right_link"/>
+    <child link="column_right_box_link"/>
+    <origin xyz="0 ${-(col_d + column_box_d)/2.0} ${col_h/2.0 - column_box_top_offset}" rpy="0 0 0"/>
   </joint>
 
   <!-- ===== Top beam ===== -->
