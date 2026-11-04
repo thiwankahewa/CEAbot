@@ -42,7 +42,9 @@ class PlantViewScanner(MoveItArmHelper):
         self.declare_parameter("z_offset", 0.15)              # meters above target
         self.declare_parameter("circle_radius_offset", 0.08)   # distance from top view to side-view circle
         self.declare_parameter("circle_height_offset", 0.05)
-        self.declare_parameter("look_at_angle_offset", 0.05)
+        # Kept for compatibility with saved parameter files; midpoint aiming
+        # uses the actual camera position and no longer applies this offset.
+        self.declare_parameter("look_at_angle_offset", 0.0)
         self.declare_parameter("view_count", 7)  
         self.declare_parameter("arm_recovery_timeout", 120.0)
         self.declare_parameter("arm_recovery_retries", 2)
@@ -51,7 +53,7 @@ class PlantViewScanner(MoveItArmHelper):
         # 2 optimizes plants 1-2, then plants 3-4, while carrying the predicted
         # final joint state from one group into the next.  Use 0 to optimize
         # every plant in one global batch (the previous behavior).
-        self.declare_parameter("optimizer_plant_batch_size", 4)
+        self.declare_parameter("optimizer_plant_batch_size", 3)
 
         # Fixed tool orientation.
         self.qx = 0.0
@@ -285,6 +287,40 @@ class PlantViewScanner(MoveItArmHelper):
             self.get_logger().info("Scanner paused. Waiting to resume...")
             time.sleep(0.5)
 
+    def side_view_target(self, plant_x, plant_y, plant_z):
+        """Return the halfway point above the pot rim in the command frame.
+
+        Bench height is measured from the ground (world Z=0). Transform the
+        detected top into world coordinates before measuring plant height:
+        the command frame is the downward-facing top camera's optical frame.
+        """
+        world_from_command = self.tf_buffer.lookup_transform(
+            "world", self.base_frame, Time(), timeout=Duration(seconds=2.0))
+        plant_world = self.compose_commanded_pose(world_from_command, {
+            "x": plant_x, "y": plant_y, "z": plant_z,
+            "qx": 0.0, "qy": 0.0, "qz": 0.0, "qw": 1.0,
+        })
+        # Read the parameters directly so runtime height updates take effect.
+        pot_rim_height = (float(self.get_parameter("bench_height").value)
+                          + float(self.get_parameter("pot_height").value))
+        plant_height = max(0.0, plant_world["z"] - pot_rim_height)
+        if plant_world["z"] < pot_rim_height:
+            self.get_logger().warn(
+                f"Plant top {plant_world['z']:.3f} m is below the estimated "
+                f"pot rim {pot_rim_height:.3f} m; aiming at the detected top.")
+
+        # Rotate a vertical downward displacement back into the command
+        # frame using the world-Z row of the normalized rotation matrix.
+        q = world_from_command.transform.rotation
+        norm = math.sqrt(q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w)
+        qx, qy, qz, qw = (v / norm for v in (q.x, q.y, q.z, q.w))
+        down = -0.5 * plant_height
+        return (
+            plant_x + down * 2.0 * (qx*qz - qw*qy),
+            plant_y + down * 2.0 * (qy*qz + qw*qx),
+            plant_z + down * (1.0 - 2.0 * (qx*qx + qy*qy)),
+        )
+
     def generate_view_poses(self, plant_x, plant_y, plant_z, radius):
         poses = []
 
@@ -299,6 +335,7 @@ class PlantViewScanner(MoveItArmHelper):
         if self.view_count <= 0:
             return poses
 
+        target_pos = self.side_view_target(plant_x, plant_y, plant_z)
         angle_step = 360.0 / self.view_count
 
         for k in range(self.view_count):
@@ -310,7 +347,8 @@ class PlantViewScanner(MoveItArmHelper):
             view_y = top_y + (self.circle_radius_offset + radius) * math.sin(theta)
             view_z = top_z + self.circle_height_offset
 
-            qx, qy, qz, qw = self.look_at_quaternion(camera_pos=(view_x, view_y, view_z - self.look_at_angle_offset),target_pos=(plant_x, plant_y, plant_z))
+            qx, qy, qz, qw = self.look_at_quaternion(
+                camera_pos=(view_x, view_y, view_z), target_pos=target_pos)
             poses.append({"label": f"view_{k+1}_{angle_deg:.0f}deg","x": view_x,"y": view_y,"z": view_z,"qx": qx,"qy": qy,"qz": qz,"qw": qw,})
 
         return poses
@@ -846,7 +884,10 @@ class PlantViewScanner(MoveItArmHelper):
                 "z_offset": float(self.z_offset),
                 "circle_radius_offset": float(self.circle_radius_offset),
                 "circle_height_offset": float(self.circle_height_offset),
-                "look_at_angle_offset": float(self.look_at_angle_offset),
+                "side_view_aim": "half_height_above_pot_rim",
+                "height_reference_frame": "world",
+                "bench_height": float(self.get_parameter("bench_height").value),
+                "pot_height": float(self.get_parameter("pot_height").value),
             }
             if self.scan_end_time is not None:
                 metadata["scan_end_time"] = self.scan_end_time
