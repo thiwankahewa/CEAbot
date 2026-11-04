@@ -6,6 +6,8 @@ from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
 
 from sensor_msgs.msg import JointState
+from control_msgs.msg import DynamicJointState
+from rclpy.qos import QoSProfile, ReliabilityPolicy
 from moveit_msgs.action import MoveGroup, ExecuteTrajectory
 from moveit_msgs.msg import (
     MotionPlanRequest,
@@ -48,6 +50,8 @@ class MoveItArmHelper(Node):
         self.pending_execution_result = None
         self.pending_execution_send = None
         self.active_execute_goal = None
+        self.hardware_fault = None
+        self.hardware_fault_received_at = None
 
         # -------- params --------
         self.declare_parameter("bench_height", 0.75)
@@ -57,6 +61,8 @@ class MoveItArmHelper(Node):
         self.declare_parameter("velocity_scaling", 0.4)
         self.declare_parameter("acceleration_scaling", 0.15)
         self.declare_parameter("planning_time", 2.0)
+        self.declare_parameter("require_hardware_fault_state", False)
+        self.require_hardware_fault_state = bool(self.get_parameter("require_hardware_fault_state").value)
         self.declare_parameter("joint_state_max_age", 1.5)
         self.joint_state_max_age = float(self.get_parameter("joint_state_max_age").value)
         self.arm_joint_names = {f"joint_{i}" for i in range(1, 8)}
@@ -67,6 +73,11 @@ class MoveItArmHelper(Node):
         # -------- subscriptions --------
         self.joint_state_sub = self.create_subscription( JointState, "/joint_states", self.joint_state_callback, 10, callback_group=self.moveit_cb_group,)
         
+        self.hardware_fault_sub = self.create_subscription(
+            DynamicJointState, "/dynamic_joint_states", self.hardware_fault_callback,
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT),
+            callback_group=self.moveit_cb_group)
+
         # -------- clients --------
         self.move_group_client = ActionClient( self, MoveGroup, "/move_action", callback_group=self.moveit_cb_group,)
         self.execute_client = ActionClient( self, ExecuteTrajectory, "/execute_trajectory", callback_group=self.moveit_cb_group,)
@@ -107,6 +118,30 @@ class MoveItArmHelper(Node):
         self.current_joint_state = msg
         self.joint_state_received_at = now
 
+    def hardware_fault_callback(self, msg):
+        stamp_ns = msg.header.stamp.sec * 1_000_000_000 + msg.header.stamp.nanosec
+        age = (self.get_clock().now().nanoseconds - stamp_ns) / 1e9
+        if stamp_ns and abs(age) > self.joint_state_max_age:
+            return
+        for name, interfaces in zip(msg.joint_names, msg.interface_values):
+            if name == "reset_fault":
+                values = dict(zip(interfaces.interface_names, interfaces.values))
+                if "internal_fault" in values:
+                    self.hardware_fault = float(values["internal_fault"])
+                    self.hardware_fault_received_at = time.monotonic()
+                return
+
+    def hardware_fault_reason(self):
+        fault = self.hardware_fault
+        if fault is not None and (not math.isfinite(fault) or fault != 0.0):
+            return (f"Kinova hardware fault active (internal_fault={fault:g}); "
+                    "inspect the fault in the Kinova Web App before resetting it")
+        if self.require_hardware_fault_state or fault is not None:
+            if (self.hardware_fault_received_at is None
+                    or time.monotonic() - self.hardware_fault_received_at > self.joint_state_max_age):
+                return "Waiting for fresh Kinova hardware fault status"
+        return None
+
     def has_fresh_arm_state(self):
         return (self.current_joint_state is not None
                 and self.joint_state_received_at is not None
@@ -116,6 +151,9 @@ class MoveItArmHelper(Node):
         return False
 
     def check_arm_connection(self):
+        fault = self.hardware_fault_reason()
+        if fault:
+            raise ArmConnectionError(fault)
         if not self.has_fresh_arm_state():
             raise ArmConnectionError("No fresh arm joint feedback")
         if self.execution_epoch is not None and self.execution_epoch != self.connection_epoch:
@@ -143,7 +181,8 @@ class MoveItArmHelper(Node):
                 finally:
                     if not future.done():
                         self.list_controllers_client.remove_pending_request(future)
-            ready = (ready and self.has_fresh_arm_state()
+            ready = (ready and self.hardware_fault_reason() is None
+                     and self.has_fresh_arm_state()
                      and self.move_group_client.server_is_ready()
                      and self.execute_client.server_is_ready()
                      and self.pending_execution_send is None
@@ -160,7 +199,8 @@ class MoveItArmHelper(Node):
 
     def require_controller_ready(self):
         if not self.wait_for_controller_ready(timeout=2.0):
-            raise ArmConnectionError("Controllers or fresh arm feedback unavailable")
+            raise ArmConnectionError(self.hardware_fault_reason() or
+                                     "Controllers or fresh arm feedback unavailable")
 
     # -------------------------
     # Safe future wait helper

@@ -7,9 +7,10 @@ import traceback
 import rclpy
 
 from std_srvs.srv import Trigger
-from controller_manager_msgs.srv import SwitchController
+from controller_manager_msgs.srv import ListControllers, SwitchController
 from rclpy.callback_groups import ReentrantCallbackGroup
-from arm_controlling.moveit_arm_helper import MoveItArmHelper
+from arm_controlling.moveit_arm_helper import MoveItArmHelper, ArmConnectionError
+from arm_controlling.auto_fault_recovery import AutomaticFaultRecovery
 from geometry_msgs.msg import Pose
 from moveit_msgs.msg import CollisionObject, PlanningScene
 from moveit_msgs.srv import ApplyPlanningScene
@@ -75,16 +76,24 @@ class ArmManager(MoveItArmHelper):
         self.srv_control_ready = self.create_service(
             Trigger, "/arm/control_ready", self.cb_control_ready, callback_group=self.cb_group)
 
+        self.fault_recovery = AutomaticFaultRecovery(self)
+
     #--------- Callbacks ---------#
 
     def cb_control_ready(self, request, response):
         """Read-only readiness including the execution state owned by this node."""
+        fault_reason = self.hardware_fault_reason()
+        recovery_reason = self.fault_recovery.reason()
         with self.command_lock:
             busy = self.command_busy
             stopped = self.stop_requested
         response.success = False
         if stopped:
             response.message = "Stopped by user"
+        elif recovery_reason:
+            response.message = recovery_reason
+        elif fault_reason:
+            response.message = fault_reason
         elif busy:
             response.message = "Waiting for the previous arm command to finish"
         elif self.pending_execution_send is not None:
@@ -192,7 +201,11 @@ class ArmManager(MoveItArmHelper):
 
         try:
             self.get_logger().info("Starting blocking command: go_rest")
-            response.success, response.message = self.move_to_rest()
+            ready, message = self.prepare_rest_controller()
+            if ready:
+                response.success, response.message = self.move_to_rest()
+            else:
+                response.success, response.message = False, message
         except Exception as exc:
             self.get_logger().error(f"Command go_rest crashed: {exc}")
             response.success = False
@@ -381,8 +394,10 @@ class ArmManager(MoveItArmHelper):
     
     #--------- Helper Methods ---------#
 
-    def start_command(self, name, target_func):
+    def start_command(self, name, target_func, *, resume_after_stop=True):
         with self.command_lock:
+            if self.stop_requested and not resume_after_stop:
+                return False, "Stopped by user"
             if self.command_busy:
                 return False, "Arm is busy. Wait until current command finishes."
 
@@ -412,6 +427,25 @@ class ArmManager(MoveItArmHelper):
     def check_stop_requested(self):
         with self.command_lock:
             return self.stop_requested
+
+    def require_controller_ready(self):
+        if self.fault_recovery.blocked_reason:
+            raise ArmConnectionError(self.fault_recovery.blocked_reason)
+        return super().require_controller_ready()
+
+    def startup_rest(self):
+        """Keep startup pending only when a detected fault can be recovered."""
+        retry_after_recovery = False
+        try:
+            result = self.move_to_rest()
+            retry_after_recovery = not result[0] and self.fault_recovery.eligible()
+            return result
+        except ArmConnectionError as exc:
+            retry_after_recovery = self.fault_recovery.eligible()
+            return False, str(exc)
+        finally:
+            if not retry_after_recovery or self.check_stop_requested():
+                self.startup_timer.cancel()
 
     def wait_for_arm_ready(self, timeout=10.0):
         return self.wait_for_controller_ready(timeout=timeout)
@@ -543,6 +577,80 @@ class ArmManager(MoveItArmHelper):
 
     #--------- Stop and Reset functions ---------#
 
+    def prepare_rest_controller(self):
+        """Resume the controller disabled by Stop for an explicit rest request.
+
+        Do not discard an unfinished MoveIt goal, clear hardware faults, or
+        take control from another controller. Startup uses its existing
+        readiness gate and does not call this method.
+        """
+        for future in (self.pending_execution_send, self.pending_execution_result):
+            if future is not None and not future.done():
+                self.wait_future(future, timeout=10.0, check_stop=True)
+        # A late goal acceptance can install a new result future while waiting.
+        if self.check_stop_requested():
+            return False, "Stopped by user"
+        if (self.pending_execution_send is not None
+                or (self.pending_execution_result is not None
+                    and not self.pending_execution_result.done())):
+            return False, ("Previous MoveIt motion has not terminated after Stop. "
+                           "If this persists after a controller crash, restart the arm ROS stack.")
+
+        reason = self.fault_recovery.reason() or self.hardware_fault_reason()
+        if reason:
+            return False, reason
+        if not self.has_fresh_arm_state():
+            return False, "No fresh arm feedback. Check the arm connection before moving to rest."
+        if not self.list_controllers_client.wait_for_service(timeout_sec=5.0):
+            return False, "Arm controller manager unavailable. Wait for it to restart, then retry."
+        future = self.list_controllers_client.call_async(ListControllers.Request())
+        try:
+            result = self.wait_future(future, timeout=5.0, check_stop=True)
+        finally:
+            if not future.done():
+                self.list_controllers_client.remove_pending_request(future)
+        if self.check_stop_requested():
+            return False, "Stopped by user"
+        if result is None:
+            return False, "Could not read arm controller state"
+        states = {controller.name: controller.state for controller in result.controller}
+        state = states.get("joint_trajectory_controller")
+        if state not in ("active", "inactive"):
+            return False, "Arm trajectory controller is not configured. Restart the arm ROS stack."
+        if state == "inactive":
+            others = [name for name, status in states.items()
+                      if status == "active" and name != "joint_state_broadcaster"]
+            if others:
+                return False, f"Another arm controller is active: {', '.join(others)}. Exit manual control first."
+            if not self.switch_controller_client.wait_for_service(timeout_sec=5.0):
+                return False, "Arm controller switch service unavailable"
+            request = SwitchController.Request()
+            request.activate_controllers = ["joint_trajectory_controller"]
+            request.strictness = SwitchController.Request.STRICT
+            request.activate_asap = True
+            request.timeout.sec = 3
+            # Order activation against Stop's flag and subsequent deactivation.
+            with self.command_lock:
+                if self.stop_requested:
+                    return False, "Stopped by user"
+                reason = self.fault_recovery.reason() or self.hardware_fault_reason()
+                if reason:
+                    return False, reason
+                future = self.switch_controller_client.call_async(request)
+            result = self.wait_future(future, timeout=5.0, check_stop=True)
+            if self.check_stop_requested():
+                self.deactivate_trajectory_controller()
+                return False, "Stopped by user"
+            if result is None or not result.ok:
+                return False, "Could not reactivate the arm trajectory controller after Stop"
+            self.get_logger().info("Rest requested: reactivated trajectory controller after Stop")
+
+        if not self.wait_for_controller_ready(timeout=5.0):
+            if self.check_stop_requested():
+                return False, "Stopped by user"
+            return False, self.hardware_fault_reason() or "Arm control is not ready; check controllers and arm feedback"
+        return True, "Arm control ready"
+
     def deactivate_trajectory_controller(self, timeout=0.5):
         if not self.switch_controller_client.wait_for_service(timeout_sec=1.0):
             self.get_logger().error("switch_controller service not available")
@@ -608,14 +716,22 @@ def main(args=None):
         nonlocal startup_attempts
         startup_attempts += 1
 
-        if not node.wait_for_arm_ready(timeout=2.0):
-            if startup_attempts <= 20:
-                node.get_logger().info(f"Waiting for arm startup readiness (attempt {startup_attempts}/20)")
+        with node.command_lock:
+            if node.stop_requested:
+                node.startup_timer.cancel()
+                return
+            if node.command_busy:
+                return
+        recovery_reason = node.fault_recovery.reason()
+        if recovery_reason or not node.wait_for_arm_ready(timeout=2.0):
+            if startup_attempts <= 20 or startup_attempts % 30 == 0:
+                reason = recovery_reason or node.hardware_fault_reason() or "controllers, feedback, or MoveIt not ready"
+                node.get_logger().warn(f"Waiting for arm startup readiness: {reason}")
             return
 
-        node.startup_timer.cancel()
-        node.get_logger().info("Startup: moving arm to rest")
-        node.start_command("go_rest", node.move_to_rest)
+        accepted, _ = node.start_command("go_rest", node.startup_rest, resume_after_stop=False)
+        if accepted:
+            node.get_logger().info("Startup: moving arm to rest")
 
     node.startup_timer = node.create_timer(1.0, startup)
 

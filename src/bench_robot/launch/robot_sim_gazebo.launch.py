@@ -153,7 +153,14 @@ def launch_setup(context, *args, **kwargs):
         output="screen",
         parameters=[
             moveit_config.to_dict(),
-            {"use_sim_time": actual_sim_time},
+            {"use_sim_time": actual_sim_time,
+             "require_hardware_fault_state": is_real_robot,
+             "auto_fault_reset": is_real_robot and LaunchConfiguration("auto_fault_reset").perform(context).lower() == "true",
+             "auto_fault_reset_max_attempts": int(LaunchConfiguration("auto_fault_reset_max_attempts").perform(context)),
+             "kinova_robot_ip": ip_val,
+             "kinova_username": username.perform(context),
+             "kinova_password": password.perform(context),
+             "kinova_port": int(port.perform(context))},
         ],
         condition=IfCondition(launch_arm_controller),
     )
@@ -164,7 +171,8 @@ def launch_setup(context, *args, **kwargs):
         output="screen",
         parameters=[
             moveit_config.to_dict(),
-            {"use_sim_time": actual_sim_time},
+            {"use_sim_time": actual_sim_time,
+             "require_hardware_fault_state": is_real_robot},
         ],
         condition=IfCondition(launch_arm_controller),
     )
@@ -234,6 +242,8 @@ def generate_launch_description():
         DeclareLaunchArgument("launch_arm_controller", default_value="false"),
         DeclareLaunchArgument("use_rviz", default_value="true"),
 
+        DeclareLaunchArgument("auto_fault_reset", default_value="true"),
+        DeclareLaunchArgument("auto_fault_reset_max_attempts", default_value="2"),
         DeclareLaunchArgument("arm_control_max_restarts", default_value="3"),
         DeclareLaunchArgument("arm_control_restart_delay", default_value="5.0"),
         OpaqueFunction(function=launch_setup)
