@@ -20,6 +20,20 @@ colcon build --symlink-install
 # Optional launch overrides: arm_control_max_restarts:=3 arm_control_restart_delay:=5.0
 # Scanner parameters: arm_recovery_timeout (seconds), arm_recovery_retries.
 
+#---automatic Kinova fault reset (real hardware, enabled by default)
+# auto_fault_reset:=false disables it; auto_fault_reset_max_attempts:=2 is the
+# per-arm_manager attempt limit. Any failed reset blocks further automatic tries.
+# For base JOINT_FAULT (16) with all actuator faults zero, recovery disables
+# trajectory control and waits for stationary feedback and old goals to finish.
+# It confirms single-level servoing, then follows the installed driver's reset:
+# ApplyEmergencyStop twice, confirm its software-stop bit, then ClearFaults once.
+# Pre-existing stops, physical emergency-line faults, and actuator faults are
+# refused. Only the software-stop bit introduced by this attempt is permitted.
+# Fault-free feedback and active controllers are required before scans resume.
+# After ClearFaults, fault-free INITIALIZATION is allowed while waiting up to
+# 10 s for a ready servoing state; trajectory control stays inactive meanwhile.
+# Requires Kinova's Python Kortex SDK; source changes take effect on next launch.
+
 #---ROS general commands
 ros2 topic hz /astra2/color/image_raw
 ros2 topic echo /astra2/color/camera_info --once
@@ -123,8 +137,7 @@ cd /home/thiwa/CEAbot
 # reconstrction all args
 
 python3 src/CEAbot_phenotyping/test/reconstruction/reconstruct_plant_views.py \
-  /home/thiwa/scan_data (or for one row specify the scan folder path)
-  --run-name "compare_$(date +%Y%m%d_%H%M%S)" \ (use sub folder OR if not use timestamp folder)
+  /home/thiwa/scan_data  
   --views 8 \
   --start-time "2026-09-02 00:00:00" \
   --end-time "2026-09-02 23:59:59" \
@@ -152,63 +165,66 @@ python3 src/CEAbot_phenotyping/test/reconstruction/reconstruct_plant_views.py \
   --max-rmse 0.008 \
   --max-correction-translation 0.05 \
   --max-correction-rotation 12 \
-  --color-by-view \
+  --color-by-view 
 
 # reconstrction main args
 
 python3 src/CEAbot_phenotyping/test/reconstruction/reconstruct_plant_views.py \
   /home/thiwa/scan_data \
   --start-time "2026-09-15 00:00:00" \
-  --end-time "2026-09-25 23:59:59" \
-  --min-depth 0.05 \
-  --max-depth 0.60 \
-  --voxel-size 0 \
-  --methods robust_icp 
+  --end-time "2026-09-25 23:59:59" 
 
 
 # Plant height: local soil at stem to highest supported plant organ.
-# Manual ruler measurements must be in mm.
-# Choose a NEW output directory for each run. See test/height/PLANT_HEIGHT.md for history.
-python3 /home/thiwa/CEAbot/src/CEAbot_phenotyping/test/height/measure_plant_height.py \
+
+python3 src/CEAbot_phenotyping/test/height/measure_plant_height.py \
   /home/thiwa/scan_data \
-  --date 2026-09-15 --locations b1_r16 b1_r17 b1_r18 b1_r19 b1_r20 b1_r21 \
-  --config /home/thiwa/CEAbot/src/CEAbot_phenotyping/test/height/plant_height_config.example.json \
-  --manual-csv /home/thiwa/CEAbot/src/CEAbot_phenotyping/test/height/manual_heights_20260914.csv \
-  --output-dir /home/thiwa/scan_data/plant_height_20260923
-# For later scans, add to the command: --history /path/to/latest_run/soil_history.json
+  --experiment-start-date 2026-09-14 \
+  --start-date 2026-09-14 \
+  --end-date 2026-09-20 \
 
 
 DATASET_ROOT=/home/thiwa/plant_dataset/soil_plant_indivdual
 
 python3 "/home/thiwa/CEAbot/src/CEAbot_phenotyping/test/fruit count/split_plant_view_images.py" \
-  "$DATASET_ROOT/v2_annotations" \
+  "$DATASET_ROOT/v3/split" \
   --source /home/thiwa/scan_data \
-  --camera top \(end-effector)
-  --start 2026-09-15 \
-  --end 2026-09-25 \
-  --reuse-splits "$DATASET_ROOT/soil_plant_yolo" \
+  --camera end-effector \
+  --start 2026-09-28 \
+  --end 2026-10-02 \
+  --reuse-splits "$DATASET_ROOT/v2/split" \
   --train 80 \
   --validate 10 \
   --test 10 \
   --execute
 
 python3 "/home/thiwa/CEAbot/src/CEAbot_phenotyping/test/fruit count/combine_xanylabeling_to_yolo.py" \
-  "$DATASET_ROOT/yolo" \
+  "$DATASET_ROOT/v3/yolo" \
   "$DATASET_ROOT/v1/split" \
-  "$DATASET_ROOT/v2/split" \  (#remove this if at v1)
-  --classes soil,plant
+  "$DATASET_ROOT/v2/split" \
+  "$DATASET_ROOT/v3/split" \
+  --classes soil,plant \
   --execute
 
+# new data set training - (or just put model name for new, in model)
 
-python3 ~/CEAbot/src/CEAbot_phenotyping/test/reconstruction/reconstruct_plant_views.py \
-  /home/thiwa/scan_data_zed/b1_r15_20260608_133520
-    --color-by-view \
+yolo segment train \
+  model=/home/thiwa/plant_dataset/soil_plant_indivdual/training_runs/v2/weights/best.pt \
+  data="/home/thiwa/plant_dataset/soil_plant_indivdual/v3/yolo/data.yaml" \
+  epochs=100 \
+  imgsz=640 \
+  batch=8 \
+  device=0 \
+  project="/home/thiwa/plant_dataset/soil_plant_indivdual/training_runs" \
+  name=v3
 
+# evaluate on test data
 
-ros2 launch bench_robot robot_sim_gazebo.launch.py \
-  robot_ip:=192.168.1.10 \
-  use_rviz:=false \
-  2>&1 | grep -v DEBUG
+yolo segment val \
+  model="/home/thiwa/plant_dataset/soil_plant_indivdual/training_runs/v3/weights/best.pt" \
+  data="/home/thiwa/plant_dataset/soil_plant_indivdual/v3/yolo/data.yaml" \
+  split=test \
+  device=0
 
 
   ros2 launch orbbec_camera gemini_330_series.launch.py \

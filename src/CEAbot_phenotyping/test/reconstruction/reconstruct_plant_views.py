@@ -8,16 +8,7 @@ import re
 import numpy as np
 import yaml
 
-from plant_view_registration import (
-    RegistrationView,
-    add_registration_arguments,
-    align_views,
-    correction_size,
-    read_rgbd,
-    require_open3d,
-    validate_registration_arguments,
-)
-
+from plant_view_registration import (RegistrationView, add_registration_arguments, align_views, correction_size, read_rgbd, require_open3d, validate_registration_arguments,)
 
 VIEW_COLORS = np.array(
     [
@@ -42,8 +33,8 @@ VIEW_COLORS = np.array(
 
 EXPECTED_POSE_FRAME = "base_link"
 EXPECTED_POSE_CHILD_FRAME = "gemini336_color_optical_frame"
-LEGACY_POSE_CHILD_FRAME = "camera_color_optical_frame"
 EXPECTED_CLOUD_FRAME = "gemini336_color_optical_frame"
+LEGACY_POSE_CHILD_FRAME = "camera_color_optical_frame"
 SCAN_TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"
 SIDE_VIEW_PATTERN = re.compile(r"^view_\d+_(-?\d+(?:\.\d+)?)deg$")
 
@@ -54,6 +45,8 @@ def parse_meta_yaml(path: Path) -> dict:
 
 
 def pose_to_matrix(meta: dict) -> np.ndarray:
+    '''Return the transformation matrix (rotational and translational) from the actual pose '''
+
     required = ["actual_x","actual_y","actual_z","actual_qx","actual_qy","actual_qz","actual_qw",]
     missing = [key for key in required if key not in meta]
     if missing:
@@ -61,14 +54,12 @@ def pose_to_matrix(meta: dict) -> np.ndarray:
 
     translation = np.array([float(meta["actual_x"]), float(meta["actual_y"]), float(meta["actual_z"]),], dtype=np.float64,)
     quat_xyzw = np.array([ float(meta["actual_qx"]), float(meta["actual_qy"]), float(meta["actual_qz"]), float(meta["actual_qw"]),], dtype=np.float64,)
-    if not np.all(np.isfinite(translation)) or not np.all(np.isfinite(quat_xyzw)):
-        raise ValueError("actual pose contains non-finite values")
 
-    quat_norm = np.linalg.norm(quat_xyzw)
+    quat_norm = np.linalg.norm(quat_xyzw)   # calculates the magnitude of the quaternion
     if quat_norm < 1e-12:
         raise ValueError("actual pose quaternion has zero length")
 
-    x, y, z, w = quat_xyzw / quat_norm
+    x, y, z, w = quat_xyzw / quat_norm  # normalize the quaternion to unit length
     transform = np.eye(4, dtype=np.float64)
     transform[:3, :3] = np.array(
         [
@@ -83,6 +74,7 @@ def pose_to_matrix(meta: dict) -> np.ndarray:
 
 
 def transform_points(points_xyz: np.ndarray, transform: np.ndarray) -> np.ndarray:
+    '''Apply transformation matrix to an Nx3 array of points.'''
     return points_xyz @ transform[:3, :3].T + transform[:3, 3]
 
 def crop_world_points(points, center, radius, below, above):
@@ -100,8 +92,9 @@ def voxel_downsample_xyzrgb(points: np.ndarray, voxel_size: float) -> np.ndarray
     return points[keep_indices]
 
 
-def create_rgbd_cloud(view_dir: Path) -> np.ndarray:
-    """Create camera-frame XYZRGB points in memory from depth and color data."""
+def load_cloud_xyzrgb(view_dir: Path, minimum_depth: float, maximum_depth: float) -> np.ndarray:
+    """Create a camera-frame XYZRGB cloud and filter it to the requested depth range."""
+    
     depth_m, color_bgr, (fx, fy, cx, cy) = read_rgbd(view_dir)
     rows, columns = np.nonzero(np.isfinite(depth_m) & (depth_m > 0.0))
     z = depth_m[rows, columns]
@@ -110,21 +103,7 @@ def create_rgbd_cloud(view_dir: Path) -> np.ndarray:
     cloud[:, 1] = (rows.astype(np.float32) - cy) * z / fy
     cloud[:, 2] = z
     cloud[:, 3:6] = color_bgr[rows, columns, ::-1]
-    return cloud
-
-
-def load_cloud_xyzrgb(view_dir: Path,minimum_depth: float,maximum_depth: float,cloud_source: str,) -> np.ndarray:
-    if cloud_source == "original":
-        cloud_path = view_dir / "cloud_xyzrgb.npy"
-        if not cloud_path.exists():
-            raise FileNotFoundError(f"missing {cloud_path}")
-        cloud = np.load(cloud_path, allow_pickle=False)
-        if cloud.ndim != 2 or cloud.shape[1] < 6:
-            raise ValueError(f"{cloud_path} must have shape Nx6 or larger")
-    else:
-        cloud = create_rgbd_cloud(view_dir)
-
-    cloud = cloud[:, :6].astype(np.float64, copy=False)
+    cloud = cloud.astype(np.float64, copy=False)
     valid = np.isfinite(cloud[:, 0]) & np.isfinite(cloud[:, 1]) & np.isfinite(cloud[:, 2])
     cloud = cloud[valid]
     cloud = cloud[(cloud[:, 2] >= minimum_depth) & (cloud[:, 2] <= maximum_depth)]
@@ -132,6 +111,8 @@ def load_cloud_xyzrgb(view_dir: Path,minimum_depth: float,maximum_depth: float,c
 
 
 def get_plant_crop(scan_dir: Path, plant_dir: Path):
+    '''Return the plant center w.r.t. arm base_link and radius in metres from metadata.yaml.'''
+
     scan_meta = parse_meta_yaml(scan_dir / "metadata.yaml")
     plant_id = int(plant_dir.name.removeprefix("plant_"))
     plant = next((item for item in scan_meta.get("plants", []) if int(item["plant_id"]) == plant_id),None,)
@@ -200,6 +181,7 @@ def circular_angle_distance(first: float, second: float) -> float:
 
 def select_view_dirs(plant_dir: Path, number_of_side_views: int | None) -> list[Path]:
     """Select evenly spaced side views and always include the top view."""
+
     all_view_dirs = sorted(path for path in plant_dir.iterdir() if path.is_dir())
     top_views = [path for path in all_view_dirs if path.name == "top"]
     side_views = []
@@ -226,9 +208,12 @@ def select_view_dirs(plant_dir: Path, number_of_side_views: int | None) -> list[
 
     return top_views + selected_sides
 
-def reconstruct_plant(scan_dir: Path,plant_dir: Path,output_dir: Path,voxel_size: float,color_by_view: bool,minimum_depth: float,maximum_depth: float,crop_margin: float,crop_below: float,crop_above: float,number_of_side_views: int | None,cloud_source: str,registration_args=None):
+def reconstruct_plant(scan_dir: Path,plant_dir: Path,output_dir: Path,voxel_size: float,color_by_view: bool,minimum_depth: float,maximum_depth: float,
+                      crop_margin: float,crop_below: float,crop_above: float,number_of_side_views: int | None,registration_args=None):
+    '''Main function to reconstruct a plant from its views. Returns a list of saved output paths.'''
+
     view_dirs = select_view_dirs(plant_dir, number_of_side_views)
-    views = []
+    views = []  # list of RegistrationView objects (view_dir, cloud, transform_world_camera, view_index)
     skipped_views = []
 
     first_meta_path = next((view / "meta.yaml" for view in view_dirs if (view / "meta.yaml").exists()),None,)
@@ -238,6 +223,7 @@ def reconstruct_plant(scan_dir: Path,plant_dir: Path,output_dir: Path,voxel_size
 
     plant_center, detected_radius = get_plant_crop(scan_dir, plant_dir)
     crop_radius = detected_radius + crop_margin
+
     print(f"\n{plant_dir.name}: using {len(view_dirs)} views: " + ", ".join(view.name for view in view_dirs))
     if not any(view.name == "top" for view in view_dirs):
         print("  warning: top view is unavailable for this plant")
@@ -253,18 +239,15 @@ def reconstruct_plant(scan_dir: Path,plant_dir: Path,output_dir: Path,voxel_size
             meta = parse_meta_yaml(meta_path)
             pose_frame = meta.get("pose_frame", "unknown")
             pose_child_frame = meta.get("pose_child_frame", "unknown")
-            cloud_frame = meta.get("camera_frame", meta.get("frame_id", "unknown"))
 
             if pose_frame not in {EXPECTED_POSE_FRAME}:
                 raise ValueError(f"unsupported pose_frame {pose_frame!r}; expected {EXPECTED_POSE_FRAME}")
             if pose_child_frame not in {EXPECTED_POSE_CHILD_FRAME,LEGACY_POSE_CHILD_FRAME,}:
                 raise ValueError(f"unsupported pose_child_frame {pose_child_frame!r}; "f"expected {EXPECTED_POSE_CHILD_FRAME} "f"(or legacy {LEGACY_POSE_CHILD_FRAME})")
-            if cloud_frame != EXPECTED_CLOUD_FRAME:
-                raise ValueError(f"unsupported point-cloud frame {cloud_frame!r}; "f"expected {EXPECTED_CLOUD_FRAME}")
 
             transform_world_camera = pose_to_matrix(meta)
 
-            cloud = load_cloud_xyzrgb(view_dir,minimum_depth,maximum_depth,cloud_source,)
+            cloud = load_cloud_xyzrgb(view_dir,minimum_depth,maximum_depth)
             cloud[:, :3] = transform_points(cloud[:, :3], transform_world_camera)
             if len(cloud) == 0:
                 raise ValueError("no valid points in the requested depth range")
@@ -278,46 +261,41 @@ def reconstruct_plant(scan_dir: Path,plant_dir: Path,output_dir: Path,voxel_size
         print(f"  no usable views for {plant_dir.name}")
         return []
 
-    methods = registration_args.methods if registration_args else []
-    baseline = registration_args.baseline if registration_args else True
-    comparison = bool(methods or (registration_args and registration_args.run_name))
+    methods = registration_args.methods
     saved_paths = []
-    for method in (["baseline"] if baseline else []) + methods:
-        method_dir = output_dir / method if comparison else output_dir
+    for method in methods:
+        method_dir = output_dir / method 
         print(f"  {method}: {method_dir}", flush=True)
         if method == "baseline":
             corrections = [np.eye(4) for _ in views]
             diagnostics = {"method": method, "pairs": [], "accepted_pairs": 0, "components": []}
         else:
             corrections, diagnostics = align_views(views, method, plant_center, crop_radius, registration_args)
+
         transformed_views, poses = [], {}
         for view, correction in zip(views, corrections):
-            # Work from the full cloud so final cropping cannot discard points
-            # merely because their initial pose was slightly wrong.
             cloud = view.points.copy()
             cloud[:, :3] = transform_points(cloud[:, :3], correction)
             cloud = crop_world_points(cloud, plant_center, crop_radius, crop_below, crop_above)
+
             if color_by_view:
                 cloud = recolor_cloud(cloud, view.color_index)
+
             transformed_views.append(cloud)
             shift, angle = correction_size(correction, plant_center)
             poses[view.path.name] = {"saved_pose": view.pose.tolist(), "correction": correction.tolist(),
                                     "refined_pose": (correction @ view.pose).tolist(), "points": len(cloud),
                                     "center_displacement_m": shift, "rotation_deg": angle}
-            if registration_args and registration_args.save_debug_views:
-                save_binary_ply(method_dir / "debug_views" / plant_dir.name / f"{view.path.name}.ply", cloud)
+            
         merged = np.vstack(transformed_views)
         before_downsample = len(merged)
         merged = voxel_downsample_xyzrgb(merged, voxel_size)
-        output_suffix = "_merged.ply" if cloud_source == "original" else "_merged_rgbd.ply"
-        output_path = method_dir / f"{plant_dir.name}{output_suffix}"
+        output_path = method_dir / f"{plant_dir.name}_merged_rgbd.ply"
         save_binary_ply(output_path, merged)
         diagnostics.update(scan=str(scan_dir.resolve()), plant=plant_dir.name, poses=poses,
                            skipped_views=skipped_views, points_before_downsample=before_downsample,
                            output_points=len(merged), evaluation_distance_m=(registration_args.icp_distances[-1]
                            if registration_args else None))
-        if registration_args:
-            diagnostics["parameters"] = vars(registration_args)
         write_json(method_dir / f"{plant_dir.name}_registration.json", diagnostics)
         print(f"  saved {output_path} ({before_downsample} -> {len(merged)} points)", flush=True)
         saved_paths.append(output_path)
@@ -330,115 +308,6 @@ def write_json(path, value):
         json.dump(value, stream, indent=2, default=str, allow_nan=False)
         stream.write("\n")
 
-
-def build_parser():
-    parser = argparse.ArgumentParser(description="Reconstruct plant views with saved poses, robust ICP, or colored ICP.")
-    parser.add_argument("input_dir", type=Path, help="A scan folder, or a parent folder containing timestamped scans")
-    parser.add_argument("--output-dir", type=Path, default=None, help="Output root; comparison runs use <root>/<run>/<method>/")
-    parser.add_argument("--views", type=int, default=None, help="Number of evenly spaced side views to use; the top view is always added when available")
-    parser.add_argument("--start-time", type=parse_cli_timestamp, default=None, help="Inclusive start: YYYYMMDD_HHMMSS or YYYY-MM-DD[ HH:MM[:SS]]")
-    parser.add_argument("--end-time", type=parse_cli_timestamp, default=None, help="Inclusive end: YYYYMMDD_HHMMSS or YYYY-MM-DD[ HH:MM[:SS]]")
-    parser.add_argument("--voxel-size", type=float, default=0, help="Voxel size in meters. Use 0 to disable.")
-    parser.add_argument("--color-by-view", action="store_true", help="Override RGB so each view has a unique debug color.")
-    parser.add_argument("--cloud-source",choices=("original", "rgbd"),default="rgbd",help="Input per view: RGB-D converted in memory (default), or legacy cloud_xyzrgb.npy",)
-    parser.add_argument("--min-depth", type=float, default=0.15, help="Minimum camera-frame depth in metres.")
-    parser.add_argument("--max-depth", type=float, default=0.70, help="Maximum camera-frame depth in metres.")
-    parser.add_argument("--crop-margin",type=float,default=0.05,help="Horizontal margin added to detected plant radius in metres.",)
-    parser.add_argument("--crop-below", type=float, default=0.12)
-    parser.add_argument("--crop-above", type=float, default=0.30)
-    add_registration_arguments(parser)
-    return parser
-
-
-def main():
-    parser = build_parser()
-    args = parser.parse_args()
-    validate_registration_arguments(parser, args)
-
-    if args.views is not None and args.views < 0:
-        parser.error("--views must be zero or greater")
-    if args.start_time and args.end_time and args.start_time > args.end_time:
-        parser.error("--start-time must not be later than --end-time")
-
-    input_dir = args.input_dir.expanduser()
-    if not input_dir.is_dir():
-        parser.error(f"input directory does not exist: {input_dir}")
-
-    scan_dirs = find_scan_dirs(input_dir, args.start_time, args.end_time)
-    if not scan_dirs:
-        raise RuntimeError(f"No scan folders found in {input_dir} for the requested date/time range")
-
-    if args.methods:
-        try:
-            require_open3d()
-        except RuntimeError as exc:
-            parser.error(str(exc))
-    comparison = bool(args.methods or args.run_name)
-    run_name = args.run_name or datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%fUTC")
-
-    multiple_scans = len(scan_dirs) > 1 or scan_dirs[0] != input_dir
-    output_root = args.output_dir.expanduser() if args.output_dir else None
-    for scan_dir in scan_dirs:
-        print(f"\nProcessing scan: {scan_dir.name}")
-        if output_root is None:
-            output_dir = scan_dir / "reconstruction"
-        elif multiple_scans:
-            output_dir = output_root / scan_dir.name
-        else:
-            output_dir = output_root
-
-        if comparison:
-            output_dir = output_dir / run_name
-            try:
-                output_dir.mkdir(parents=True, exist_ok=False)
-            except FileExistsError:
-                parser.error(f"comparison run already exists: {output_dir}; choose a different --run-name")
-            write_json(output_dir / "run_config.json", {"scan": str(scan_dir.resolve()),
-                       "created_utc": datetime.now(timezone.utc).isoformat(), "parameters": vars(args)})
-
-        plant_dirs = sorted(path for path in scan_dir.glob("plant_*") if path.is_dir())
-        if args.plant:
-            plant_dirs = [path for path in plant_dirs if path.name == args.plant]
-            if not plant_dirs:
-                parser.error(f"{scan_dir} does not contain {args.plant}")
-        for plant_dir in plant_dirs:
-            reconstruct_plant(scan_dir,plant_dir,output_dir,args.voxel_size,args.color_by_view,args.min_depth,args.max_depth,args.crop_margin,args.crop_below,args.crop_above,args.views,args.cloud_source,args)
-
-def find_scan_dirs(input_dir: Path, start_time: datetime | None, end_time: datetime | None) -> list[Path]:
-    """Find one explicit scan or timestamped scans immediately below a root."""
-    if any(path.is_dir() for path in input_dir.glob("plant_*")):
-        candidates = [input_dir]
-    else:
-        candidates = [path for path in input_dir.iterdir() if path.is_dir()]
-
-    selected = []
-    for candidate in candidates:
-        timestamp = scan_timestamp(candidate)
-        if timestamp is None:
-            continue
-        if start_time is not None and timestamp < start_time:
-            continue
-        if end_time is not None and timestamp > end_time:
-            continue
-        if any(path.is_dir() for path in candidate.glob("plant_*")):
-            selected.append(candidate)
-    return sorted(selected, key=lambda path: (scan_timestamp(path), path.name))
-
-def scan_timestamp(scan_dir: Path) -> datetime | None:
-    metadata_path = scan_dir / "metadata.yaml"
-    if metadata_path.exists():
-        try:
-            value = parse_meta_yaml(metadata_path).get("top_scan_timestamp")
-            if value:
-                return datetime.strptime(str(value), SCAN_TIMESTAMP_FORMAT)
-        except (OSError, ValueError, TypeError):
-            pass
-
-    match = re.search(r"(\d{8}_\d{6})$", scan_dir.name)
-    if match:
-        return datetime.strptime(match.group(1), SCAN_TIMESTAMP_FORMAT)
-    return None
-
 def parse_cli_timestamp(value: str) -> datetime:
     """Accept scan timestamps and common ISO-style date/time values."""
     normalized = value.strip().replace("T", " ")
@@ -450,6 +319,90 @@ def parse_cli_timestamp(value: str) -> datetime:
             pass
     raise argparse.ArgumentTypeError(f"invalid date/time {value!r}; use YYYYMMDD_HHMMSS or YYYY-MM-DD[ HH:MM[:SS]]")
 
+def build_parser():
+    parser = argparse.ArgumentParser(description="Reconstruct plant views with saved poses, robust ICP, or colored ICP.")
+    parser.add_argument("input_dir", type=Path, help="A parent folder containing timestamped scans")
+    parser.add_argument("--views", type=int, default=None, help="Number of evenly spaced side views to use; the top view is always added when available")
+    parser.add_argument("--start-time", type=parse_cli_timestamp, default=None, help="Inclusive start: YYYYMMDD_HHMMSS or YYYY-MM-DD[ HH:MM[:SS]]")
+    parser.add_argument("--end-time", type=parse_cli_timestamp, default=None, help="Inclusive end: YYYYMMDD_HHMMSS or YYYY-MM-DD[ HH:MM[:SS]]")
+    parser.add_argument("--voxel-size", type=float, default=0, help="Voxel size in meters. Use 0 to disable. Should be non-negative")
+    parser.add_argument("--color-by-view", action="store_true", help="Override RGB so each view has a unique debug color.")
+    parser.add_argument("--min-depth", type=float, default=0.05, help="Minimum camera-frame depth in metres. Should be non-negative")
+    parser.add_argument("--max-depth", type=float, default=0.50, help="Maximum camera-frame depth in metres. Should be non-negative")  # depend on the plant height at full growth
+    parser.add_argument("--crop-margin",type=float,default=0.05,help="Horizontal margin added to detected plant radius in metres. Should be non-negative")
+    parser.add_argument("--crop-below", type=float, default=0.04, help="Vertical margin below the plant in metres. Should be non-negative")
+    parser.add_argument("--crop-above", type=float, default=0.25, help="Vertical margin above the plant in metres. Should be non-negative")
+    add_registration_arguments(parser)  # add args from plant_view_registration.py
+    return parser
+
+
+def main():
+    parser = build_parser()
+    args = parser.parse_args()
+    validate_registration_arguments(parser, args)   # validate args with different constraints
+
+    input_dir = args.input_dir.expanduser()
+    if not input_dir.is_dir():
+        parser.error(f"input directory does not exist: {input_dir}")
+
+    scan_dirs = find_scan_dirs(input_dir, args.start_time, args.end_time)
+    if not scan_dirs:
+        raise RuntimeError(f"No scan folders found in {input_dir} for the requested date/time range")
+
+    has_registration = any(method != "baseline" for method in args.methods)
+    if has_registration:
+        try:
+            require_open3d()
+        except RuntimeError as exc:
+            parser.error(str(exc))
+
+    for scan_dir in scan_dirs:
+        print(f"\nProcessing scan: {scan_dir.name}")
+        output_dir = scan_dir / "reconstruction" / datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%fUTC")
+        output_dir.mkdir(parents=True, exist_ok=False)
+        write_json(output_dir / "run_config.json", {"scan": str(scan_dir.resolve()), "parameters": vars(args)})
+
+        plant_dirs = find_plant_dirs(scan_dir)
+        for plant_dir in plant_dirs:
+            reconstruct_plant(scan_dir,plant_dir,output_dir,args.voxel_size,args.color_by_view,args.min_depth,args.max_depth,
+                              args.crop_margin,args.crop_below,args.crop_above,args.views,args)
+
+def find_plant_dirs(scan_dir: Path) -> list[Path]:
+    """Find numeric plant folders, excluding results such as plant_height_*."""
+    return sorted(path for path in scan_dir.glob("plant_*")
+                  if re.fullmatch(r"plant_[0-9]+", path.name) and path.is_dir())
+
+def scan_timestamp(scan_dir: Path) -> datetime | None:
+    '''return the top_scan_timestamp from metadata.yaml, or None if unavailable'''
+    metadata_path = scan_dir / "metadata.yaml"
+    if metadata_path.exists():
+        try:
+            value = parse_meta_yaml(metadata_path).get("top_scan_timestamp")
+            if value:
+                return datetime.strptime(str(value), SCAN_TIMESTAMP_FORMAT)
+        except (OSError, ValueError, TypeError):
+            pass
+    return None
+
+def find_scan_dirs(input_dir: Path, start_time: datetime | None, end_time: datetime | None) -> list[Path]:
+    """Find timestamped scan folders directly inside the input directory and filter by start_time and end_time.
+       Returns a list of Path objects sorted by timestamp from oldest to newest."""
+    
+    selected = []
+    for candidate in input_dir.iterdir():   # loops through evry children of input_dir
+        if not candidate.is_dir():  # skip files, only consider directories
+            continue
+        timestamp = scan_timestamp(candidate)
+        if timestamp is None:
+            print(f"skip {candidate.name}: missing or invalid top_scan_timestamp in metadata.yaml")
+            continue
+        if start_time is not None and timestamp < start_time:
+            continue
+        if end_time is not None and timestamp > end_time:
+            continue
+        if find_plant_dirs(candidate):
+            selected.append(candidate)
+    return sorted(selected, key=lambda path: (scan_timestamp(path), path.name))
 
 if __name__ == "__main__":
     main()

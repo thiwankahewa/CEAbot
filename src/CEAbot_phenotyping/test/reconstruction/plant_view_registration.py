@@ -15,9 +15,6 @@ import numpy as np
 import yaml
 
 
-METHODS = ("robust_icp", "colored_icp")
-
-
 @dataclass
 class RegistrationView:
     path: Path
@@ -25,101 +22,39 @@ class RegistrationView:
     pose: np.ndarray  # base_link <- camera.
     color_index: int = 0
 
-
-def read_rgbd(view_dir):
-    """Read aligned RGB-D on the pinhole pixel grid used by reconstruction.
-
-    This preserves the existing projection convention; it does not rectify raw
-    images or register an unaligned depth image to the color camera.
-    """
-    required = [view_dir / name for name in ("depth.npy", "color.png", "meta.yaml")]
-    missing = [path.name for path in required if not path.exists()]
-    if missing:
-        raise FileNotFoundError("missing required files: " + ", ".join(missing))
-    with required[2].open(encoding="utf-8") as stream:
-        meta = yaml.safe_load(stream) or {}
-    info = meta.get("color_camera_info", {})
-    k = info.get("k") if isinstance(info, dict) else None
-    if not isinstance(k, list) or len(k) != 9:
-        raise ValueError("color_camera_info.k must contain 9 values")
-    intrinsics = np.asarray([k[0], k[4], k[2], k[5]], dtype=float)
-    if not np.all(np.isfinite(intrinsics)) or np.any(intrinsics[:2] <= 0):
-        raise ValueError("invalid color camera intrinsics")
-    scale = float(meta.get("depth_scale_m_per_unit", 0.001))
-    if not np.isfinite(scale) or scale <= 0:
-        raise ValueError("invalid depth_scale_m_per_unit")
-    depth = np.load(required[0], allow_pickle=False)
-    color = cv2.imread(str(required[1]), cv2.IMREAD_COLOR)
-    if depth.ndim != 2 or color is None or color.shape[:2] != depth.shape:
-        raise ValueError("depth must be HxW and color.png must have the same size")
-    return depth.astype(np.float32) * np.float32(scale), color, intrinsics
-
-
 def add_registration_arguments(parser):
     group = parser.add_argument_group("registration methods (independent comparison runs)")
-    group.add_argument("--all-methods", action="store_true", help="Enable robust and colored ICP; individual --no-* switches override this")
-    for method in METHODS:
-        group.add_argument("--" + method.replace("_", "-"), action=argparse.BooleanOptionalAction,
-                           default=None, help=f"Enable/disable a separate {method} reconstruction (default: off)")
-    group.add_argument("--baseline", action=argparse.BooleanOptionalAction, default=True,
-                       help="Also save the original pose-only reconstruction (default: on)")
-    group.add_argument("--run-name", help="Comparison subfolder name; defaults to a unique UTC timestamp")
-    group.add_argument("--plant", help="Process only this plant directory, e.g. plant_02")
-    group.add_argument("--save-debug-views", action="store_true", help="Save each corrected view as a separate PLY")
-    group.add_argument("--pairing", choices=("adjacent", "all"), default="adjacent",
-                       help="Adjacent side views plus top-to-side pairs, or all pairs")
-    group.add_argument("--max-pair-angle", type=float, default=80.0,
-                       help="Maximum side-view angular gap for adjacent pairing, degrees")
-    group.add_argument("--registration-margin", type=float, default=0.03,
-                       help="Extra crop padding during registration, metres; final crop is unchanged")
-    group.add_argument("--pose-graph", action=argparse.BooleanOptionalAction, default=True,
-                       help="Jointly optimize accepted pairwise constraints (default: on)")
+    group.add_argument("--methods", nargs="+", choices=("baseline", "robust_icp", "colored_icp"), default=["robust_icp"], help="Methods to run independently (default: baseline); list several to compare")
+    group.add_argument("--pairing", choices=("adjacent", "all"), default="adjacent", help="Adjacent side views plus top-to-side pairs, or all pairs")
+    group.add_argument("--max-pair-angle", type=float, default=80.0, help="Maximum side-view angular gap for adjacent pairing, degrees")
+    group.add_argument("--registration-margin", type=float, default=0.03, help="Extra crop padding during registration, metres; final crop is unchanged. Should be non-negative")
+    group.add_argument("--pose-graph", action=argparse.BooleanOptionalAction, default=True, help="Jointly optimize accepted pairwise constraints (default: on)")
+    
     group = parser.add_argument_group("ICP parameters (metres unless stated)")
     group.add_argument("--icp-voxels", type=float, nargs="+", default=[0.008, 0.004, 0.002])
-    group.add_argument("--icp-distances", type=float, nargs="+", default=[0.03, 0.015, 0.008],
-                       help="Maximum correspondence distance at each ICP scale; same length as --icp-voxels")
-    group.add_argument("--icp-iterations", type=int, default=40, help="Maximum iterations per scale")
-    group.add_argument("--normal-radius-factor", type=float, default=2.5, help="Normal search radius / voxel size")
-    group.add_argument("--normal-max-nn", type=int, default=30)
+    group.add_argument("--icp-distances", type=float, nargs="+", default=[0.03, 0.015, 0.008], help="Maximum correspondence distance at each ICP scale; same length as --icp-voxels")
+    group.add_argument("--icp-iterations", type=int, default=40, help="Maximum iterations per scale. Should be positive")
+    group.add_argument("--normal-radius-factor", type=float, default=2.5, help="Normal search radius / voxel size. Should be positive")
+    group.add_argument("--normal-max-nn", type=int, default=30, help="Should be positive")
     group.add_argument("--robust-kernel", choices=("huber", "tukey"), default="huber")
-    group.add_argument("--robust-scale", type=float, default=0.01, help="Robust loss scale, metres")
-    group.add_argument("--colored-geometric-weight", type=float, default=0.968,
-                       help="Colored ICP geometry weight in [0,1]; color weight is 1 minus this")
+    group.add_argument("--robust-scale", type=float, default=0.01, help="Robust loss scale, metres. Should be positive")
+    group.add_argument("--colored-geometric-weight", type=float, default=0.968, help="Colored ICP geometry weight in [0,1]; color weight is 1 minus this")
 
     group = parser.add_argument_group("pair acceptance and pose correction limits")
-    group.add_argument("--min-fitness", type=float, default=0.20,
-                       help="Minimum matched-point fraction in BOTH directions")
-    group.add_argument("--min-correspondences", type=int, default=30)
-    group.add_argument("--max-rmse", type=float, default=0.008, help="Maximum inlier RMSE in BOTH directions, metres")
-    group.add_argument("--max-correction-translation", type=float, default=0.05,
-                       help="Maximum displacement of the plant center from the saved pose, metres")
-    group.add_argument("--max-correction-rotation", type=float, default=12.0, help="Maximum correction angle, degrees")
-
-
+    group.add_argument("--min-fitness", type=float, default=0.20, help="Minimum matched-point fraction in BOTH directions. value between 0 and 1")
+    group.add_argument("--min-correspondences", type=int, default=30, help="Minimum number of correspondences. Should be positive")
+    group.add_argument("--max-rmse", type=float, default=0.008, help="Maximum inlier RMSE in BOTH directions, metres. Should be positive")
+    group.add_argument("--max-correction-translation", type=float, default=0.05, help="Maximum displacement of the plant center from the saved pose, metres. Should be positive")
+    group.add_argument("--max-correction-rotation", type=float, default=12.0, help="Maximum correction angle, degrees.")
 
 def validate_registration_arguments(parser, args):
-    args.methods = [name for name in METHODS
-                    if (args.all_methods if getattr(args, name) is None else getattr(args, name))]
-    if not args.methods and not args.baseline:
-        parser.error("enable at least one registration method or --baseline")
-    if args.run_name and (args.run_name in {".", ".."} or Path(args.run_name).name != args.run_name):
-        parser.error("--run-name must be a single directory name")
-    if args.plant and (not args.plant.startswith("plant_") or Path(args.plant).name != args.plant):
-        parser.error("--plant must be a directory name such as plant_02")
-    positive = ("icp_iterations", "normal_radius_factor", "normal_max_nn", "robust_scale",
-                "min_correspondences", "max_rmse", "max_correction_translation",
-                "max_correction_rotation")
-    for name in positive:
-        if not np.isfinite(getattr(args, name)) or getattr(args, name) <= 0:
-            parser.error(f"--{name.replace('_', '-')} must be finite and positive")
-    for name in ("registration_margin", "voxel_size", "min_depth", "crop_margin", "crop_below", "crop_above"):
-        if not np.isfinite(getattr(args, name)) or getattr(args, name) < 0:
-            parser.error(f"--{name.replace('_', '-')} must be finite and nonnegative")
+    if args.views is not None and args.views < 0:
+        parser.error("--views must be zero or greater")
+    if args.start_time and args.end_time and args.start_time > args.end_time:
+        parser.error("--start-time must not be later than --end-time")
+    args.methods = list(dict.fromkeys(args.methods))    # removes duplicate values
     if not np.isfinite(args.max_depth) or args.max_depth <= args.min_depth:
         parser.error("--max-depth must be finite and greater than --min-depth")
-    for name in ("min_fitness", "colored_geometric_weight"):
-        if not 0 <= getattr(args, name) <= 1:
-            parser.error(f"--{name.replace('_', '-')} must be in [0,1]")
     if not 0 < args.max_pair_angle <= 180 or not 0 < args.max_correction_rotation <= 180:
         parser.error("angular limits must be in (0,180] degrees")
     if args.normal_max_nn < 3 or args.min_correspondences < 3:
@@ -131,6 +66,26 @@ def validate_registration_arguments(parser, args):
         if not np.all(np.isfinite(values)) or np.any(values <= 0) or np.any(np.diff(values) > 0):
             parser.error(f"--{name.replace('_', '-')} must contain positive, coarse-to-fine values")
 
+def read_rgbd(view_dir):
+    """Return depth in meters, color as ndarray and camera intrinsics from a view directory. """
+
+    required = [view_dir / name for name in ("depth.npy", "color.png", "meta.yaml")]
+    missing = [path.name for path in required if not path.exists()]
+    if missing:
+        raise FileNotFoundError("missing required files: " + ", ".join(missing))
+    with required[2].open(encoding="utf-8") as stream:
+        meta = yaml.safe_load(stream) or {}
+    info = meta.get("color_camera_info", {})
+    k = info.get("k") if isinstance(info, dict) else None
+    intrinsics = np.asarray([k[0], k[4], k[2], k[5]], dtype=float)
+    scale = float(meta.get("depth_scale_m_per_unit", 0.001))
+    depth = np.load(required[0], allow_pickle=False)
+    color = cv2.imread(str(required[1]), cv2.IMREAD_COLOR)
+    if depth.ndim != 2 or color is None or color.shape[:2] != depth.shape:
+        raise ValueError("depth must be HxW and color.png must have the same size")
+    return depth.astype(np.float32) * np.float32(scale), color, intrinsics
+
+"""============================================================================================================================"""
 
 @lru_cache(maxsize=1)
 def require_open3d():
@@ -299,8 +254,6 @@ def solve_pose_graph(views, edges, center, args):
 
 
 def align_views(views, method, center, radius, args):
-    if method not in METHODS:
-        raise ValueError(f"unsupported registration method: {method}")
     o3d = require_open3d()
     reg = o3d.pipelines.registration
     cache = {}

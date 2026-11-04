@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
-"""Measure natural vertical plant height using local soil and explicit soil history.
-
-Reads original RGB-D views, optionally applying saved registration poses. It does
-not depend on Open3D or on the cropped reconstruction PLY. See PLANT_HEIGHT.md.
-"""
 
 import argparse
 import csv
 from dataclasses import asdict, dataclass, fields
 from datetime import datetime, timezone
+from functools import lru_cache
 import json
 from pathlib import Path
+import sys
 
 import cv2
 import numpy as np
@@ -18,31 +15,70 @@ from scipy.sparse import coo_matrix
 from scipy.sparse.csgraph import connected_components
 from scipy.spatial import ConvexHull, QhullError, cKDTree
 
-from CEAbot_phenotyping.test.reconstruction.plant_view_registration import read_rgbd
-from CEAbot_phenotyping.test.reconstruction.reconstruct_plant_views import (
-    EXPECTED_CLOUD_FRAME, EXPECTED_POSE_CHILD_FRAME, LEGACY_POSE_CHILD_FRAME,
-    parse_meta_yaml, pose_to_matrix, save_binary_ply, scan_timestamp, transform_points,
-)
+# Resolve sibling scripts independently of the working directory or ROS install.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "reconstruction"))
 
+from plant_view_registration import read_rgbd
+from reconstruct_plant_views import (EXPECTED_POSE_FRAME,EXPECTED_CLOUD_FRAME, EXPECTED_POSE_CHILD_FRAME, parse_meta_yaml, save_binary_ply, scan_timestamp, transform_points,)
+
+
+# Fixed inverted arm mounting: (x, y, z) -> (x, -y, -z), with physical up along -Z.
+MEASUREMENT_BASIS = np.array([ [1.0, 0.0, 0.0],[0.0, -1.0, 0.0],[0.0, 0.0, -1.0],])
+
+# ===========================================================================================================
+
+@dataclass
+class SegmentationSettings:
+    weights: str = "/home/thiwa/plant_dataset/soil_plant_indivdual/training_runs/v2/weights/best.pt"
+    confidence: float = 0.25
+    imgsz: int = 640
+
+
+@lru_cache(maxsize=2)
+def segmentation_model(weights):
+    """Load local weights once for all views/plants in the run."""
+
+    path = Path(weights).expanduser().resolve()
+    if not path.is_file():
+        raise ValueError(f"segmentation weights do not exist: {path}")
+    try:
+        from ultralytics import YOLO
+    except ImportError as exc:
+        raise ValueError("YOLO segmentation requires ultralytics; install it in this Python environment") from exc
+    model = YOLO(str(path))
+    if model.task != "segment" or model.names != {0: "soil", 1: "plant"}:
+        raise ValueError("segmentation model must have class 0=soil and class 1=plant")
+    return model
+
+
+def prepare_segmentation():
+    settings = SegmentationSettings()
+    if isinstance(settings.imgsz, bool) or not isinstance(settings.imgsz, int) or settings.imgsz <= 0:
+        raise ValueError("segmentation.imgsz must be a positive integer")
+    settings.weights = str(Path(settings.weights).expanduser().resolve())
+    segmentation_model(settings.weights)
+    return settings
+
+# ===========================================================================================================
 
 @dataclass
 class Settings:
-    soil_inner_radius_m: float = 0.008
-    soil_outer_radius_m: float = 0.045
+    ''' settings are in a class to easy to organize'''
+    
+    soil_radius_m: float = 0.100
     soil_grid_m: float = 0.002
     soil_residual_m: float = 0.004
     soil_min_cells: int = 60
-    soil_min_inlier_fraction: float = 0.55
+    soil_min_inlier_fraction: float = 0.55  # value between 0 and 1, inclusive
     soil_min_sectors: int = 5  # Of eight angular sectors around the stem.
     soil_max_nearest_m: float = 0.025
     soil_max_slope_deg: float = 25.0
     soil_min_hull_area_m2: float = 0.0005
-    roi_margin_m: float = 0.030
-    roi_min_radius_m: float = 0.060
-    roi_below_target_m: float = 0.150
-    roi_above_target_m: float = 0.300
+    roi_margin_m: float = 0.050 # plant radius + margin for the ROI, to avoid losing points at the edge of the plant
+    roi_below_target_m: float = 0.250
+    roi_above_target_m: float = 0.040
     min_depth_m: float = 0.050
-    max_depth_m: float = 0.800
+    max_depth_m: float = 0.500
     voxel_m: float = 0.001
     support_radius_m: float = 0.003
     support_min_neighbors: int = 3  # Excludes the query point itself.
@@ -50,172 +86,160 @@ class Settings:
     component_min_seed_voxels: int = 8
     plant_above_soil_m: float = 0.006
     history_max_spread_m: float = 0.010
-    history_max_stem_shift_m: float = 0.030
     top_agreement_m: float = 0.008
+    canopy_grid_m: float = 0.002  # Occupied horizontal projection cells for canopy area.
 
+def validate_settings(settings):
+    allow_zero = {"roi_margin_m", "roi_below_target_m", "roi_above_target_m", "min_depth_m",
+                  "soil_min_inlier_fraction", "soil_max_slope_deg", "soil_min_hull_area_m2",
+                  "plant_above_soil_m", "history_max_spread_m", "top_agreement_m"}
+    for field in fields(settings):
+        value = getattr(settings, field.name)
+        if not np.isfinite(value) or value < 0 or (value == 0 and field.name not in allow_zero):
+            bound = "nonnegative" if field.name in allow_zero else "positive"
+            raise ValueError(f"{field.name} must be finite and {bound}")
+    for name in ("soil_min_cells", "soil_min_sectors", "support_min_neighbors", "component_min_seed_voxels"):
+        value = getattr(settings, name)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"{name} must be an integer")
+    if settings.soil_min_cells < 3 or settings.soil_min_sectors > 8 or settings.soil_min_inlier_fraction > 1:
+        raise ValueError("invalid soil cell count, sector count or inlier fraction")
+    if settings.min_depth_m >= settings.max_depth_m or settings.soil_max_slope_deg >= 90:
+        raise ValueError("invalid depth limits or soil slope")
+
+# ===========================================================================================================
 
 def write_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n")
 
 
-def validate_transform(value):
-    matrix = np.asarray(value, dtype=float)
-    if (matrix.shape != (4, 4) or not np.isfinite(matrix).all()
-            or not np.allclose(matrix[3], [0, 0, 0, 1])
-            or not np.allclose(matrix[:3, :3].T @ matrix[:3, :3], np.eye(3), atol=1e-5)
-            or not np.isclose(np.linalg.det(matrix[:3, :3]), 1, atol=1e-5)):
-        raise ValueError("pose/reference transforms must be finite, rigid 4x4 matrices")
-    return matrix
-
-
-def vertical_basis(up):
-    up = np.asarray(up, dtype=float)
-    if up.shape != (3,) or not np.isfinite(up).all() or np.linalg.norm(up) < 1e-9:
-        raise ValueError("up must contain three finite values with nonzero length")
-    up = up / np.linalg.norm(up)
-    x = np.eye(3)[np.argmin(np.abs(up))]
-    x = x - np.dot(x, up) * up
-    x /= np.linalg.norm(x)
-    return np.column_stack([x, np.cross(up, x), up])
-
-
-def validate_settings(settings):
-    for field in fields(settings):
-        value = getattr(settings, field.name)
-        if not np.isfinite(value) or value <= 0:
-            raise ValueError(f"{field.name} must be finite and positive")
-        if field.type is int and (isinstance(value, bool) or not isinstance(value, int)):
-            raise ValueError(f"{field.name} must be an integer")
-    if not 0 < settings.soil_min_inlier_fraction <= 1:
-        raise ValueError("soil_min_inlier_fraction must be in (0, 1]")
-    if not 1 <= settings.soil_min_sectors <= 8 or settings.soil_min_cells < 3:
-        raise ValueError("soil needs at least 3 cells and 1..8 sectors")
-    if not settings.soil_inner_radius_m < settings.soil_outer_radius_m:
-        raise ValueError("soil_inner_radius_m must be smaller than soil_outer_radius_m")
-    if settings.min_depth_m >= settings.max_depth_m or settings.soil_max_slope_deg >= 90:
-        raise ValueError("invalid depth limits or soil slope")
-
-
 def voxel_indices(xyz, size):
     """Keep one original point per voxel; do not move a measured tip by averaging."""
     return np.unique(np.floor(xyz / size).astype(np.int64), axis=0, return_index=True)[1]
 
-
-def color_candidates(rgb):
-    hsv = cv2.cvtColor(np.asarray(rgb, np.uint8).reshape(-1, 1, 3), cv2.COLOR_RGB2HSV)[:, 0]
-    h, s, v = hsv.T
-    vegetation = (h >= 20) & (h <= 100) & (s >= 25) & (v >= 20)
-    # Brown substrate is a candidate, not a sufficient soil classification.
-    soil = (h <= 30) & (s >= 35) & (v >= 20) & (v <= 245) & ~vegetation
-    return vegetation, soil
-
-
-def load_mask(root, scan, plant, view, kind, shape):
-    if root is None:
-        return None
-    path = root / scan.name / plant / view / f"{kind}.png"
-    if not path.exists():
-        return None
-    mask = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
-    if mask is None or mask.shape != shape:
-        raise ValueError(f"{path}: expected a readable mask of shape {shape}")
-    return mask > 0
-
+# ===========================================================================================================
 
 def connected_registration(result):
     """Only fuse one connected registration component into a measurement cloud."""
     components = result.get("components", [])
     if not components:
-        raise ValueError("registration has no connected-component diagnostics; use --registration none")
+        raise ValueError("registration has no connected-component diagnostics; regenerate the robust ICP reconstruction")
     component = max(components, key=lambda item: (len(item["views"]), "top" in item["views"]))
     names = set(component["views"])
-    if not names or not names.issubset(result.get("poses", {})):
-        raise ValueError("registration component references missing poses")
     return {**result, "poses": {key: value for key, value in result["poses"].items() if key in names},
             "measurement_component": component,
             "excluded_disconnected_views": sorted(set(result["poses"]) - names)}
 
 
-def registration_for(scan, plant, mode, run):
-    if mode == "none":
-        return None, None
-    if run:
-        matches = [scan / "reconstruction" / run / mode / f"{plant}_registration.json"]
-        if not matches[0].is_file():
-            raise ValueError(f"missing requested registration: {matches[0]}")
-    else:
-        matches = sorted((scan / "reconstruction").glob(f"**/{mode}/{plant}_registration.json"))
+def registration_for(scan, plant):
+    ''' Return the most recent robust ICP registration and path for that json for a scan/plant. '''
+
+    matches = sorted((scan / "reconstruction").glob(f"**/robust_icp/{plant}_registration.json"))
     if not matches:
-        return None, None
+        raise ValueError(f"No saved robust ICP registration for {scan.name}/{plant}; run reconstruction first")
     path = matches[-1]
     result = json.loads(path.read_text())
     if result.get("plant") != plant or Path(result.get("scan", "")).name != scan.name:
         raise ValueError(f"registration metadata does not match {scan.name}/{plant}")
     return connected_registration(result), path
 
+# ===========================================================================================================
 
-def load_points(scan, plant, center, basis, reference, radius, settings, registration, mask_root,
-                unregistered_views="single"):
+def save_segmented_images(directory, view_name, bgr, plant_mask, soil_mask):
+    """Save one full-image overlay per view; soil wins overlap."""
+    
+    directory.mkdir(parents=True, exist_ok=True)
+    plant_mask = plant_mask & ~soil_mask
+    overlay = bgr.copy()
+    for mask, color in [(soil_mask, (65, 125, 185)), (plant_mask, (40, 220, 40))]:
+        overlay[mask] = np.rint(0.5 * bgr[mask] + 0.5 * np.asarray(color)).astype(np.uint8)
+    path = directory / f"{view_name}_seg.png"
+    cv2.imwrite(str(path), overlay)
+
+def segment_view(bgr, segmentation=None):
+    """Return HxW boolean plant/soil masks for an original BGR image."""
+    
+    result = segmentation_model(segmentation.weights).predict(
+        source=bgr, conf=segmentation.confidence, imgsz=segmentation.imgsz,
+        retina_masks=True, classes=[0, 1], agnostic_nms=False,
+        save=False, verbose=False,)[0]
+    plant = np.zeros(bgr.shape[:2], dtype=bool)
+    soil = np.zeros_like(plant)
+    if result.masks is not None:
+        masks = result.masks.data.cpu().numpy() > 0.5
+        classes = result.boxes.cls.cpu().numpy().astype(int)
+        if masks.shape != (len(classes), *bgr.shape[:2]):
+            raise ValueError("segmentation masks must match the original RGB-D image size")
+        soil = masks[classes == 0].any(axis=0)
+        plant = masks[classes == 1].any(axis=0)
+    plant &= ~soil
+    return plant, soil
+
+def load_points(scan, plant, center, basis, radius, settings, registration, segmentation=None, segmentation_output_dir=None):
     chunks, seeds, soils, ids, pixels, views, skipped = [], [], [], [], [], [], []
-    available = sorted(view for view in (scan / plant).iterdir()
-                       if view.is_dir() and (view / "meta.yaml").is_file())
-    if registration is None and unregistered_views == "single" and available:
-        available = [next((view for view in available if view.name == "top"), available[0])]
+    available = sorted(view for view in (scan / plant).iterdir() if view.is_dir() and (view / "meta.yaml").is_file())
     for view in available:
-        if not view.is_dir() or not (view / "meta.yaml").is_file():
-            continue
         # Preserve the exact selected view set from a requested reconstruction.
-        if registration is not None and view.name not in registration.get("poses", {}):
+        if view.name not in registration["poses"]:
             continue
         try:
             meta = parse_meta_yaml(view / "meta.yaml")
-            if (meta.get("pose_frame") != "base_link"
-                    or meta.get("pose_child_frame") not in {EXPECTED_POSE_CHILD_FRAME, LEGACY_POSE_CHILD_FRAME}
-                    or meta.get("camera_frame", meta.get("frame_id")) != EXPECTED_CLOUD_FRAME):
+            if (meta.get("pose_frame") != EXPECTED_POSE_FRAME or meta.get("pose_child_frame") not in {EXPECTED_POSE_CHILD_FRAME} or meta.get("camera_frame") != EXPECTED_CLOUD_FRAME):
                 raise ValueError("unsupported camera/pose frame")
             depth, bgr, (fx, fy, cx, cy) = read_rgbd(view)
-            pose = pose_to_matrix(meta) if registration is None else validate_transform(
-                registration["poses"][view.name]["refined_pose"])
+            pose = np.asarray(registration["poses"][view.name]["refined_pose"], dtype=float)
             valid = np.isfinite(depth) & (depth >= settings.min_depth_m) & (depth <= settings.max_depth_m)
             rows, cols = np.nonzero(valid)
             z = depth[rows, cols]
             xyz = np.column_stack(((cols - cx) * z / fx, (rows - cy) * z / fy, z))
-            xyz = transform_points(xyz, reference @ pose) @ basis
+            xyz = transform_points(xyz, pose) @ basis
             keep = ((np.linalg.norm(xyz[:, :2] - center[:2], axis=1) <= radius)
                     & (xyz[:, 2] >= center[2] - settings.roi_below_target_m)
                     & (xyz[:, 2] <= center[2] + settings.roi_above_target_m))
             rows, cols, xyz = rows[keep], cols[keep], xyz[keep]
             rgb = bgr[rows, cols, ::-1]
-            vegetation, soil = color_candidates(rgb)
-            plant_mask = load_mask(mask_root, scan, plant, view.name, "plant", depth.shape)
-            soil_mask = load_mask(mask_root, scan, plant, view.name, "soil", depth.shape)
-            if plant_mask is not None:
-                vegetation = plant_mask[rows, cols]
-            if soil_mask is not None:
-                soil = soil_mask[rows, cols]
-            soil &= ~vegetation
+
+            plant_mask, soil_mask = segment_view(bgr, segmentation)
+            if segmentation_output_dir is not None:
+                save_segmented_images(segmentation_output_dir, view.name, bgr, plant_mask, soil_mask)
+            vegetation = plant_mask[rows, cols]
+            soil = soil_mask[rows, cols]
+            vegetation &= ~soil
             chunks.append(np.column_stack((xyz, rgb)))
             seeds.append(vegetation)
             soils.append(soil)
             ids.append(np.full(len(xyz), len(views), dtype=np.int32))
             pixels.append(np.column_stack((rows, cols)))
-            views.append({"name": view.name, "path": str(view), "shape": list(depth.shape),
-                          "points": len(xyz), "plant_mask": plant_mask is not None,
-                          "soil_mask": soil_mask is not None})
+            views.append({"name": view.name, "path": str(view)})
         except (ValueError, OSError, KeyError) as exc:
             skipped.append({"view": view.name, "reason": str(exc)})
     if not chunks or sum(map(len, chunks)) == 0:
         raise ValueError(f"no usable RGB-D points; skipped views: {skipped}")
-    return (np.vstack(chunks), np.concatenate(seeds), np.concatenate(soils),
-            np.concatenate(ids), np.vstack(pixels), views, skipped)
+    return (np.vstack(chunks), np.concatenate(seeds), np.concatenate(soils), np.concatenate(ids), np.vstack(pixels), views, skipped)
+
+# ===========================================================================================================
+
+def exclude_nearby_plant_per_view(points, seed, soil_candidates, view_ids):
+    """Exclude soil within 3 mm of plant seeds from the same camera view only."""
+    keep = soil_candidates.copy()
+    for view_id in np.unique(view_ids):
+        own_seed = seed & (view_ids == view_id)
+        own_soil_indices = np.flatnonzero(keep & (view_ids == view_id))
+        if not own_seed.any() or not len(own_soil_indices):
+            continue
+        distances = cKDTree(points[own_seed, :3]).query(points[own_soil_indices, :3], k=1)[0]
+        keep[own_soil_indices[distances < 0.003]] = False
+    return keep
 
 
 def fit_local_soil(points, center_xy, settings):
     """RANSAC local soil surface with coverage checks; returns global plane h=ax+by+c."""
+
     rejected = {"accepted": False, "reason": "too_few_soil_cells", "candidate_points": len(points)}
     if len(points) < settings.soil_min_cells:
         return rejected
+    
     # Equal horizontal area weighting prevents one dense view dominating the fit.
     cell = np.floor(points[:, :2] / settings.soil_grid_m).astype(np.int64)
     _, inverse = np.unique(cell, axis=0, return_inverse=True)
@@ -279,19 +303,17 @@ def fit_local_soil(points, center_xy, settings):
             "stem_xy_m": np.asarray(center_xy).tolist()}
 
 
-def historical_soil(history, timestamp, history_key, reference_id, up, center_xy, settings):
-    """Average accepted prior days, never prior fallback results or future data."""
-    if not history_key or not reference_id:
-        return {"accepted": False, "reason": "history_identity_or_reference_not_configured"}
+def historical_soil(history, timestamp, history_key, up, center_xy, settings):
+    """Reuse prior stem soil elevations, assuming unchanged pot elevation/tilt."""
+    if not history_key:
+        return {"accepted": False, "reason": "history_identity_not_available"}
     candidates = []
     for observation in history:
-        if (observation.get("history_key") != history_key or observation.get("reference_id") != reference_id
+        if (observation.get("history_key") != history_key or observation.get("frame_id") != "base_link"
                 or not observation.get("accepted") or observation.get("source") != "current_scan"
                 or observation["timestamp"] >= timestamp
                 or np.asarray(observation.get("up", [])).shape != (3,)
                 or not np.allclose(observation["up"], up)):
-            continue
-        if np.linalg.norm(np.asarray(observation["stem_xy_m"]) - center_xy) > settings.history_max_stem_shift_m:
             continue
         candidates.append(observation)
     if not candidates:
@@ -301,7 +323,21 @@ def historical_soil(history, timestamp, history_key, reference_id, up, center_xy
     for observation in candidates:
         days.setdefault(observation["timestamp"][:10], []).append(observation)
     dates = sorted(days)
-    planes = np.asarray([np.median([o["plane"] for o in days[date]], axis=0) for date in dates])
+    daily_planes = []
+    for date in dates:
+        moved_planes = []
+        for observation in days[date]:
+            plane = np.asarray(observation["plane"], dtype=float).copy()
+            # Translate the old local surface horizontally with the stem proxy.
+            # This preserves its stem soil elevation; it is not a vertical or
+            # rotational correction and does not estimate actual pot motion.
+            plane[2] += plane[:2] @ (np.asarray(observation["stem_xy_m"]) - center_xy)
+            moved_planes.append(plane)
+        daily_plane = np.median(moved_planes, axis=0)
+        daily_height = np.median(np.asarray(moved_planes) @ np.r_[center_xy, 1.0])
+        daily_plane[2] = daily_height - daily_plane[:2] @ center_xy
+        daily_planes.append(daily_plane)
+    planes = np.asarray(daily_planes)
     heights = planes @ np.r_[center_xy, 1.0]
     median = np.median(heights)
     mad = 1.4826 * np.median(np.abs(heights - median))
@@ -312,6 +348,7 @@ def historical_soil(history, timestamp, history_key, reference_id, up, center_xy
     plane = np.mean(planes[keep], axis=0)
     used_dates = [date for date, selected in zip(dates, keep) if selected]
     return {"accepted": True, "reason": "accepted_prior_daily_mean", "plane": plane.tolist(),
+            "position_assumption": "unchanged_pot_elevation_and_tilt",
             "soil_elevation_m": float(plane @ np.r_[center_xy, 1.0]),
             "days": len(used_dates), "dates": used_dates, "spread_m": spread,
             "between_day_sd_m": float(np.std(heights[keep], ddof=1)) if keep.sum() > 1 else None,
@@ -326,16 +363,20 @@ def supported_mask(xyz, settings):
     return distances[:, -1] <= settings.support_radius_m
 
 
-def select_plant(points, seeds, plane, center, settings):
-    """Select supported components with plant seeds; include connected organs of any color."""
+def select_plant(points, seeds, plane, center, settings, soil_mask=None):
+    """Filter plant points; YOLO masks exclude unlabeled background before voxelization."""
     xyz = points[:, :3]
     elevation_above_surface = xyz[:, 2] - np.column_stack((xyz[:, :2], np.ones(len(xyz)))) @ plane
     candidates = elevation_above_surface > settings.plant_above_soil_m
+    candidates &= seeds
+    if soil_mask is not None:
+        # Component expansion must not add soil-labeled points back to the plant.
+        candidates &= ~soil_mask
     indices = np.flatnonzero(candidates)
     indices = indices[voxel_indices(xyz[indices], settings.voxel_m)]
     supported = supported_mask(xyz[indices], settings)
     indices = indices[supported]
-    result = {"above_soil_points": int(candidates.sum()), "supported_voxels": len(indices)}
+    result = {"above_soil_points": int(candidates.sum()), "supported_voxels": len(indices),}
     if not len(indices):
         return indices, {**result, "reason": "no_supported_plant_points"}
     distances, neighbors = cKDTree(xyz[indices]).query(
@@ -356,52 +397,106 @@ def select_plant(points, seeds, plane, center, settings):
                                "reason": "supported_seeded_components" if selected.any() else "no_plant_seeded_components"}
 
 
-def validate_history(history):
-    if not isinstance(history, list):
-        raise ValueError("history observations must be a list")
-    seen = set()
-    for observation in history:
-        identifier = observation["observation_id"]
-        if identifier in seen:
-            raise ValueError(f"duplicate history observation: {identifier}")
-        seen.add(identifier)
-        datetime.fromisoformat(observation["timestamp"])
-        for name, shape in [("plane", (3,)), ("stem_xy_m", (2,)), ("up", (3,))]:
-            value = np.asarray(observation[name], dtype=float)
-            if value.shape != shape or not np.isfinite(value).all():
-                raise ValueError(f"invalid historical {name}: {identifier}")
-        if not np.isclose(np.linalg.norm(observation["up"]), 1):
-            raise ValueError(f"historical up must be normalized: {identifier}")
+
+def measure_canopy(points, center, radius, settings):
+    """Describe the observed cleaned plant cloud projected onto physical XY.
+
+    Span is the convex-hull diameter. Perpendicular width is a projection extent,
+    not a stem-crossing chord or the minimum Feret diameter. Grid area counts
+    occupied cells once, including overlapping views, without filling gaps.
+    """
+    result = {"canopy_status": "unmeasurable", "canopy_max_span_mm": None,
+              "canopy_perpendicular_width_mm": None, "canopy_projected_area_mm2": None,
+              "canopy_hull_area_mm2": None, "canopy_grid_mm": settings.canopy_grid_m * 1000,
+              "canopy_near_crop_boundary": False,
+              "canopy_details": {"reason": "insufficient_plant_points"}}
+    xyz = np.asarray(points)[:, :3]
+    xyz = xyz[np.isfinite(xyz).all(axis=1)]
+    xy = np.unique(xyz[:, :2], axis=0)
+    if len(xy) < 3:
+        return result
+    # Centering improves numerical conditioning without changing metric geometry.
+    origin = xy.mean(axis=0)
+    try:
+        hull = ConvexHull(xy - origin)
+    except QhullError:
+        result["canopy_details"]["reason"] = "degenerate_horizontal_footprint"
+        return result
+    boundary = xy[hull.vertices]
+    best_squared, endpoints = -1.0, None
+    for point in boundary:
+        squared = np.sum((boundary - point) ** 2, axis=1)
+        other = int(np.argmax(squared))
+        if squared[other] > best_squared:
+            best_squared = float(squared[other])
+            endpoints = np.array([point, boundary[other]])
+    span = np.sqrt(best_squared)
+    direction = (endpoints[1] - endpoints[0]) / span
+    perpendicular = np.array([-direction[1], direction[0]])
+    projection = (xy - origin) @ perpendicular
+    low, high = float(projection.min()), float(projection.max())
+    grid_origin = xy.min(axis=0)
+    cells = np.unique(np.floor((xy - grid_origin) / settings.canopy_grid_m + 1e-9).astype(np.int64), axis=0)
+    margins = {
+        "horizontal_m": float(radius - np.linalg.norm(xyz[:, :2] - center[:2], axis=1).max()),
+        "upper_m": float(center[2] + settings.roi_above_target_m - xyz[:, 2].max()),
+        "lower_m": float(xyz[:, 2].min() - (center[2] - settings.roi_below_target_m)),
+    }
+    near_crop = any(value < 0.005 for value in margins.values())
+    result.update(
+        canopy_status="estimated", canopy_max_span_mm=float(span * 1000),
+        canopy_perpendicular_width_mm=float((high - low) * 1000),
+        canopy_projected_area_mm2=float(len(cells) * (settings.canopy_grid_m * 1000) ** 2),
+        canopy_hull_area_mm2=float(hull.volume * 1e6),
+        canopy_near_crop_boundary=near_crop,
+        canopy_details={"reason": "observed_cleaned_plant_projection", "source": "plant_cleaned_points",
+                        "projection": "physical_horizontal_xy", "area_method": "occupied_grid_cells_no_gap_filling",
+                        "point_count": len(xyz), "occupied_cells": len(cells),
+                        "grid_origin_xy_m": grid_origin.tolist(), "hull_xy_m": boundary.tolist(),
+                        "max_span_endpoints_xy_m": endpoints.tolist(),
+                        "max_span_direction_xy": direction.tolist(),
+                        "perpendicular_direction_xy": perpendicular.tolist(),
+                        "perpendicular_line_endpoints_xy_m": (origin + np.array([low, high])[:, None] * perpendicular).tolist(),
+                        "crop_margins": margins})
+    return result
 
 
-def write_validation_plot(directory, results):
-    matched = [r for r in results if r.get("error_mm") is not None]
-    if not matched:
+def write_canopy_preview(directory, points, center, radius, canopy):
+    """Plot measured spans and the hull on a metric horizontal projection."""
+    if canopy["canopy_status"] != "estimated":
         return
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    manual = np.asarray([r["manual_height_mm"] for r in matched])
-    measured = np.asarray([r["height_mm"] for r in matched])
-    fig, axis = plt.subplots(figsize=(7, 6))
-    for location in sorted({r["location"] for r in matched}):
-        mask = np.array([r["location"] == location for r in matched])
-        axis.scatter(manual[mask], measured[mask], label=location)
-    for x, y, r in zip(manual, measured, matched):
-        axis.annotate(f"P{r['plant_id']}", (x, y), xytext=(5, 4), textcoords="offset points", fontsize=8)
-    bounds = [min(manual.min(), measured.min()) - 3, max(manual.max(), measured.max()) + 3]
-    axis.plot(bounds, bounds, "--", color="gray", label="Equal height")
-    axis.set(xlim=bounds, ylim=bounds, xlabel="Manual height (mm)", ylabel="Estimated height (mm)",
-             title=f"Initial comparison: n={len(matched)}, MAE={np.abs(measured-manual).mean():.2f} mm")
-    axis.set_aspect("equal")
-    axis.legend()
+    from matplotlib.patches import Circle
+    fig, axis = plt.subplots(figsize=(7, 7))
+    xy = (points[:, :2] - center[:2]) * 1000
+    axis.scatter(xy[:, 0], xy[:, 1], s=2, c="forestgreen", label="Retained plant points")
+    details = canopy["canopy_details"]
+    hull = (np.asarray(details["hull_xy_m"]) - center[:2]) * 1000
+    hull = np.vstack((hull, hull[0]))
+    axis.plot(hull[:, 0], hull[:, 1], color="gray", linestyle="--", label="Convex hull")
+    for key, color, label, value in [
+        ("max_span_endpoints_xy_m", "darkorange", "Maximum span", canopy["canopy_max_span_mm"]),
+        ("perpendicular_line_endpoints_xy_m", "royalblue", "Perpendicular width", canopy["canopy_perpendicular_width_mm"]),
+    ]:
+        line = (np.asarray(details[key]) - center[:2]) * 1000
+        axis.plot(line[:, 0], line[:, 1], color=color, linewidth=2, marker="o", markersize=3,
+                  label=f"{label}: {value:.1f} mm")
+    axis.add_patch(Circle((0, 0), radius * 1000, fill=False, color="red", linestyle=":", label="Horizontal crop"))
+    axis.plot(0, 0, "+", color="black", label="Stem proxy")
+    title = f"Observed canopy | grid area: {canopy['canopy_projected_area_mm2']:.0f} mm²"
+    if canopy["canopy_near_crop_boundary"]:
+        title += "\nNear crop boundary: check coverage"
+    axis.set(xlabel="X relative to stem (mm)", ylabel="Y relative to stem (mm)", title=title)
+    axis.set_aspect("equal", adjustable="box")
+    axis.legend(loc="best", fontsize=8)
     fig.tight_layout()
-    fig.savefig(directory / "manual_comparison.png", dpi=160)
+    fig.savefig(directory / "canopy_preview.png", dpi=150)
     plt.close(fig)
 
 
-def write_artifacts(directory, points, seed, soil_candidates, plant_indices, views, view_ids,
-                    pixels, center, soil, top_index, settings):
+def write_artifacts(directory, points, soil_candidates, plant_indices, center, soil, top_index, settings):
     # All saved PLYs are in the measurement frame: Z is physical up.
     display = points.copy()
     display[:, 3:] *= 0.35
@@ -412,28 +507,6 @@ def write_artifacts(directory, points, seed, soil_candidates, plant_indices, vie
         display[tip_distance < settings.support_radius_m, 3:] = [255, 30, 230]
     keep = voxel_indices(points[:, :3], settings.voxel_m)
     save_binary_ply(directory / "classified.ply", display[keep])
-    if len(plant_indices):
-        save_binary_ply(directory / "plant_cleaned.ply", points[plant_indices])
-    if soil_candidates.any():
-        soil_points = points[soil_candidates]
-        save_binary_ply(directory / "soil_candidates.ply", soil_points[voxel_indices(soil_points[:, :3], settings.voxel_m)])
-    if top_index is not None and soil is not None:
-        soil_h = soil["soil_elevation_m"]
-        top = points[top_index, :3]
-        line = np.column_stack((np.full(100, top[0]), np.full(100, top[1]), np.linspace(soil_h, top[2], 100)))
-        save_binary_ply(directory / "height_line.ply", np.column_stack((line, np.tile([255, 0, 255], (100, 1)))))
-    plant_mask = np.zeros(len(points), dtype=bool)
-    plant_mask[plant_indices] = True
-    for view_id, view in enumerate(views):
-        bgr = cv2.imread(str(Path(view["path"]) / "color.png"))
-        subset = view_ids == view_id
-        for mask, color in [(soil_candidates, (65, 125, 185)), (plant_mask, (40, 220, 40))]:
-            rc = pixels[subset & mask]
-            bgr[rc[:, 0], rc[:, 1]] = color
-        if top_index is not None and view_ids[top_index] == view_id:
-            r, c = pixels[top_index]
-            cv2.circle(bgr, (int(c), int(r)), 10, (255, 0, 255), 2)
-        cv2.imwrite(str(directory / f"{view['name']}_overlay.png"), bgr)
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -454,75 +527,131 @@ def write_artifacts(directory, points, seed, soil_candidates, plant_indices, vie
     fig.savefig(directory / "height_preview.png", dpi=150)
     plt.close(fig)
 
+def plant_history_key(experiment, location, plant_id):
+    """Identify the same plant across scans within an experiment."""
+    if experiment is None:
+        return None
+    return f"{experiment}/{location}/plant_{int(plant_id):02d}"
 
-def measure(scan, plant_record, config, settings, args, history):
+
+def soil_observation_from_measurement(measurement):
+    """Build an in-memory history entry from the directly measured soil."""
+    current = measurement.get("current_soil")
+    if not current or not current.get("accepted"):
+        return None
+    return {**current, "source": "current_scan",
+            "timestamp": measurement["timestamp"],
+            "observation_id": f"{measurement['scan']}/plant_{int(measurement['plant_id']):02d}",
+            "history_key": measurement["history_key"],
+            "frame_id": measurement["frame_id"],
+            "up": [row[2] for row in measurement["measurement_basis_columns"]],
+            "settings": measurement.get("settings", {}),
+            "registration": measurement["registration"],
+            "segmentation": measurement["segmentation"]}
+
+
+def discover_soil_history(scan, metadata, experiment_start, processed_scans):
+    """Load each earlier same-row scan's own plant observations from its latest run."""
+
+    if experiment_start is None:
+        return []
+    location = metadata.get("location")
+    current_time = scan_timestamp(scan)
+    plants = {f"plant_{int(plant['plant_id']):02d}": f"{experiment_start}/{location}/plant_{int(plant['plant_id']):02d}"
+              for plant in metadata.get("plants", [])}
+    observations = {}
+    for previous in sorted(scan.parent.iterdir()):  # loop through all scans in the same experiment parent folder
+        if not previous.is_dir() or previous in processed_scans or not (previous / "metadata.yaml").is_file():
+            continue
+        source = previous
+        try:
+            timestamp = scan_timestamp(previous)
+            if timestamp is None or timestamp >= current_time or timestamp.date() < experiment_start:
+                continue
+            if parse_meta_yaml(previous / "metadata.yaml").get("location") != location:
+                continue
+            for plant, expected_key in plants.items():
+                files = list((previous / "phenotyping").glob(f"*/{plant}/measurement.json"))
+                if not files:
+                    continue
+                source = max(files, key=lambda path: (path.parent.parent.name, str(path)))
+                try:
+                    observation = soil_observation_from_measurement(json.loads(source.read_text()))
+                    if not observation:
+                        continue
+                    if (observation.get("history_key") != expected_key
+                            or observation["observation_id"] != f"{previous.name}/{plant}"
+                            or not experiment_start <= datetime.fromisoformat(observation["timestamp"]).date()
+                            or datetime.fromisoformat(observation["timestamp"]) >= current_time):
+                        continue
+                    observations[observation["observation_id"]] = observation
+                except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
+                    print(f"  warning: skipping soil history {source}: {exc}")
+        except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
+            print(f"  warning: skipping soil history {source}: {exc}")
+    return list(observations.values())
+
+
+def measure(scan, plant_record, settings, args, history, output_dir, segmentation):
     plant = f"plant_{int(plant_record['plant_id']):02d}"
-    history[:] = [o for o in history if o["observation_id"] != f"{scan.name}/{plant}"]
+    location = parse_meta_yaml(scan / "metadata.yaml").get("location")
+    history_key = plant_history_key(args.experiment_start_date, location, plant_record["plant_id"])
+    history[:] = [o for o in history if o["observation_id"] != f"{scan.name}/{plant}"]  # remove any prior observation for this plant in this scan
     timestamp = scan_timestamp(scan).isoformat()
-    directory = args.output_dir / scan.name / plant
+    directory = output_dir / plant
     directory.mkdir(parents=True, exist_ok=True)
     target = plant_record.get("target_base", {})
-    if target.get("frame_id") != "base_link":
+    if target.get("frame_id") != EXPECTED_POSE_FRAME:
         raise ValueError("scan needs target_base in base_link")
-    reference = validate_transform(config.get("base_to_reference", np.eye(4)))
-    basis = vertical_basis(args.up)
     center_base = np.asarray([target[f"{dim}_m"] for dim in "xyz"], dtype=float)
-    if "stem_xy_base_m" in config:
-        stem = np.asarray(config["stem_xy_base_m"], dtype=float)
-        if stem.shape != (2,) or not np.isfinite(stem).all():
-            raise ValueError("stem_xy_base_m must contain two finite coordinates")
-        center_base[:2] = stem
-    center = transform_points(center_base[None], reference)[0] @ basis
-    radius = float(config.get("roi_radius_m", max(settings.roi_min_radius_m,
-                                                  float(plant_record["radius_mm"]) / 1000 + settings.roi_margin_m)))
-    if not np.isfinite(radius) or radius <= settings.soil_outer_radius_m:
-        raise ValueError("roi_radius_m must be finite and exceed soil_outer_radius_m")
-    registration, registration_path = registration_for(scan, plant, args.registration, args.registration_run)
+    basis = MEASUREMENT_BASIS
+    center = center_base @ basis
+    plant_radius = float(plant_record["radius_mm"]) / 1000
+    if not np.isfinite(plant_radius) or plant_radius <= 0:
+        raise ValueError("plant radius_mm must be finite and positive")
+    # Small plants still need the full configured soil disk inside the crop.
+    radius = max(plant_radius + settings.roi_margin_m, settings.soil_radius_m)
+    registration, registration_path = registration_for(scan, plant)
+
     points, seed, soil_color, view_ids, pixels, views, skipped = load_points(
-        scan, plant, center, basis, reference, radius, settings, registration, args.mask_root,
-        args.unregistered_views)
+        scan, plant, center, basis, radius, settings, registration, segmentation, segmentation_output_dir=directory / "segmentation" )
+    
     distance = np.linalg.norm(points[:, :2] - center[:2], axis=1)
-    # Remove the immediate neighborhood of vegetation from soil candidates.
-    soil_candidates = soil_color & (distance >= settings.soil_inner_radius_m) & (distance <= settings.soil_outer_radius_m)
-    if seed.any() and soil_candidates.any():
-        seed_distance = cKDTree(points[seed, :3]).query(points[soil_candidates, :3], k=1)[0]
-        soil_candidates[np.flatnonzero(soil_candidates)[seed_distance < 0.003]] = False
+    soil_candidates = soil_color & (distance <= settings.soil_radius_m)
+    soil_candidates = exclude_nearby_plant_per_view(points, seed, soil_candidates, view_ids)
+    # estimates the soil surface near the stem from the current scan
     current = fit_local_soil(points[soil_candidates, :3], center[:2], settings)
-    prior = historical_soil(history, timestamp, config.get("history_key"), config.get("reference_id"),
-                            basis[:, 2].tolist(), center[:2], settings)
+    current["plant_exclusion"] = {"scope": "same_view", "distance_m": 0.003}
+    # estimates the soil reference using valid earlier measurements of the same plant
+    prior = historical_soil(history, timestamp, history_key, basis[:, 2].tolist(), center[:2], settings)
     soil, soil_source = (current, "current_scan") if current["accepted"] else (
         (prior, "historical_daily_mean") if prior["accepted"] else (None, "unavailable"))
-    warnings = []
-    if "stem_xy_base_m" not in config:
-        warnings.append("stem_position_uses_scan_target_proxy")
-    if not all(view["plant_mask"] for view in views):
-        warnings.append("automatic_plant_seeds_review_non_green_or_disconnected_organs")
-    if registration is None:
-        warnings.append("saved_camera_poses_only_no_registration")
-    elif registration.get("excluded_disconnected_views"):
+    warnings = ["stem_position_uses_scan_target_proxy"]
+    if soil_source == "historical_daily_mean":
+        warnings.append("historical_soil_assumes_unchanged_pot_elevation_and_tilt")
+    if registration.get("excluded_disconnected_views"):
         warnings.append("excluded_disconnected_registration_views")
     if len(views) == 1:
         warnings.append("single_view_visible_height_verify_top_not_occluded")
-    if registration is None and len(views) > 1:
-        warnings.append("unregistered_view_fusion_requires_review_not_eligible_for_soil_history")
     if skipped:
         warnings.append("some_views_skipped")
     if current["accepted"] and prior["accepted"]:
         if abs(current["soil_elevation_m"] - prior["soil_elevation_m"]) > settings.history_max_spread_m:
             warnings.append("current_soil_disagrees_with_history_check_drift_or_soil_change")
     result = {"scan": scan.name, "plant_id": int(plant_record["plant_id"]), "timestamp": timestamp,
-              "location": parse_meta_yaml(scan / "metadata.yaml").get("location"),
+              "location": location,
               "status": "unmeasurable", "height_mm": None, "height_p99_mm": None, "height_p995_mm": None,
               "soil_source": soil_source, "current_soil": current, "historical_soil": prior,
-              "history_key": config.get("history_key"), "reference_id": config.get("reference_id"),
-              "measurement_basis_columns": basis.tolist(), "base_to_reference": reference.tolist(),
+              "history_key": history_key, "frame_id": "base_link",
+              "measurement_basis_columns": basis.tolist(), "settings": asdict(settings),
               "stem_target_measurement_m": center.tolist(), "roi_radius_m": radius,
-              "registration": str(registration_path) if registration_path else None,
-              "excluded_disconnected_views": registration.get("excluded_disconnected_views", []) if registration else [],
+              "registration": str(registration_path),
+              "segmentation": {**asdict(segmentation), "overlap_priority": "soil"},
+              "excluded_disconnected_views": registration.get("excluded_disconnected_views", []),
               "views": views, "skipped_views": skipped, "warnings": warnings}
     plant_indices, top_index = np.array([], dtype=int), None
     if soil is not None:
-        plant_indices, plant_info = select_plant(points, seed, np.asarray(soil["plane"]), center, settings)
+        plant_indices, plant_info = select_plant(points, seed, np.asarray(soil["plane"]), center, settings, soil_color,)
         result["plant_selection"] = plant_info
         if len(plant_indices):
             elevations = points[plant_indices, 2]
@@ -554,152 +683,119 @@ def measure(scan, plant_record, config, settings, args, history):
             if result["height_mm"] <= 0:
                 result.update(status="unmeasurable", height_mm=None)
                 warnings.append("nonpositive_height_check_soil_and_vertical_direction")
-    if current["accepted"]:
-        observation = {**current, "source": "current_scan", "timestamp": timestamp,
-                       "observation_id": f"{scan.name}/{plant}", "history_key": config.get("history_key"),
-                       "reference_id": config.get("reference_id"), "up": basis[:, 2].tolist(),
-                       "settings": asdict(settings), "registration": result["registration"]}
-        if registration is None and len(views) > 1:
-            observation.update(accepted=False, reason="unregistered_multiview_fusion")
+    canopy = measure_canopy(points[plant_indices], center, radius, settings)
+    result.update(canopy)
+    if canopy["canopy_near_crop_boundary"]:
+        warnings.append("canopy_near_crop_boundary_enlarge_roi")
+    if canopy["canopy_status"] == "estimated" and len(views) == 1:
+        warnings.append("canopy_single_view_visible_extent_only")
+    observation = soil_observation_from_measurement(result)
+    if observation is not None:
         # Reruns replace the same observation rather than increasing its weight.
         history[:] = [o for o in history if o["observation_id"] != observation["observation_id"]]
         history.append(observation)
-    if not args.no_artifacts:
-        write_artifacts(directory, points, seed, soil_candidates, plant_indices, views, view_ids,
-                        pixels, center, soil, top_index, settings)
+    write_artifacts(directory, points, soil_candidates, plant_indices, center, soil, top_index, settings)
+    write_canopy_preview(directory, points[plant_indices], center, radius, canopy)
     write_json(directory / "measurement.json", result)
     return result
 
 
-def read_manual(path, unit):
-    if path is None:
-        return {}
-    result = {}
-    with path.open(newline="") as stream:
-        for row in csv.DictReader(stream):
-            resolved_unit = row.get("unit") or unit
-            if resolved_unit not in {"mm", "cm"}:
-                raise ValueError("manual CSV needs unit=mm/cm or --manual-unit mm/cm")
-            date = datetime.strptime(row["date"], "%Y-%m-%d").date().isoformat()
-            key = (date, row["location"], int(row["plant_id"]))
-            height = float(row["height"]) * (10 if resolved_unit == "cm" else 1)
-            if key in result or not np.isfinite(height) or height <= 0:
-                raise ValueError(f"duplicate or invalid manual measurement: {key}")
-            result[key] = height
-    return result
+def write_scan_summary(directory, results):
+    """Save scan-local measurement metrics."""
+    columns = ["scan", "location", "plant_id", "timestamp", "status", "height_mm", "height_p99_mm", "height_p995_mm",
+               "canopy_status", "canopy_max_span_mm", "canopy_perpendicular_width_mm",
+               "canopy_projected_area_mm2", "canopy_hull_area_mm2", "canopy_grid_mm", "canopy_near_crop_boundary",
+               "history_key", "soil_source", "soil_elevation_m", "warnings", "error"]
+    with (directory / "measurements.csv").open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=columns, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows({**r, "warnings": ";".join(r.get("warnings", []))} for r in results)
+
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("input_dir", type=Path, help="One scan or a directory of timestamped scans")
-    parser.add_argument("--date", help="Only process YYYY-MM-DD; prior observations can come from --history")
-    parser.add_argument("--start-date", help="Experiment start YYYY-MM-DD; exclude earlier scans AND soil history (overrides config)")
+    parser = argparse.ArgumentParser( description="Outputs: each SCAN/phenotyping/<UTC run timestamp>/")
+    parser.add_argument("input_dir", type=Path, help="Parent directory containing all timestamped scans")
+    parser.add_argument("--experiment-start-date", help="Experiment start YYYY-MM-DD; required to reuse soil history, otherwise use current-scan soil only")
+    parser.add_argument("--start-date", help="Inclusive first scan date YYYY-MM-DD; preserves earlier soil history within the experiment")
+    parser.add_argument("--end-date", help="Inclusive last scan date YYYY-MM-DD; use with --start-date for a date range")
     parser.add_argument("--locations", nargs="+", help="For example b1_r16 b1_r17")
-    parser.add_argument("--plant", type=int)
-    parser.add_argument("--output-dir", type=Path, required=True, help="New output directory; existing directories are refused")
-    parser.add_argument("--config", type=Path, help="JSON settings, stem positions, history identities and reference transforms")
-    parser.add_argument("--history", type=Path, help="Previously saved soil_history.json")
-    parser.add_argument("--mask-root", type=Path, help="Optional per-view plant.png / soil.png masks; see documentation")
-    parser.add_argument("--registration", choices=["none", "robust_icp", "colored_icp", "rgbd_features", "fpfh"], default="robust_icp")
-    parser.add_argument("--registration-run", help="Exact reconstruction run name; default uses latest name per plant")
-    parser.add_argument("--unregistered-views", choices=["single", "all"], default="single",
-                        help="Without registration use top (or first available) view; all enables flagged diagnostic fusion")
-    parser.add_argument("--up", nargs=3, type=float, default=[0, 0, -1], help="Physical up in the reference frame (default 0 0 -1 for this robot)")
-    parser.add_argument("--manual-csv", type=Path)
-    parser.add_argument("--manual-unit", choices=["mm", "cm"], help="Unit for CSV rows with blank units")
-    parser.add_argument("--no-artifacts", action="store_true", help="Skip PLY, overlay and preview generation")
     return parser
 
 
 def main():
     parser = build_parser()
     args = parser.parse_args()
+
     try:
-        config = json.loads(args.config.read_text()) if args.config else {}
-        settings = Settings(**config.get("settings", {}))
+        settings = Settings()   
         validate_settings(settings)
-        vertical_basis(args.up)
-        if args.date:
-            datetime.strptime(args.date, "%Y-%m-%d")
-        start_value = args.start_date or config.get("experiment_start_date")
-        start_date = datetime.strptime(start_value, "%Y-%m-%d").date() if start_value else None
-        if start_date and args.date and datetime.strptime(args.date, "%Y-%m-%d").date() < start_date:
-            raise ValueError("--date is before the experiment start date")
-        manual = read_manual(args.manual_csv, args.manual_unit)
-        history = json.loads(args.history.read_text())["observations"] if args.history else []
-        validate_history(history)
-        if start_date:
-            history = [o for o in history if datetime.fromisoformat(o["timestamp"]).date() >= start_date]
+        experiment_start_value = args.experiment_start_date
+        experiment_start_date = datetime.strptime(experiment_start_value, "%Y-%m-%d").date() if experiment_start_value else None
+        start_date = datetime.strptime(args.start_date, "%Y-%m-%d").date() if args.start_date else None
+        end_date = datetime.strptime(args.end_date, "%Y-%m-%d").date() if args.end_date else None
+        if start_date and end_date and start_date > end_date:
+            raise ValueError("--start-date must not be later than --end-date")
+        if experiment_start_date and end_date and end_date < experiment_start_date:
+            raise ValueError("--end-date must not be before the experiment start date")
+        if experiment_start_date:
+            args.experiment_start_date = experiment_start_date.isoformat()
+        
         if not args.input_dir.is_dir():
             raise ValueError(f"input directory does not exist: {args.input_dir}")
-        candidates = [args.input_dir] if (args.input_dir / "metadata.yaml").exists() else list(args.input_dir.iterdir())
         scans = []
-        for scan in candidates:
+        for scan in args.input_dir.iterdir():
             timestamp = scan_timestamp(scan) if scan.is_dir() else None
             if timestamp is None or not (scan / "metadata.yaml").is_file():
                 continue
+            if experiment_start_date and timestamp.date() < experiment_start_date:
+                continue
             if start_date and timestamp.date() < start_date:
                 continue
-            if args.date and timestamp.date().isoformat() != args.date:
+            if end_date and timestamp.date() > end_date:
                 continue
             if args.locations and parse_meta_yaml(scan / "metadata.yaml").get("location") not in args.locations:
                 continue
             scans.append(scan)
         if not scans:
             raise ValueError("no scans match the requested date/locations")
-        args.output_dir.mkdir(parents=True, exist_ok=False)
+        
+        segmentation = prepare_segmentation()
+        run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%fUTC")
+        output_dirs = {scan: scan / "phenotyping" / run_id for scan in scans}
+        for directory in output_dirs.values():
+            directory.mkdir(parents=True, exist_ok=False)
     except (ValueError, OSError, TypeError, KeyError) as exc:
         parser.error(str(exc))
-    write_json(args.output_dir / "run_config.json", {
-        "created_utc": datetime.now(timezone.utc).isoformat(), "settings": asdict(settings), "config": config,
-        "experiment_start_date": start_date.isoformat() if start_date else None,
-        "arguments": {key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()},
-        "measurement": "vertical distance from local soil at stem to highest supported plant organ"})
+
+    history = []
     results = []
+    processed_scans = set()
     for scan in sorted(scans, key=lambda p: (scan_timestamp(p), p.name)):
         meta = parse_meta_yaml(scan / "metadata.yaml")
-        location_config = config.get("locations", {}).get(meta.get("location"), {})
-        scan_config = config.get("scans", {}).get(scan.name, {})
+        saved_history = discover_soil_history(scan, meta, experiment_start_date, processed_scans)
+        # Fresh observations from this invocation take priority over saved copies.
+        combined_history = {o["observation_id"]: o for o in saved_history}
+        combined_history.update({o["observation_id"]: o for o in history})
+        history = list(combined_history.values())
+        output_dir = output_dirs[scan]
+        scan_results = []
         for plant in meta.get("plants", []):
-            if args.plant is not None and plant["plant_id"] != args.plant:
-                continue
-            plant_config = {**config.get("defaults", {}),
-                            **{k: v for k, v in location_config.items() if k != "plants"},
-                            **location_config.get("plants", {}).get(str(plant["plant_id"]), {}),
-                            **{k: v for k, v in scan_config.items() if k != "plants"},
-                            **scan_config.get("plants", {}).get(str(plant["plant_id"]), {})}
             try:
-                result = measure(scan, plant, plant_config, settings, args, history)
+                result = measure(scan, plant, settings, args, history, output_dir, segmentation)
             except (ValueError, OSError, KeyError) as exc:
                 result = {"scan": scan.name, "plant_id": plant["plant_id"], "timestamp": scan_timestamp(scan).isoformat(),
-                          "location": meta.get("location"), "status": "failed", "error": str(exc), "height_mm": None}
-                write_json(args.output_dir / scan.name / f"plant_{plant['plant_id']:02d}" / "measurement.json", result)
-            key = (result["timestamp"][:10], result["location"], result["plant_id"])
-            result["manual_height_mm"] = manual.get(key)
-            result["error_mm"] = (result["height_mm"] - manual[key]
-                                  if key in manual and result.get("height_mm") is not None else None)
-            write_json(args.output_dir / scan.name / f"plant_{plant['plant_id']:02d}" / "measurement.json", result)
+                          "location": meta.get("location"), "status": "failed", "canopy_status": "unmeasurable", "error": str(exc), "height_mm": None}
+                print(f"Failed {scan.name}/plant_{plant['plant_id']:02d}: {exc}", file=sys.stderr, flush=True)
+
+            write_json(output_dir / f"plant_{plant['plant_id']:02d}" / "measurement.json", result)
+            scan_results.append(result)
             results.append(result)
-            print(f"{scan.name}/plant_{plant['plant_id']:02d}: {result['status']}, "
-                  f"height_mm={result.get('height_mm')}, soil={result.get('soil_source')}", flush=True)
-    columns = ["scan", "location", "plant_id", "timestamp", "status", "height_mm", "height_p99_mm", "height_p995_mm",
-               "soil_source", "soil_elevation_m", "manual_height_mm", "error_mm", "warnings", "error"]
-    with (args.output_dir / "heights.csv").open("w", newline="") as stream:
-        writer = csv.DictWriter(stream, fieldnames=columns, extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows({**r, "warnings": ";".join(r.get("warnings", []))} for r in results)
-    errors = np.asarray([r["error_mm"] for r in results if r["error_mm"] is not None])
-    matched = { (r["timestamp"][:10], r["location"], r["plant_id"]) for r in results if r["error_mm"] is not None }
-    validation = {"matched_estimates": len(errors), "manual_records": len(manual),
-                  "unmatched_manual": [list(key) for key in manual if key not in matched],
-                  "mae_mm": float(np.abs(errors).mean()) if len(errors) else None,
-                  "rmse_mm": float(np.sqrt((errors ** 2).mean())) if len(errors) else None,
-                  "bias_mm": float(errors.mean()) if len(errors) else None}
-    write_json(args.output_dir / "results.json", {"measurements": results, "validation": validation})
-    write_json(args.output_dir / "soil_history.json", {"version": 1, "observations": history})
-    if not args.no_artifacts:
-        write_validation_plot(args.output_dir, results)
-    print(f"Saved {len(results)} measurements to {args.output_dir}")
+
+        write_scan_summary(output_dir, scan_results)
+        processed_scans.add(scan)
+        print(f"Saved {len(scan_results)} measurements to {output_dir}")
+
     if not results or any(r["status"] == "failed" for r in results):
         return 1
     return 0
