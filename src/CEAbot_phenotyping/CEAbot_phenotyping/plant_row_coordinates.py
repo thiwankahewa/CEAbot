@@ -645,7 +645,7 @@ class PlantCoordinateNode(Node):
                 "maximum_depth_mm": float(self.max_depth_mm),
                 "minimum_contour_area_px": float(self.row_min_area),
                 "row_band_pct": float(self.row_band_pct),
-                "row_selection": "nearest_centroid_to_crop_midline",
+                "row_selection": "largest_contour_in_row_band_per_slot",
                 "obstacle_minimum_contour_area_px": float(self.min_area),
                 "grouping_dilation_iterations": int(self.dilate_itr),
             },

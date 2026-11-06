@@ -5,6 +5,15 @@
 `top_scan` requests the `plant_row_coordinates` state. The detector must already
 be running to receive the capture topics and state trigger.
 
+The live detector and offline tuner select the largest grouping contour within
+each pot slot whose centroid falls inside the central `row_band_pct` of the crop
+(default 50%). Distance to the horizontal midline breaks area ties. Area is
+measured after grouping morphology; the full selected contour is retained for
+measurements. This suppresses small neighboring-plant fragments within a slot,
+but cannot separate canopies that merge into one contour or recover foliage
+outside the slot. New scan metadata records this as
+`largest_contour_in_row_band_per_slot`.
+
 The configured YOLO model is `models/plant_top_v1.pt`, trained with Ultralytics
 8.4.47. The ROS executable uses `/usr/bin/python3`; installing YOLO in another
 virtual environment does not install it for this executable. `colcon build`

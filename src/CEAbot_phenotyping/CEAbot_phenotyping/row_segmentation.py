@@ -12,8 +12,11 @@ def select_row_contours(measurement, pot_count, kernel, dilation_iterations,
     """Return grouping mask and (right-to-left pot ID, contour) pairs.
 
     Only centroids within the central ``row_band_pct`` percent of crop height
-    qualify. Prefer the centroid nearest the horizontal midline, using area
-    only to break ties. Keep complete contours for subsequent measurements;
+    qualify. Prefer the largest grouping contour in each pot slot, using
+    distance to the horizontal midline only to break area ties. This prevents
+    small fragments of neighboring plants from outranking the main canopy
+    merely because they are closer to the midline.
+    Keep complete contours for subsequent measurements;
     the band selects plants without clipping their foliage.
     """
     if pot_count < 1 or not 0 <= row_band_pct <= 100 or min_area < 0:
@@ -44,7 +47,7 @@ def select_row_contours(measurement, pot_count, kernel, dilation_iterations,
                 continue
             distance = abs(moments["m01"] / moments["m00"] - midline)
             if distance <= half_band:
-                candidates.append((distance, -area, contour))
+                candidates.append((-area, distance, contour))
         if candidates:
             contour = min(candidates, key=lambda item: item[:2])[2].copy()
             contour[:, 0, 0] += left
