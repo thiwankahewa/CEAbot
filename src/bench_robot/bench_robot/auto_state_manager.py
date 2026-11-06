@@ -2,7 +2,7 @@
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from std_msgs.msg import String
+from std_msgs.msg import Bool, Int16MultiArray, String
 
 
 class AutoStateManager(Node):
@@ -27,10 +27,15 @@ class AutoStateManager(Node):
             "bench_change_start": {"manual", "idle"},
         }
 
+        self.estop_active = False
+        self.deferred_command = None
+        self.run_cancelled = False
         self.mode = "manual"
         self.auto_state = "idle"
 
         # -------- subscriptions --------
+        self.create_subscription(Bool, "/e_stop", self.cb_estop, 10)
+        self.create_subscription(Int16MultiArray, "/goal_locations", self.cb_new_scan, 10)
         self.sub_mode = self.create_subscription(String, "/mode", self.cb_mode, 10)
         self.sub_cmd = self.create_subscription(String, "/auto_state_cmd", self.cb_state_cmd, 10)
 
@@ -55,11 +60,35 @@ class AutoStateManager(Node):
 
         # If leaving AUTO, force state to manual (global safety)
         if self.mode != "auto":
+            self.deferred_command = None
             self.set_state("manual", reason="mode!=auto (forced)")
+
+    def cb_new_scan(self, msg):
+        if len(msg.data) >= 3 and len(msg.data) % 3 == 0:
+            self.run_cancelled = False
+            self.deferred_command = None
+
+    def cb_estop(self, msg):
+        self.estop_active = bool(msg.data)
+        if not self.estop_active and self.deferred_command is not None:
+            command = self.deferred_command
+            self.deferred_command = None
+            self.cb_state_cmd(String(data=command))
 
     def cb_state_cmd(self, msg: String):
         cmd = (msg.data or "").strip().lower()
         if not cmd:
+            return
+        if cmd == "stop":
+            self.run_cancelled = True
+            self.deferred_command = None
+            self.auto_state = "idle"
+            self.publish_state()
+            return
+        if self.run_cancelled and cmd not in ("idle", "manual"):
+            return
+        if self.estop_active and cmd not in ("idle", "manual"):
+            self.deferred_command = cmd
             return
 
         if self.mode != "auto":

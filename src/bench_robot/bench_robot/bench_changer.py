@@ -5,7 +5,7 @@ import math
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from std_msgs.msg import Float32, Float32MultiArray, Int16, Int16MultiArray, String
+from std_msgs.msg import Bool, Float32, Float32MultiArray, Int16, Int16MultiArray, String
 from std_srvs.srv import Trigger
 
 
@@ -22,6 +22,7 @@ class BenchChanger(Node):
 
         # -------- States and variables --------
 
+        self.estop_started_at = None
         self.auto_state = "idle"
         self.phase = "idle"
         self.current_bench = None
@@ -106,6 +107,7 @@ class BenchChanger(Node):
 
         # -------- subscriptions --------
 
+        self.create_subscription(Bool, "/e_stop", self.cb_estop, 10)
         self.create_subscription(String, "/auto_state", self.cb_auto_state, 10)
         self.create_subscription( Int16MultiArray, "/robot_location", self.cb_robot_location, ROBOT_LOCATION_QOS)
         self.create_subscription(Int16MultiArray, "/bench_side_marker", self.cb_marker, 10)
@@ -170,6 +172,18 @@ class BenchChanger(Node):
         self.set_phase("fault")
 
     # ------- callback functions -------
+
+    def cb_estop(self, msg):
+        if msg.data and self.estop_started_at is None:
+            self.estop_started_at = self.now_s()
+            self.stop()
+        elif not msg.data and self.estop_started_at is not None:
+            elapsed = self.now_s() - self.estop_started_at
+            for name in ("phase_start_time", "exit_marker_loss_start_time"):
+                value = getattr(self, name)
+                if value is not None:
+                    setattr(self, name, value + elapsed)
+            self.estop_started_at = None
 
     def cb_auto_state(self, msg):
         previous = self.auto_state
@@ -279,6 +293,8 @@ class BenchChanger(Node):
         return 1.0 if self.exit_row == FIRST_ROW_ID else -1.0
 
     def control_tick(self):
+        if self.estop_started_at is not None:
+            return
         if self.auto_state != "bench_change_start":
             return
         current_marker_phases = {"position_arm", "follow_to_exit_edge", "acquire_current_marker", "exit_current_bench",}
@@ -335,6 +351,9 @@ class BenchChanger(Node):
         try:
             result = self.arm_future.result()
             if result is None or not result.success:
+                if result is not None and "E-stop active" in result.message:
+                    self.arm_future = None
+                    return
                 self.fail_safe(f"arm center pose failed: {getattr(result, 'message', 'no response')}")
                 return
         except Exception as exc:

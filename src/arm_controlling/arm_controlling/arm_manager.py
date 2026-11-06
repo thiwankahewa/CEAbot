@@ -7,6 +7,7 @@ import traceback
 import rclpy
 
 from std_srvs.srv import Trigger
+from std_msgs.msg import Bool
 from controller_manager_msgs.srv import ListControllers, SwitchController
 from rclpy.callback_groups import ReentrantCallbackGroup
 from arm_controlling.moveit_arm_helper import MoveItArmHelper, ArmConnectionError
@@ -25,12 +26,19 @@ POSE_1 = {"joint_1": -1.545,"joint_2": -1.877,"joint_3": 0.0,"joint_4": 1.792,"j
 
 ROBOT_HEIGHT = 1.85
 
+class ArmMotionPaused(RuntimeError):
+    pass
+
+
 class ArmManager(MoveItArmHelper):
     def __init__(self):
         super().__init__("arm_manager")
 
         #--------- States and variables ---------#
 
+        self.estop_active = False
+        self.pause_epoch = 0
+        self.motion_pause_epoch = None
         self.command_busy = False
         self.stop_requested = False
         self.command_lock = threading.Lock()
@@ -65,6 +73,9 @@ class ArmManager(MoveItArmHelper):
         #--------- Subscriptions ---------#
         self.plant_obstacle_sub = self.create_subscription( PlantTargetArray, "/plant_row/obstacles", self.cb_plant_obstacles, 10, callback_group=self.cb_group)
 
+        self.estop_sub = self.create_subscription(
+            Bool, "/e_stop", self.cb_estop, 10, callback_group=self.cb_group)
+
         #--------- Services ---------#
         self.srv_move_to_pose = self.create_service(MoveToPose,"/arm/move_to_pose",self.cb_move_to_pose,callback_group=self.cb_group,)
         self.srv_plan_to_pose = self.create_service(PlanToPose,"/arm/plan_to_pose",self.cb_plan_to_pose,callback_group=self.cb_group,)
@@ -82,6 +93,10 @@ class ArmManager(MoveItArmHelper):
 
     def cb_control_ready(self, request, response):
         """Read-only readiness including the execution state owned by this node."""
+        if self.estop_active:
+            response.success = False
+            response.message = "E-stop active: arm paused"
+            return response
         fault_reason = self.hardware_fault_reason()
         recovery_reason = self.fault_recovery.reason()
         with self.command_lock:
@@ -192,6 +207,10 @@ class ArmManager(MoveItArmHelper):
         # Return the actual planning/execution result.  The scanner must not
         # interpret "background command started" as "arm reached rest".
         with self.command_lock:
+            if self.estop_active:
+                response.success = False
+                response.message = "E-stop active: release it before commanding the arm"
+                return response
             if self.command_busy:
                 response.success = False
                 response.message = "Arm is busy. Wait until current command finishes."
@@ -223,6 +242,10 @@ class ArmManager(MoveItArmHelper):
         # reached this camera pose. Unlike the fire-and-forget rest command,
         # keep this service pending until execution and pose confirmation end.
         with self.command_lock:
+            if self.estop_active:
+                response.success = False
+                response.message = "E-stop active: release it before commanding the arm"
+                return response
             if self.command_busy:
                 response.success = False
                 response.message = "Arm is busy. Wait until current command finishes."
@@ -250,6 +273,74 @@ class ArmManager(MoveItArmHelper):
         response.success, response.message = self.start_command("reset",self.run_reset,)
         return response
 
+    def cb_estop(self, msg):
+        with self.command_lock:
+            active = bool(msg.data)
+            changed = active != self.estop_active
+            self.estop_active = active
+            if active and changed:
+                self.pause_epoch += 1
+            goal = self.active_execute_goal if active and changed else None
+        # Cancellation holds the current position with trajectory control active.
+        # Do not reset hardware faults or clear an ordinary Stop on release.
+        if goal is not None:
+            goal.cancel_goal_async()
+
+    def wait_for_estop_release(self):
+        while rclpy.ok():
+            with self.command_lock:
+                if self.stop_requested:
+                    return False
+                if not self.estop_active:
+                    return True
+            time.sleep(0.05)
+        return False
+
+    def send_execution_goal(self, goal_msg):
+        with self.command_lock:
+            if self.stop_requested:
+                raise RuntimeError("Stopped by user")
+            if self.estop_active or self.motion_pause_epoch != self.pause_epoch:
+                raise ArmMotionPaused()
+            return super().send_execution_goal(goal_msg)
+
+    def check_arm_connection(self):
+        if (self.motion_pause_epoch is not None
+                and (self.estop_active or self.motion_pause_epoch != self.pause_epoch)):
+            raise ArmMotionPaused()
+        return super().check_arm_connection()
+
+    def execute_trajectory(self, trajectory):
+        target = self.trajectory_final_joint_map(trajectory)
+        replan = False
+        while rclpy.ok():
+            if not self.wait_for_estop_release():
+                return False
+            epoch = self.pause_epoch
+            if replan:
+                ready, message = self.prepare_rest_controller()
+                if not ready:
+                    self.get_logger().error(message)
+                    return False
+                trajectory = self.plan_to_joint_positions(target)
+                if trajectory is None:
+                    return False
+            self.motion_pause_epoch = epoch
+            try:
+                result = super().execute_trajectory(trajectory)
+                if epoch == self.pause_epoch:
+                    return result
+            except ArmMotionPaused:
+                pass
+            finally:
+                self.motion_pause_epoch = None
+            if self.check_stop_requested():
+                return False
+            # The old action must finish cancelling before readiness permits
+            # another goal. Never replay a trajectory with an obsolete start.
+            replan = True
+        return False
+
     def cb_stop(self, request, response):
         with self.command_lock:
             self.stop_requested = True
@@ -262,6 +353,10 @@ class ArmManager(MoveItArmHelper):
 
     def cb_move_to_pose(self, request, response):
         with self.command_lock:
+            if self.estop_active:
+                response.success = False
+                response.message = "E-stop active: release it before commanding the arm"
+                return response
             if self.command_busy:
                 response.success = False
                 response.message = "Arm is busy. Wait until current command finishes."
@@ -304,6 +399,10 @@ class ArmManager(MoveItArmHelper):
 
     def cb_plan_to_pose(self, request, response):
         with self.command_lock:
+            if self.estop_active:
+                response.success = False
+                response.message = "E-stop active: release it before commanding the arm"
+                return response
             if self.command_busy:
                 response.success = False
                 response.message = "Arm is busy. Cannot plan while current command is running."
@@ -347,6 +446,10 @@ class ArmManager(MoveItArmHelper):
 
     def cb_execute_planned_trajectory(self, request, response):
         with self.command_lock:
+            if self.estop_active:
+                response.success = False
+                response.message = "E-stop active: release it before commanding the arm"
+                return response
             if self.command_busy:
                 response.success = False
                 response.message = "Arm is busy. Wait until current command finishes."
@@ -396,6 +499,8 @@ class ArmManager(MoveItArmHelper):
 
     def start_command(self, name, target_func, *, resume_after_stop=True):
         with self.command_lock:
+            if self.estop_active:
+                return False, "E-stop active"
             if self.stop_requested and not resume_after_stop:
                 return False, "Stopped by user"
             if self.command_busy:
@@ -429,6 +534,8 @@ class ArmManager(MoveItArmHelper):
             return self.stop_requested
 
     def require_controller_ready(self):
+        if not self.wait_for_estop_release():
+            raise RuntimeError("Stopped by user")
         if self.fault_recovery.blocked_reason:
             raise ArmConnectionError(self.fault_recovery.blocked_reason)
         return super().require_controller_ready()

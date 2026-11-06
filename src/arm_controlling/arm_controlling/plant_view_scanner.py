@@ -65,6 +65,8 @@ class PlantViewScanner(MoveItArmHelper):
         self.stop_scan = False
         self.scan_paused = False
         self.scan_stopped = False
+        self.estop_active = False
+        self.stop_in_progress = False
         self.scan_lock = threading.Lock()
 
         self._load_scanner_params()
@@ -85,9 +87,10 @@ class PlantViewScanner(MoveItArmHelper):
 
         self.create_service(Trigger, "/plant_view_scanner/pause", self.cb_pause_scan)
         self.create_service(Trigger, "/plant_view_scanner/resume", self.cb_resume_scan)
-        self.create_service(Trigger, "/plant_view_scanner/stop", self.cb_stop_scan)
+        self.create_service(Trigger, "/plant_view_scanner/stop", self.cb_stop_scan, callback_group=self.moveit_cb_group)
 
         #-------- Subscriptions and publishers ---------#
+        self.estop_sub = self.create_subscription(Bool, "/e_stop", self.cb_estop, 10)
         self.state_sub = self.create_subscription(String,"/auto_state",self.cb_auto_state,10)
         self.target_sub = self.create_subscription(PlantTargetArray,"/plant_row/targets",self.cb_targets,10)
         self.pub_auto_state_cmd = self.create_publisher(String, "/auto_state_cmd", 10)
@@ -142,7 +145,11 @@ class PlantViewScanner(MoveItArmHelper):
             self.get_logger().warn("No targets received yet")
             return
 
-        self.scan_busy = True
+        with self.scan_lock:
+            if self.stop_in_progress:
+                return
+            self.scan_stopped = False
+            self.scan_busy = True
         self.stop_scan = False
         threading.Thread(target=self.run_scan_thread, daemon=True).start()
 
@@ -162,6 +169,8 @@ class PlantViewScanner(MoveItArmHelper):
             # rest was interrupted. Completion status is recorded separately.
             if self.scan_end_time is None:
                 self.scan_end_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+            if self.scan_stopped:
+                self.scan_processing_complete = False
             self.save_scan_summary()
             self.scan_busy = False
 
@@ -177,24 +186,61 @@ class PlantViewScanner(MoveItArmHelper):
     def cb_resume_scan(self, request, response):
         with self.scan_lock:
             self.scan_paused = False
-            self.scan_stopped = False
 
         response.success = True
         response.message = "Plant scanner resumed"
         return response
 
 
+    def cb_estop(self, msg):
+        with self.scan_lock:
+            self.estop_active = bool(msg.data)
+
     def cb_stop_scan(self, request, response):
         with self.scan_lock:
+            if self.stop_in_progress:
+                response.success = False
+                response.message = "Scan stop and return to rest already in progress"
+                return response
+            self.stop_in_progress = True
             self.scan_stopped = True
             self.scan_paused = False
+        try:
+            self.pub_auto_state_cmd.publish(String(data="stop"))
+            if not self.arm_stop_client.wait_for_service(timeout_sec=5.0):
+                raise RuntimeError("Arm stop service unavailable")
+            result = self.wait_future(self.arm_stop_client.call_async(Trigger.Request()), timeout=10.0)
+            if result is None or not result.success:
+                raise RuntimeError("Could not confirm arm Stop; return to rest was not started")
+            deadline = time.monotonic() + 30.0
+            while self.scan_busy and rclpy.ok():
+                if time.monotonic() > deadline:
+                    raise RuntimeError("Scan is still shutting down; return to rest was not started")
+                time.sleep(0.05)
+            # Normal Stop cancels the scan permanently. E-stop still takes
+            # precedence over the requested return to rest.
+            while rclpy.ok():
+                if self.estop_active:
+                    time.sleep(0.05)
+                    continue
+                success, message = self.call_arm_go_rest(timeout=600.0)
+                if not success and "E-stop active" in message:
+                    continue
+                if not success and "Arm is busy" in message and time.monotonic() < deadline:
+                    time.sleep(0.1)
+                    continue
+                response.success = success
+                response.message = message if not success else "Scan stopped. Arm returned to rest."
+                return response
+            raise RuntimeError("ROS shut down before returning to rest")
+        except Exception as exc:
+            response.success = False
+            response.message = str(exc)
+            return response
+        finally:
+            with self.scan_lock:
+                self.stop_in_progress = False
 
-        response.success = True
-        if self.arm_stop_client.service_is_ready():
-            self.arm_stop_client.call_async(Trigger.Request())
-        response.message = "Plant scanner stopped"
-        return response
-    
     #------- helper math functions ---------#
     
     def normalize_vector(self, v):
@@ -279,7 +325,7 @@ class PlantViewScanner(MoveItArmHelper):
             with self.scan_lock:
                 if self.scan_stopped:
                     return False
-                paused = self.scan_paused
+                paused = self.scan_paused or self.estop_active
 
             if not paused:
                 return True
@@ -369,8 +415,10 @@ class PlantViewScanner(MoveItArmHelper):
         ready_since = None
         reason = "/arm/control_ready service unavailable"
         while rclpy.ok() and time.monotonic() < deadline:
+            pause_started = time.monotonic()
             if not self.wait_if_paused_or_stopped():
                 raise RuntimeError("Scanner stopped")
+            deadline += time.monotonic() - pause_started
             ready = False
             if self.arm_ready_client.service_is_ready():
                 future = self.arm_ready_client.call_async(Trigger.Request())
@@ -412,6 +460,16 @@ class PlantViewScanner(MoveItArmHelper):
         raise ArmConnectionError(f"Recovery timed out: {reason}; row remains incomplete")
 
     def move_scan_view(self, pose, trajectory=None):
+        while rclpy.ok():
+            result = self._move_scan_view(pose, trajectory)
+            if "E-stop active" not in result[1]:
+                return result
+            if not self.wait_if_paused_or_stopped():
+                raise RuntimeError("Scanner stopped")
+            trajectory = None
+        return False, "ROS shut down"
+
+    def _move_scan_view(self, pose, trajectory=None):
         retries = max(0, int(self.get_parameter("arm_recovery_retries").value))
         for attempt in range(retries + 1):
             epoch = self.connection_epoch
@@ -422,7 +480,7 @@ class PlantViewScanner(MoveItArmHelper):
             if trajectory is not None:
                 success, message = self.call_arm_execute_planned(trajectory, pose["label"])
                 # Ordinary plan failures can use the existing Cartesian fallback.
-                if (not success and "Stopped by user" not in message
+                if (not success and "E-stop active" not in message and "Stopped by user" not in message
                         and "ARM_CONNECTION_LOST:" not in message
                         and epoch == self.connection_epoch and self.has_fresh_arm_state()):
                     self.get_logger().warn(
@@ -467,6 +525,13 @@ class PlantViewScanner(MoveItArmHelper):
 
         start = time.time()
         while rclpy.ok():
+            if self.check_stop_requested():
+                raise RuntimeError("Scanner stopped")
+            if self.estop_active:
+                paused_at = time.time()
+                while self.estop_active and rclpy.ok() and not self.scan_stopped:
+                    time.sleep(0.05)
+                start += time.time() - paused_at
             if future.done():
                 res = future.result()
                 return res.success, res.message
@@ -500,12 +565,19 @@ class PlantViewScanner(MoveItArmHelper):
 
         start = time.time()
         while rclpy.ok():
+            if self.check_stop_requested():
+                raise RuntimeError("Scanner stopped")
+            if self.estop_active:
+                paused_at = time.time()
+                while self.estop_active and rclpy.ok() and not self.scan_stopped:
+                    time.sleep(0.05)
+                start += time.time() - paused_at
             if future.done():
                 res = future.result()
                 if res is None:
                     return False, "No response from arm_manager", None, None, None
 
-                if ("ARM_CONNECTION_LOST:" in res.message or epoch != self.connection_epoch
+                if ("E-stop active" in res.message or "ARM_CONNECTION_LOST:" in res.message or epoch != self.connection_epoch
                         or not self.has_fresh_arm_state()):
                     # Leave the candidate pending: execute_scan_item will replan
                     # after recovery instead of marking it unreachable.
@@ -530,6 +602,13 @@ class PlantViewScanner(MoveItArmHelper):
 
         start = time.time()
         while rclpy.ok():
+            if self.check_stop_requested():
+                raise RuntimeError("Scanner stopped")
+            if self.estop_active:
+                paused_at = time.time()
+                while self.estop_active and rclpy.ok() and not self.scan_stopped:
+                    time.sleep(0.05)
+                start += time.time() - paused_at
             if future.done():
                 res = future.result()
                 if res is None:
@@ -544,7 +623,7 @@ class PlantViewScanner(MoveItArmHelper):
     
     #------- Plant capture function ---------#
 
-    def call_arm_go_rest(self, timeout=120.0):
+    def call_arm_go_rest(self, timeout=600.0, cancel_on_scan_stop=False):
         if not self.go_rest_client.wait_for_service(timeout_sec=5.0):
             return False, "/arm/go_rest service not available"
 
@@ -553,10 +632,30 @@ class PlantViewScanner(MoveItArmHelper):
 
         start = time.time()
         while rclpy.ok():
+            if cancel_on_scan_stop and self.check_stop_requested():
+                raise RuntimeError("Scanner stopped")
+            if self.estop_active:
+                paused_at = time.time()
+                while self.estop_active and rclpy.ok():
+                    if cancel_on_scan_stop and self.check_stop_requested():
+                        raise RuntimeError("Scanner stopped")
+                    time.sleep(0.05)
+                start += time.time() - paused_at
             if future.done():
                 res = future.result()
                 if res is None:
                     return False, "No response from arm_manager"
+                if not res.success and "E-stop active" in res.message:
+                    # E-stop may arrive at arm_manager before this subscriber.
+                    # This request was rejected, so it is safe to retry without
+                    # losing the pending return-to-rest stage of the scan.
+                    time.sleep(0.05)
+                    if self.estop_active:
+                        continue
+                    if cancel_on_scan_stop and self.check_stop_requested():
+                        raise RuntimeError("Scanner stopped")
+                    future = self.go_rest_client.call_async(req)
+                    continue
                 return res.success, res.message
 
             if time.time() - start > timeout:
@@ -568,6 +667,8 @@ class PlantViewScanner(MoveItArmHelper):
         start = time.time()
 
         while rclpy.ok():
+            if self.check_stop_requested():
+                return False
             current = self.get_current_joint_map(timeout=1.0)
 
             if current is not None:
@@ -601,6 +702,8 @@ class PlantViewScanner(MoveItArmHelper):
 
         start = time.time()
         while rclpy.ok():
+            if self.check_stop_requested():
+                return False
             if future.done():
                 res = future.result()
                 if res is None:
@@ -620,6 +723,8 @@ class PlantViewScanner(MoveItArmHelper):
         start = time.time()
 
         while rclpy.ok():
+            if self.check_stop_requested():
+                return None
             if os.path.exists(meta_path) and os.path.getmtime(meta_path) >= started_at:
                 return meta_path
 
@@ -633,6 +738,8 @@ class PlantViewScanner(MoveItArmHelper):
         """Wait until the remote archive can no longer overwrite meta.yaml."""
         start = time.time()
         while rclpy.ok():
+            if self.check_stop_requested():
+                return False
             try:
                 with open(meta_path, "r", encoding="utf-8") as meta_file:
                     metadata = yaml.safe_load(meta_file) or {}
@@ -1268,6 +1375,8 @@ class PlantViewScanner(MoveItArmHelper):
 
             self.get_logger().info(message)
 
+            if not self.wait_if_paused_or_stopped():
+                return False
             capture_started_at = time.time()
             capture_success = self.call_orbbec_capture(run_dir=self.latest_run_dir,plant_id=plant_id,view_label=pose["label"])
             self.set_scan_result(
@@ -1341,7 +1450,7 @@ class PlantViewScanner(MoveItArmHelper):
         for attempt in range(int(self.get_parameter("arm_recovery_retries").value) + 1):
             self.wait_for_scan_arm()
             epoch = self.connection_epoch
-            success, message = self.call_arm_go_rest()
+            success, message = self.call_arm_go_rest(cancel_on_scan_stop=True)
             if ("ARM_CONNECTION_LOST:" not in message and self.has_fresh_arm_state()
                     and epoch == self.connection_epoch):
                 break
@@ -1353,6 +1462,8 @@ class PlantViewScanner(MoveItArmHelper):
                 self.get_logger().warn("Arm did not confirm rest. Not publishing /top_scan/scan_done.")
                 return
 
+            if not self.wait_if_paused_or_stopped():
+                return
             self.scan_end_time = datetime.now().strftime("%Y%m%d_%H%M%S")
             self.pub_auto_state_cmd.publish(String(data="idle"))
             self.pub_top_scan_done.publish(Bool(data=True))

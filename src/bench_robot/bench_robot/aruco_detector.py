@@ -49,6 +49,8 @@ class ArucoManager(Node):
         self.stop_sent = False
         self.last_center_error_px = None
         self.rest_client = None
+        self.estop_active = False
+        self.scan_cancelled = False
         self.rest_pending = False
         self.rest_pending_action = None
         self.rest_future = None
@@ -86,6 +88,9 @@ class ArucoManager(Node):
         self.pub_auto_state_cmd = self.create_publisher(String, '/auto_state_cmd', 10)
         self.pub_location = self.create_publisher(Int16MultiArray, '/robot_location', ROBOT_LOCATION_QOS)
         self.pub_align_error = self.create_publisher(Float32MultiArray, '/aruco_target_error', 10)
+
+        self.create_subscription(Bool, "/e_stop", self.cb_estop, 10)
+        self.create_subscription(String, "/auto_state_cmd", self.cb_scan_command, 10)
 
         # ---------------- timer ----------------
         self.timer = self.create_timer(0.1, self.detect_tick)
@@ -163,6 +168,18 @@ class ArucoManager(Node):
             self.get_logger().info( f"Entered bench {next_bench}; continuing to scan row {next_from_row}")
             self.request_tracking_direction()
 
+    def cb_estop(self, msg):
+        self.estop_active = bool(msg.data)
+
+    def cb_scan_command(self, msg):
+        if msg.data.strip().lower() == "stop":
+            self.scan_cancelled = True
+            self.rest_pending = False
+            self.rest_pending_action = None
+            self.rest_future = None
+            self.bench_exit_alignment_pending = False
+            self.pub_bench_exit_align.publish(Bool(data=False))
+
     def cb_current_bench(self, msg: Int16):
         self.current_bench = int(msg.data)
 
@@ -172,6 +189,7 @@ class ArucoManager(Node):
             self.get_logger().warn("Goal locations must be [bench, from_row, to_row, bench, from_row, to_row, ...]")
             return
 
+        self.scan_cancelled = False
         self.scan_plan = [tuple(map(int, data[i:i + 3])) for i in range(0, len(data), 3)]
 
         self.scan_plan_index = 0
@@ -196,7 +214,7 @@ class ArucoManager(Node):
             self.pub_auto_state_cmd.publish(String(data="bench_tracking_f"))
 
     def cb_scan_done(self, msg: Bool):
-        if bool(msg.data):
+        if bool(msg.data) and not self.scan_cancelled:
             self.stop_sent = False
             self.goal_seen_count = 0
             self.publish_stop(False)
@@ -245,6 +263,8 @@ class ArucoManager(Node):
     # ---------------- timer functions ----------------
 
     def detect_tick(self):
+        if self.scan_cancelled or self.estop_active:
+            return
         if self.rest_pending:
             self.process_pending_rest()
             return
@@ -413,9 +433,14 @@ class ArucoManager(Node):
             if result is not None and getattr(result, "success", False):
                 self.get_logger().info(f"Arm rest completed: {getattr(result, 'message', '')}")
             else:
-                self.get_logger().warn(f"Arm rest request failed: {getattr(result, 'message', '') if result is not None else 'no response'}")
+                message = getattr(result, "message", "") if result is not None else "no response"
+                self.get_logger().warn(f"Arm rest request failed: {message}")
+                if "E-stop active" in message:
+                    self.request_arm_rest(action)
+                return False
         except Exception as e:
             self.get_logger().error(f"Arm rest request error: {e}")
+            return False
 
         if action == "advance":
             self.advance_to_next_goal()

@@ -414,7 +414,7 @@ class MoveItArmHelper(Node):
             self.get_logger().error("/execute_trajectory server not ready")
             return False
 
-        send_future = self.execute_client.send_goal_async(goal_msg)
+        send_future = self.send_execution_goal(goal_msg)
         self.pending_execution_send = send_future
         goal_handle = self.wait_future(send_future, timeout=10.0)
 
@@ -576,6 +576,9 @@ class MoveItArmHelper(Node):
     def angle_error(self, target, current):
         return math.atan2(math.sin(target - current), math.cos(target - current))
 
+
+    def send_execution_goal(self, goal_msg):
+        return self.execute_client.send_goal_async(goal_msg)
 
     def trajectory_duration(self, trajectory):
         '''Return the planned trajectory duration in seconds.'''
